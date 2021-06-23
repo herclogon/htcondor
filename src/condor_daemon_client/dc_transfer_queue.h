@@ -32,7 +32,6 @@
 #include "condor_io.h"
 #include "enum_utils.h"
 #include "daemon.h"
-#include "MyString.h"
 #include "utc_time.h"
 
 enum XFER_QUEUE_ENUM {
@@ -64,8 +63,8 @@ class TransferQueueContactInfo {
 		// queue server
 	char const *GetAddress() { return m_addr.c_str(); }
 
-	bool GetUnlimitedUploads() { return m_unlimited_uploads; }
-	bool GetUnlimitedDownloads() { return m_unlimited_downloads; }
+	bool GetUnlimitedUploads() const { return m_unlimited_uploads; }
+	bool GetUnlimitedDownloads() const { return m_unlimited_downloads; }
 
  private:
 	std::string m_addr;
@@ -86,7 +85,7 @@ public:
 		// to determine actual status.  This function just initiates
 		// the request.  If transfers are unlimited, this does no work.
 		// downloading - true if downloading file, false if uploading
-	bool RequestTransferQueueSlot(bool downloading,filesize_t sandbox_size,char const *fname,char const *jobid,char const *queue_user,int timeout,MyString &error_desc);
+	bool RequestTransferQueueSlot(bool downloading,filesize_t sandbox_size,char const *fname,char const *jobid,char const *queue_user,int timeout,std::string &error_desc);
 
 		// See if we have been given permission to transfer currently
 		// requested file.  If transfers are unlimited, this is a no-op.
@@ -97,12 +96,12 @@ public:
 		// pending=true if we should keep trying.  Otherwise, it
 		// sets pending=false and sets error_desc to a description of
 		// the error that caused the request to fail.
-	bool PollForTransferQueueSlot(int timeout,bool &pending,MyString &error_desc);
+	bool PollForTransferQueueSlot(int timeout,bool &pending,std::string &error_desc);
 
 		// Remove current request for permission to transfer.
 	void ReleaseTransferQueueSlot();
 
-	bool GoAheadAlways( bool downloading );
+	bool GoAheadAlways( bool downloading ) const;
 
 	void AddBytesSent(long v)     { if( v>0 ) m_recent_bytes_sent      += v; }
 	void AddBytesReceived(long v) { if( v>0 ) m_recent_bytes_received  += v; }

@@ -284,7 +284,7 @@ int SetJobFactory(int cluster_id, int num, const char * filename, const char * t
 	return rval;
 }
 
-int SendMaterializeData(int cluster_id, int flags, int (*next)(void* pv, std::string&item), void* pv, MyString & filename, int* pnum_items)
+int SendMaterializeData(int cluster_id, int flags, int (*next)(void* pv, std::string&item), void* pv, std::string & filename, int* pnum_items)
 {
 	int	rval = -1;
 	int num_items = -1;
@@ -367,9 +367,13 @@ DestroyClusterByConstraint( char *constraint )
 
 
 int
-SetAttributeByConstraint( char const *constraint, char const *attr_name, char const *attr_value, SetAttributeFlags_t flags )
+SetAttributeByConstraint( char const *constraint, char const *attr_name, char const *attr_value, SetAttributeFlags_t flags_in )
 {
 	int	rval = -1;
+
+	// only some of the flags can be sent on the wire, the upper bits are private to the schedd
+	SetAttributePublicFlags_t flags = (flags_in & SetAttribute_PublicFlagsMask);
+
 
 		CurrentSysCall = CONDOR_SetAttributeByConstraint;
 		if( flags ) {
@@ -401,9 +405,12 @@ SetAttributeByConstraint( char const *constraint, char const *attr_name, char co
 
 
 int
-SetAttribute( int cluster_id, int proc_id, char const *attr_name, char const *attr_value, SetAttributeFlags_t flags )
+SetAttribute( int cluster_id, int proc_id, char const *attr_name, char const *attr_value, SetAttributeFlags_t flags_in, CondorError *)
 {
 	int	rval;
+
+	// only some of the flags can be sent on the wire, the upper bits are private to the schedd
+	SetAttributePublicFlags_t flags = (flags_in & SetAttribute_PublicFlagsMask);
 
 		CurrentSysCall = CONDOR_SetAttribute;
 		if( flags ) {
@@ -533,10 +540,12 @@ AbortTransaction()
 }
 
 int
-RemoteCommitTransaction(SetAttributeFlags_t flags, CondorError *errstack)
+RemoteCommitTransaction(SetAttributeFlags_t flags_in, CondorError *errstack)
 {
 	int	rval = -1;
 
+	// only some of the flags can be sent on the wire, the upper bits are private to the schedd
+	SetAttributePublicFlags_t flags = (flags_in & SetAttribute_PublicFlagsMask);
 	if( flags == 0 ) {
 			// for compatibility with schedd's from before 7.5.0
 		CurrentSysCall = CONDOR_CommitTransactionNoFlags;

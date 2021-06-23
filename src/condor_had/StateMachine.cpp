@@ -127,15 +127,15 @@ HADStateMachine::~HADStateMachine(void)
 {
 
     ClassAd invalidate_ad;
-    MyString line;
+    std::string line;
 
     freeResources();
 
     SetMyTypeName( invalidate_ad, QUERY_ADTYPE );
     SetTargetTypeName( invalidate_ad, HAD_ADTYPE );
-    line.formatstr( "TARGET.%s == \"%s\"", ATTR_NAME, m_name.Value( ) );
-    invalidate_ad.AssignExpr( ATTR_REQUIREMENTS, line.Value( ) );
-	invalidate_ad.Assign( ATTR_NAME, m_name.Value() );
+    formatstr( line, "TARGET.%s == \"%s\"", ATTR_NAME, m_name.c_str( ) );
+    invalidate_ad.AssignExpr( ATTR_REQUIREMENTS, line.c_str( ) );
+	invalidate_ad.Assign( ATTR_NAME, m_name );
     daemonCore->sendUpdates( INVALIDATE_HAD_ADS, &invalidate_ad, NULL, false );
 }
 
@@ -173,7 +173,7 @@ HADStateMachine::isHardConfigurationNeeded(void)
 		getHadList( tmp, m_usePrimary, otherHadIps, allHadIps, selfId );
         free( tmp );
     } else {
-		utilCrucialError( utilNoParameterError( "HAD_LIST", "HAD" ).Value() );
+		utilCrucialError( utilNoParameterError( "HAD_LIST", "HAD" ).c_str() );
     }
 
 	// if either the HAD_LIST length has changed or the index of the local
@@ -209,7 +209,7 @@ HADStateMachine::softReconfigure(void)
         // 'my_username' allocates dynamic string
         buffer = my_username();
         tmp = buffer ? buffer : "UNKNOWN";
-        m_name.formatstr( "%s@%s", tmp, get_local_fqdn().Value() );
+        formatstr( m_name, "%s@%s", tmp, get_local_fqdn().c_str() );
 	if ( buffer ) {
 		free( buffer );
 	}
@@ -283,8 +283,6 @@ HADStateMachine::initializeClassAd(void)
 
     SetMyTypeName(m_classAd, HAD_ADTYPE);
     SetTargetTypeName(m_classAd, "");
-
-    MyString line;
 
     // ATTR_NAME is mandatory in order to be accepted by collector
     m_classAd.Assign( ATTR_NAME, m_name );
@@ -661,7 +659,7 @@ HADStateMachine::setReplicationDaemonSinfulString( void )
 
     if ( ! tmp ) {
         utilCrucialError( utilNoParameterError("REPLICATION_LIST",
-                                               "REPLICATION").Value( ) );
+                                               "REPLICATION").c_str( ) );
     }
 
     StringList replicationAddressList;
@@ -911,7 +909,7 @@ dprintf( D_ALWAYS, "... found myself in list: %s\n", s.getSinful() );
     win in checkList election process
 */
 bool
-HADStateMachine::checkList( List<int>* list )
+HADStateMachine::checkList( List<int>* list ) const
 {
     int id;
 
@@ -1034,7 +1032,7 @@ HADStateMachine::commandHandlerHad(int cmd, Stream *strm)
   Function :
 */
 void
-HADStateMachine::printStep( const char *curState, const char *nextState )
+HADStateMachine::printStep( const char *curState, const char *nextState ) const
 {
       dprintf( D_FULLDEBUG,
                 "State machine step : pid <%d> port <%d> "
@@ -1151,10 +1149,8 @@ HADStateMachine::updateCollectors(void)
  *              HAD is active or not and sends the update to collectors
  */
 void
-HADStateMachine::updateCollectorsClassAd(const MyString& isHadActive)
+HADStateMachine::updateCollectorsClassAd(const std::string& isHadActive)
 {
-    MyString line;
-
     m_classAd.Assign( ATTR_HAD_IS_ACTIVE, isHadActive );
 
     int successfulUpdatesNumber =

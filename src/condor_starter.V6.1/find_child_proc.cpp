@@ -1,6 +1,7 @@
 #include "condor_common.h"
 #include "directory.h"
 #include "condor_debug.h"
+#include "stl_string_utils.h"
 
 #ifdef LINUX
 bool isChildOf(const char *subdir, pid_t parent);
@@ -47,7 +48,8 @@ isChildOf(const char *subdir, pid_t parent) {
 		return false;
 	}
 
-	if (read(fd, buf, 511) < 0) {
+	ssize_t num_read = read(fd, buf, 511);
+	if (num_read < 5) { // minimum # of bytes for legal stat line
 		close(fd);
 		return false;
 	}
@@ -58,8 +60,8 @@ isChildOf(const char *subdir, pid_t parent) {
 
 	// Format of /proc/self/stat is
 	// pid program_name State ppid
-	sscanf(buf, "%d%*s%*s%d", &pid, &ppid);
-	if (ppid == parent) {
+	int matched = sscanf(buf, "%d%*s%*s%d", &pid, &ppid);
+	if ((ppid == parent) && (matched > 0)) {
 		return true;
 	}
 	return false;

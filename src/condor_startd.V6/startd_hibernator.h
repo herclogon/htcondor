@@ -31,8 +31,8 @@ class StartdHibernator : public HibernatorBase
 {
   public:
 
-	StartdHibernator(void) throw ();
-	virtual ~StartdHibernator(void) throw ();
+	StartdHibernator(void) noexcept;
+	virtual ~StartdHibernator(void) noexcept;
 
 	/* Discover supported sleep states */
 	bool initialize( void );
@@ -54,7 +54,7 @@ class StartdHibernator : public HibernatorBase
 
 	// Private data
   private:
-	MyString	 m_plugin_path;
+	std::string	 m_plugin_path;
 	StringList	*m_plugin_args;
 	ClassAd		 m_ad;
 	

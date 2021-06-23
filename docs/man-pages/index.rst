@@ -1,31 +1,30 @@
 Command Reference Manual (man pages)
-------------------------------------
+====================================
 
 .. toctree::
-   :maxdepth: 2
+   :maxdepth: 1
    :glob:
-   
+
    bosco_cluster
    bosco_findplatform
    bosco_install
-   bosco_sshstart
+   bosco_ssh_start
    bosco_start
    bosco_stop
    bosco_uninstall
+   classad_eval
+   classads
+   condor_adstash
    condor_advertise
    condor_annex
-   condor_checkpoint
    condor_check_userlogs
    condor_chirp
-   condor_cod
-   condor_compile
    condor_configure
    condor_config_val
    condor_continue
-   condor_convert_history
    condor_dagman
-   condor_dagman_metrics_reporter
    condor_drain
+   condor_evicted_files
    condor_fetchlog
    condor_findhost
    condor_gather_info
@@ -44,29 +43,36 @@ Command Reference Manual (man pages)
    condor_preen
    condor_prio
    condor_procd
-   condor_qedit
    condor_q
+   condor_qedit
    condor_qsub
    condor_reconfig
    condor_release
    condor_reschedule
    condor_restart
-   condor_rmdir
    condor_rm
+   condor_rmdir
    condor_router_history
    condor_router_q
    condor_router_rm
    condor_run
    condor_set_shutdown
    condor_sos
-   condor_sshtojob
+   condor_ssh_to_job
    condor_stats
    condor_status
-   condor_storecred
-   condor_submitdag
+   condor_store_cred
    condor_submit
+   condor_submit_dag
    condor_suspend
    condor_tail
+   condor_token_create
+   condor_token_fetch
+   condor_token_list
+   condor_token_request
+   condor_token_request_approve
+   condor_token_request_auto_approve
+   condor_token_request_list
    condor_top
    condor_transfer_data
    condor_transform_ads
@@ -79,6 +85,8 @@ Command Reference Manual (man pages)
    condor_vacate_job
    condor_version
    condor_wait
+   condor_watch_q
    condor_who
-   giddalloc
-   procdctl      
+   get_htcondor
+   gidd_alloc
+   procd_ctl

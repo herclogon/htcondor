@@ -28,7 +28,13 @@
    connect to the client.
  */
 
-#include "MyString.h"
+#include "dc_service.h"
+
+class StatisticsPool;
+void AddCCBStatsToPool(StatisticsPool& pool, int publevel);
+
+class Sock;
+class Stream;
 
 class CCBTarget;
 class CCBServerRequest;
@@ -44,7 +50,7 @@ class CCBServer: Service {
 
 	void InitAndReconfig();
 
-	static void CCBIDToContactString( char const * my_address, CCBID ccbid, MyString & ccb_contact );
+	static void CCBIDToContactString( char const * my_address, CCBID ccbid, std::string & ccb_contact );
 	static bool CCBIDFromString( CCBID & ccbid, char const * ccbid_str );
 
 	friend class CCBTarget;
@@ -52,8 +58,8 @@ class CCBServer: Service {
 	bool m_registered_handlers;
 	HashTable<CCBID,CCBTarget *> m_targets;        // ccbid --> target
 	HashTable<CCBID,CCBReconnectInfo *> m_reconnect_info;
-	MyString m_address;
-	MyString m_reconnect_fname;
+	std::string m_address;
+	std::string m_reconnect_fname;
 	FILE *m_reconnect_fp;
 	time_t m_last_reconnect_info_sweep;
 	int m_reconnect_info_sweep_interval;
@@ -94,7 +100,7 @@ class CCBServer: Service {
 	int EpollSockets(int);
 	void EpollAdd(CCBTarget *);
 	void EpollRemove(CCBTarget *);
-	void SetSmallBuffers(Sock *sock);
+	void SetSmallBuffers(Sock *sock) const;
 
 	int HandleRegistration(int cmd,Stream *stream);
 	int HandleRequest(int cmd,Stream *stream);
@@ -121,7 +127,7 @@ class CCBTarget {
 	CCBTarget(Sock *sock);
 	~CCBTarget();
 
-	CCBID getCCBID() { return m_ccbid; }
+	CCBID getCCBID() const { return m_ccbid; }
 	void setCCBID(CCBID ccbid) { m_ccbid = ccbid; }
 	Sock *getSock() { return m_sock; }
 
@@ -154,17 +160,17 @@ class CCBServerRequest {
 
 	Sock *getSock() { return m_sock; }
 	void setRequestID( CCBID request_id ) { m_request_id = request_id; }
-	CCBID getRequestID() { return m_request_id; }
-	CCBID getTargetCCBID() { return m_target_ccbid; }
-	char const *getReturnAddr() { return m_return_addr.Value(); }
-	char const *getConnectID() { return m_connect_id.Value(); }
+	CCBID getRequestID() const { return m_request_id; }
+	CCBID getTargetCCBID() const { return m_target_ccbid; }
+	char const *getReturnAddr() { return m_return_addr.c_str(); }
+	char const *getConnectID() { return m_connect_id.c_str(); }
 
  private:
 	Sock *m_sock;
 	CCBID m_target_ccbid;    // target daemon requested by client
 	CCBID m_request_id;      // CCBServer-assigned identifier for this request
-	MyString m_return_addr;
-	MyString m_connect_id;
+	std::string m_return_addr;
+	std::string m_connect_id;
 };
 
 class CCBReconnectInfo {

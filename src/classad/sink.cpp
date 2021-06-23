@@ -30,24 +30,8 @@ using namespace std;
 
 namespace classad {
 
+static References reserved_words { "error", "false", "is", "isnt", "parent", "true", "undefined" };
 static bool identifierNeedsQuoting( const string & );
-
-ClassAdUnParser::
-ClassAdUnParser()
-{
-	oldClassAd = false;
-	xmlUnparse = false;
-	delimiter = '\"';
-	oldClassAdValue = false;
-	return;
-}
-
-
-ClassAdUnParser::
-~ClassAdUnParser()
-{
-	return;
-}
 
 
 // should be in same order as OpKind enumeration in common.h
@@ -204,7 +188,7 @@ Unparse( string &buffer, const Value &val )
 			return;
 		}
 		case Value::BOOLEAN_VALUE: {
-			bool b;
+			bool b = false;
 			val.IsBooleanValue( b );
 			buffer += b ? "true" : "false";
 			return;
@@ -237,6 +221,7 @@ Unparse( string &buffer, const Value &val )
 	  
 			return;
 		}
+		case Value::SCLASSAD_VALUE:
 		case Value::CLASSAD_VALUE: {
 			const ClassAd *ad = NULL;
 			vector< pair<string,ExprTree*> > attrs;
@@ -565,7 +550,7 @@ SetOldClassAd( bool old_syntax, bool attr_value )
 }
 
 bool ClassAdUnParser::
-GetOldClassAd()
+GetOldClassAd() const
 {
 	return oldClassAd;
 }
@@ -788,6 +773,9 @@ identifierNeedsQuoting( const string &str )
 		// needs quoting if we found a special character
 		// before the end of the string.
 		needs_quoting =  !(*ch == '\0' );
+	}
+	if( reserved_words.find(str) != reserved_words.end() ) {
+		needs_quoting = true;
 	}
 	return needs_quoting;
 }

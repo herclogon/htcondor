@@ -28,7 +28,6 @@
 #include "condor_classad.h"
 #include "condor_debug.h"
 #include "condor_io.h"
-#include "MyString.h"
 #include "format_time.h"
 #include "daemon.h"
 #include "condor_distribution.h"
@@ -64,11 +63,12 @@ enum {
    DetailUseDeltaT = 0x4000,
    DetailOrder     = 0x8000,
    DetailRequested = 0x10000,
+   DetailCeiling   = 0x20000,
    DetailPrios     = DetailPriority | DetailFactor | DetailRealPrio,
    DetailUsage     = DetailResUsed | DetailWtResUsed,
    DetailQuota2    = DetailEffQuota | DetailCfgQuota,
    DetailQuotas    = DetailEffQuota | DetailCfgQuota | DetailTreeQuota | DetailSurplus | DetailRequested,
-   DetailMost      = DetailCfgQuota | DetailSurplus | DetailPriority | DetailFactor | DetailUsage | DetailUseDeltaT | DetailRequested,
+   DetailMost      = DetailCfgQuota | DetailSurplus | DetailPriority | DetailFactor | DetailUsage | DetailUseDeltaT | DetailRequested | DetailCeiling,
    DetailAll       = DetailMost | DetailQuotas | DetailPrios | DetailUseTime1 | DetailUseTime2,
    DetailDefault   = DetailMost // show this if none of the flags controlling details is set.
 };
@@ -82,7 +82,7 @@ enum {
 };
 
 struct LineRec {
-  MyString Name;
+  std::string Name;
   float Priority;
   int Res;
   float wtRes;
@@ -91,12 +91,13 @@ struct LineRec {
   float Factor;
   int BeginUsage;
   int LastUsage;
-  MyString AcctGroup;
+  std::string AcctGroup;
   bool IsAcctGroup;
   int   HasDetail;      // one or more of Detailxxx flags indicating the that data exists.
   float EffectiveQuota;
   float ConfigQuota;
   float SubtreeQuota;
+  float Ceiling;
   float SortKey;
   int   Surplus;       // 0 is no, 1 = regroup (by prio), 2 = accept_surplus (by quota)
   int   index;
@@ -206,8 +207,8 @@ struct LineRecLT {
                   return a.IsAcctGroup > b.IsAcctGroup;
 
             } else if (group_order == SortGroupsByName) { // sort by group name
-               const MyString * pa = a.IsAcctGroup ? &a.Name : &a.AcctGroup;
-               const MyString * pb = b.IsAcctGroup ? &b.Name : &b.AcctGroup;
+               const std::string * pa = a.IsAcctGroup ? &a.Name : &a.AcctGroup;
+               const std::string * pb = b.IsAcctGroup ? &b.Name : &b.AcctGroup;
                if (*pa != *pb)
                   return *pa < *pb;
                if (a.IsAcctGroup != b.IsAcctGroup)
@@ -317,7 +318,7 @@ static void PrintModularAds(
 		prioAds = accountingAds;
 	}
 
-	MyString my_constraint;
+	std::string my_constraint;
 	constraint.makeQuery(my_constraint);
 	// if (diagnostic) { fprintf(stderr, "Using effective constraint: %s\n", my_constraint.c_str()); }
 
@@ -332,14 +333,14 @@ static void PrintModularAds(
 
 		// now print the userprio records
 		for (int id = 0; id < (int)prioAds.size(); ++id) {
-			if (constraintExpr && ! EvalBool(&prioAds[id], constraintExpr))
+			if (constraintExpr && ! EvalExprBool(&prioAds[id], constraintExpr))
 				continue;
 			print_mask.display(out, &prioAds[id]);
 		}
 	} else {
 		// now print the userprio records
 		for (int id = 0; id < (int)prioAds.size(); ++id) {
-			if (constraintExpr && ! EvalBool(&prioAds[id], constraintExpr))
+			if (constraintExpr && ! EvalExprBool(&prioAds[id], constraintExpr))
 				continue;
 			fprintf(out, "\n");
 			fPrintAd(out, prioAds[id]);
@@ -364,6 +365,7 @@ main(int argc, const char* argv[])
   int DeleteUser=0;
   int SetFactor=0;
   int SetPrio=0;
+  int SetCeiling=0;
   int SetAccum=0;
   int SetBegin=0;
   int SetLast=0;
@@ -393,6 +395,11 @@ main(int argc, const char* argv[])
     else if (IsArg(argv[i],"setfactor")) {
       if (i+2>=argc) usage(argv[0]);
       SetFactor=i;
+      i+=2;
+    }
+    else if (IsArg(argv[i],"setceiling")) {
+      if (i+2>=argc) usage(argv[0]);
+      SetCeiling=i;
       i+=2;
     }
     else if (IsArg(argv[i],"setbegin")) {
@@ -653,10 +660,70 @@ main(int argc, const char* argv[])
       exit(1);
     }
 
+    auto version = sock->get_peer_version();
+    if (version && version->built_since_version(8, 9, 9)) {
+        sock->decode();
+        classad::ClassAd ad;
+        if (!getClassAd(sock, ad) || !sock->end_of_message()) {
+            fprintf(stderr, "failed to get priority factor response from negotiator\n");
+            exit(1);
+        }
+        int intVal;
+        if (!ad.EvaluateAttrInt(ATTR_ERROR_CODE, intVal)) {
+            fprintf(stderr, "failed to get error code from negotiator\n");
+            exit(1);
+        }
+        if (intVal) {
+            std::string errorMsg;
+            if (ad.EvaluateAttrString(ATTR_ERROR_STRING, errorMsg)) {
+                fprintf(stderr, "set priority factor failed: %s\n", errorMsg.c_str());
+            } else {
+                fprintf(stderr, "set priority factor failed with error code %d\n", intVal);
+            }
+            exit(1);
+        }
+    }
+
     sock->close();
     delete sock;
 
     printf("The priority factor of %s was set to %f\n",argv[SetFactor+1],Factor);
+
+  }
+
+  else if (SetCeiling) { // set ceiling
+
+	const char* tmp;
+	if( ! (tmp = strchr(argv[SetCeiling+1], '@')) ) {
+		fprintf( stderr, 
+				 "%s: You must specify the full name of the submittor you wish\n",
+				 argv[0] );
+		fprintf( stderr, "\tto update the ceiling of (%s or %s)\n", 
+				 "user@uid.domain", "user@full.host.name" );
+		exit(1);
+	}
+    long ceiling = strtol(argv[SetCeiling+2], nullptr, 10);
+	if (ceiling < -1) {
+		fprintf( stderr, "Ceiling must be greater than or equal to "
+				 "-1.\n");
+		exit(1);
+	}
+
+    // send request
+    Sock* sock;
+    if( !(sock = negotiator.startCommand(SET_CEILING,
+										 Stream::reli_sock, 0) ) ||
+        !sock->put(argv[SetCeiling+1]) ||
+        !sock->put(ceiling) ||
+        !sock->end_of_message()) {
+      fprintf( stderr, "failed to send SET_CEILING command to negotiator\n" );
+      exit(1);
+    }
+
+    sock->close();
+    delete sock;
+
+    printf("The ceiling of %s was set to %ld\n",argv[SetCeiling+1],ceiling);
 
   }
 
@@ -924,14 +991,6 @@ main(int argc, const char* argv[])
 	ClassAd *ad = NULL;
 	std::vector<ClassAd> accountingAds;
 
-	DCCollector c((pool.length() > 0) ? pool.c_str() : 0);
-	c.locate();
-	const char *v = c.version();
-	CondorVersionInfo cvi(v);
-	if (!cvi.built_since_version(8,5,2)) {
-		fromCollector = false;	
-	}
-
 	if (fromCollector) {
 		CondorQuery query(ACCOUNTING_AD);
 		ClassAdList ads;
@@ -1108,14 +1167,15 @@ static void CollectInfo(int numElem, ClassAd* ad, std::vector<ClassAd> &accounti
 {
   char  attrName[64], attrPrio[64], attrResUsed[64], attrWtResUsed[64], attrFactor[64], attrBeginUsage[64], attrAccUsage[64], attrRequested[64];
   char  attrLastUsage[64];
-  MyString attrAcctGroup;
-  MyString attrIsAcctGroup;
+  std::string attrAcctGroup;
+  std::string attrIsAcctGroup;
+  std::string attrCeiling;
   char  name[128], policy[32];
-  float priority, Factor, AccUsage = -1;
+  float priority = 0, Factor = 0, AccUsage = -1, ceiling = -1;
   int   resUsed = 0, BeginUsage = 0;
   int   LastUsage = 0;
-  float wtResUsed, requested;
-  MyString AcctGroup;
+  float wtResUsed, requested = 0;
+  std::string AcctGroup;
   bool IsAcctGroup;
   float effective_quota = 0, config_quota = 0, subtree_quota = 0;
   bool fNeedGroupIdFixup = false;
@@ -1130,6 +1190,7 @@ static void CollectInfo(int numElem, ClassAd* ad, std::vector<ClassAd> &accounti
     LR[i-1].HasDetail = 0;
     LR[i-1].LastUsage=MinLastUsageTime;
     LR[i-1].Requested=0.0;
+    LR[i-1].Ceiling=-1;
 
 	char strI[32];
 
@@ -1151,8 +1212,9 @@ static void CollectInfo(int numElem, ClassAd* ad, std::vector<ClassAd> &accounti
     sprintf( attrBeginUsage , "BeginUsageTime%s", strI );
     sprintf( attrLastUsage , "LastUsageTime%s", strI );
     sprintf( attrAccUsage , "WeightedAccumulatedUsage%s", strI );
-    attrAcctGroup.formatstr("AccountingGroup%s", strI);
-    attrIsAcctGroup.formatstr("IsAccountingGroup%s", strI);
+    formatstr(attrAcctGroup, "AccountingGroup%s", strI);
+    formatstr(attrIsAcctGroup, "IsAccountingGroup%s", strI);
+    formatstr(attrCeiling, "Ceiling%s", strI);
 
     if( !ad->LookupString	( attrName, name, COUNTOF(name) ) 		|| 
 		!ad->LookupFloat	( attrPrio, priority ) )
@@ -1166,6 +1228,7 @@ static void CollectInfo(int numElem, ClassAd* ad, std::vector<ClassAd> &accounti
           LR[i-1].HasDetail |= DetailRealPrio;
        }
 	if( ad->LookupFloat( attrAccUsage, AccUsage ) ) LR[i-1].HasDetail |= DetailUsage;
+	if( ad->LookupFloat( attrCeiling, ceiling ) ) LR[i-1].HasDetail |= DetailCeiling;
 	if( ad->LookupFloat( attrRequested, requested ) ) LR[i-1].HasDetail |= DetailRequested;
 	if( ad->LookupInteger( attrBeginUsage, BeginUsage ) ) LR[i-1].HasDetail |= DetailUseTime1;
 	if( ad->LookupInteger( attrLastUsage, LastUsage ) ) LR[i-1].HasDetail |= DetailUseTime2 | DetailUseDeltaT;
@@ -1177,10 +1240,10 @@ static void CollectInfo(int numElem, ClassAd* ad, std::vector<ClassAd> &accounti
 		LR[i-1].HasDetail |= DetailWtResUsed;
 	}
 
-    if (!ad->LookupString(attrAcctGroup.Value(), AcctGroup)) {
+    if (!ad->LookupString(attrAcctGroup, AcctGroup)) {
         AcctGroup = "<none>";
     }
-    if (!ad->LookupBool(attrIsAcctGroup.Value(), IsAcctGroup)) {
+    if (!ad->LookupBool(attrIsAcctGroup, IsAcctGroup)) {
         IsAcctGroup = false;
     }
 
@@ -1264,6 +1327,7 @@ static void CollectInfo(int numElem, ClassAd* ad, std::vector<ClassAd> &accounti
     LR[i-1].BeginUsage=BeginUsage;
     LR[i-1].LastUsage=LastUsage;
     LR[i-1].AccUsage=AccUsage;
+    LR[i-1].Ceiling=ceiling;
     LR[i-1].AcctGroup=AcctGroup;
     LR[i-1].IsAcctGroup=IsAcctGroup;
     LR[i-1].EffectiveQuota = effective_quota;
@@ -1413,7 +1477,7 @@ static char * FormatDeltaTime(char * pszDest, int cchDest, int tmDelta, const ch
 static char * FormatFloat(char * pszDest, int width, int decimal, float value)
 {
    char sz[60];
-   char fmt[10] = "%";
+   char fmt[16] = "%";
    sprintf(fmt+1, "%d.%df", width, decimal);
    sprintf(sz, fmt, value);
    int cch = strlen(sz);
@@ -1454,12 +1518,13 @@ static const struct {
    { DetailPriority,  12, "Effective\0Priority" },
    { DetailRealPrio,   8, "Real\0Priority" },
    { DetailFactor,     9, "Priority\0Factor" },
-   { DetailResUsed,    6, "Res\0In Use" },
+   { DetailResUsed,    6, "Wghted\0In Use" },
    { DetailWtResUsed, 12, "Total Usage\0(wghted-hrs)" },
    { DetailUseTime1,  16, "Usage\0Start Time" },
    { DetailUseTime2,  16, "Last\0Usage Time" },
    { DetailUseDeltaT, 10, "Time Since\0Last Usage" },
-   { DetailRequested, 10, "Requested\0Resources" },
+   { DetailRequested, 10, "Weighted\0Requested" },
+   { DetailCeiling,    9, "Submitter\0Ceiling" }
 };
 const int MAX_NAME_COLUMN_WIDTH = 99;
 
@@ -1471,11 +1536,11 @@ static void PrintInfo(int tmLast, LineRec* LR, int NumElem, bool HierFlag)
    int max_name = 10;
    for (int j = 0; j < NumElem; ++j) {
       if (LR[j].LastUsage >= MinLastUsageTime) {
-         int name_length = LR[j].Name.Length();
+         int name_length = LR[j].Name.length();
          if (HierFlag && ! LR[j].IsAcctGroup) {
             name_length += 2;
             if (LR[j].GroupId != 0)
-               name_length -= LR[j].AcctGroup.Length();
+               name_length -= LR[j].AcctGroup.length();
          }
          if (name_length > max_name) max_name = name_length;
       }
@@ -1576,12 +1641,12 @@ static void PrintInfo(int tmLast, LineRec* LR, int NumElem, bool HierFlag)
 
       // write group/user name into Line
       if ( ! HierFlag || is_group) {
-         CopyAndPadToWidth(Line,LR[j].Name.Value(),max_name+1,' ');
+         CopyAndPadToWidth(Line,LR[j].Name.c_str(),max_name+1,' ');
       } else {
          Line[0] = Line[1] = ' ';
-         const char * pszName = LR[j].Name.Value();
+         const char * pszName = LR[j].Name.c_str();
          if (LR[j].GroupId > 0) 
-            pszName +=  strlen(LR[j].AcctGroup.Value())+1;
+            pszName +=  strlen(LR[j].AcctGroup.c_str())+1;
          CopyAndPadToWidth(Line+2, pszName, max_name+1-2, ' ');
       }
       ix = max_name;
@@ -1656,6 +1721,13 @@ static void PrintInfo(int tmLast, LineRec* LR, int NumElem, bool HierFlag)
             case DetailUseTime2:  FormatDateTime(Line+ix, aCols[ii].width+1, LR[j].LastUsage, "");
                break;
             case DetailUseDeltaT: FormatDeltaTime(Line+ix, aCols[ii].width+1, tmLast - LR[j].LastUsage, "<now>");
+               break;
+            case DetailCeiling: 
+				if (LR[j].Ceiling > -1.0) {
+					FormatFloat(Line+ix, aCols[ii].width, 2, LR[j].Ceiling);
+				} else {
+					CopyAndPadToWidth(Line+ix, NULL, aCols[ii].width+1, ' ');
+				}
                break;
             case item_NA:
                CopyAndPadToWidth(Line+ix, "n/a", aCols[ii].width+1, ' ', PAD_LEFT);
@@ -1754,6 +1826,7 @@ static void usage(const char* name) {
      "\t-delete <user>\t\tRemove a user record from the accountant\n"
      "\t-setprio <user> <val>\tSet priority for <user>\n"
      "\t-setfactor <user> <val>\tSet priority factor for <user>\n"
+     "\t-setceiling <user> <val>\tSet ceiling for <user>\n"
      "\t-setaccum <user> <val>\tSet Accumulated usage for <user>\n"
      "\t-setbegin <user> <val>\tset last first date for <user>\n"
      "\t-setlast <user> <val>\tset last active date for <user>\n"

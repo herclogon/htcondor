@@ -69,14 +69,14 @@ CronTab::CronTab( ClassAd *ad )
 		// Pull out the different parameters from the ClassAd
 		//
 	for ( int ctr = 0; ctr < CRONTAB_FIELDS; ctr++ ) {
-		MyString buffer;
+		std::string buffer;
 			//
 			// First get out the parameter value
 			//
 		if ( ad->LookupString( this->attributes[ctr], buffer ) ) {
 			dprintf( D_FULLDEBUG, "CronTab: Pulled out '%s' for %s\n",
-						buffer.Value(), this->attributes[ctr] );
-			this->parameters[ctr] = new MyString( buffer.Value() );
+						buffer.c_str(), this->attributes[ctr] );
+			this->parameters[ctr] = new MyString( buffer.c_str() );
 			//
 			// The parameter is empty, we'll use the wildcard
 			//
@@ -116,27 +116,27 @@ CronTab::CronTab(	int minutes,
 	if ( minutes == CRONTAB_CRONOS_STAR ) {
 		this->parameters[CRONTAB_MINUTES_IDX] = new MyString( CRONTAB_WILDCARD );
 	} else {
-		this->parameters[CRONTAB_MINUTES_IDX] = new MyString( IntToStr( minutes ) );
+		this->parameters[CRONTAB_MINUTES_IDX] = new MyString( std::to_string( minutes ) );
 	}
 	if ( hours == CRONTAB_CRONOS_STAR ) {
 		this->parameters[CRONTAB_HOURS_IDX]	= new MyString( CRONTAB_WILDCARD );
 	} else {
-		this->parameters[CRONTAB_HOURS_IDX]	= new MyString( IntToStr( hours ) );
+		this->parameters[CRONTAB_HOURS_IDX]	= new MyString( std::to_string( hours ) );
 	}
 	if ( days_of_month == CRONTAB_CRONOS_STAR ) {
 		this->parameters[CRONTAB_DOM_IDX] = new MyString( CRONTAB_WILDCARD );
 	} else {
-		this->parameters[CRONTAB_DOM_IDX] = new MyString( IntToStr( days_of_month ) );
+		this->parameters[CRONTAB_DOM_IDX] = new MyString( std::to_string( days_of_month ) );
 	}
 	if ( months == CRONTAB_CRONOS_STAR ) {
 		this->parameters[CRONTAB_MONTHS_IDX] = new MyString( CRONTAB_WILDCARD );
 	} else {
-		this->parameters[CRONTAB_MONTHS_IDX] = new MyString( IntToStr( months ) );
+		this->parameters[CRONTAB_MONTHS_IDX] = new MyString( std::to_string( months ) );
 	}
 	if ( days_of_week == CRONTAB_CRONOS_STAR ) {
 		this->parameters[CRONTAB_DOW_IDX] = new MyString( CRONTAB_WILDCARD );
 	} else {
-		this->parameters[CRONTAB_DOW_IDX] = new MyString( IntToStr( days_of_week ) );
+		this->parameters[CRONTAB_DOW_IDX] = new MyString( std::to_string( days_of_week ) );
 	}
 	this->init();
 }
@@ -231,7 +231,7 @@ CronTab::validate( ClassAd *ad, MyString &error ) {
 		//
 	int ctr;
 	for ( ctr = 0; ctr < CRONTAB_FIELDS; ctr++ ) {
-		MyString buffer;
+		std::string buffer;
 			//
 			// If the validation fails, we keep going
 			// so that they can see all the error messages about
@@ -239,7 +239,7 @@ CronTab::validate( ClassAd *ad, MyString &error ) {
 			//
 		if ( ad->LookupString( CronTab::attributes[ctr], buffer ) ) {
 			MyString curError;
-			if ( !CronTab::validateParameter( buffer.Value(), CronTab::attributes[ctr], curError ) ) {
+			if ( !CronTab::validateParameter( buffer.c_str(), CronTab::attributes[ctr], curError ) ) {
 				ret = false;
 				error += curError;
 			}
@@ -377,7 +377,7 @@ CronTab::initRegexObject() {
 		if ( ! CronTab::regex.compile( pattern, &errptr, &erroffset )) {
 			MyString error = "CronTab: Failed to compile Regex - ";
 			error += pattern;
-			EXCEPT( "%s", error.Value() );
+			EXCEPT( "%s", error.c_str() );
 		}
 	}
 }
@@ -688,7 +688,7 @@ CronTab::matchFields( int *curTime, int *match, int attribute_idx, bool useFirst
 		// We only need to delete curRange if we had
 		// instantiated a new object for it
 		//
-	if ( attribute_idx == CRONTAB_DOM_IDX && curRange ) delete curRange;
+	if ( attribute_idx == CRONTAB_DOM_IDX) delete curRange;
 	
 	return ( ret );
 }
@@ -719,10 +719,10 @@ CronTab::expandParameter( int attribute_idx, int min, int max )
 		// the error message to the log
 		//
 	MyString error;
-	if ( ! CronTab::validateParameter(	param->Value(),
+	if ( ! CronTab::validateParameter(	param->c_str(),
 										CronTab::attributes[attribute_idx],
 										error ) ) {
-		dprintf( D_ALWAYS, "%s", error.Value() );
+		dprintf( D_ALWAYS, "%s", error.c_str() );
 			//
 			// Store the error in case they want to email
 			// the user to tell them that they goofed
@@ -741,7 +741,7 @@ CronTab::expandParameter( int attribute_idx, int min, int max )
 		// First start by spliting the string by commas
 		//
 	MyStringTokener tok;
-	tok.Tokenize(param->Value());
+	tok.Tokenize(param->c_str());
 	const char *_token;
 	while ( ( _token = tok.GetNextToken( CRONTAB_DELIMITER, true ) ) != NULL ) {
 		MyStringWithTokener token( _token );
@@ -767,7 +767,10 @@ CronTab::expandParameter( int attribute_idx, int min, int max )
 			if ( ( _temp = token.GetNextToken( CRONTAB_STEP, true ) ) != NULL ) {
 				MyString stepStr( _temp );
 				stepStr.trim();
-				cur_step = atoi( stepStr.Value() );
+				cur_step = atoi( stepStr.c_str() );
+				if (cur_step == 0) {
+					return false;
+				}
 			}
 				//
 				// Now that we have the denominator, put the numerator back
@@ -796,7 +799,7 @@ CronTab::expandParameter( int attribute_idx, int min, int max )
 				//
 			_temp = new MyString( token.GetNextToken( CRONTAB_RANGE, true ) );
 			_temp->trim();
-			value = atoi( _temp->Value() );
+			value = atoi( _temp->c_str() );
 			cur_min = ( value >= min ? value : min );
 			delete _temp;
 				//
@@ -804,7 +807,7 @@ CronTab::expandParameter( int attribute_idx, int min, int max )
 				//
 			_temp = new MyString( token.GetNextToken( CRONTAB_RANGE, true ) );
 			_temp->trim();
-			value = atoi( _temp->Value() );
+			value = atoi( _temp->c_str() );
 			cur_max = ( value <= max ? value : max );
 			delete _temp;
 			
@@ -843,7 +846,7 @@ CronTab::expandParameter( int attribute_idx, int min, int max )
 				// Replace the range to be just this value only if it
 				// fits in the min/max range we were given
 				//
-			int value = atoi(token.Value());
+			int value = atoi(token.c_str());
 			if ( value >= min && value <= max ) {
 				cur_min = cur_max = value;
 			}
@@ -873,7 +876,7 @@ CronTab::expandParameter( int attribute_idx, int min, int max )
 		 		// Make sure this value isn't alreay added and 
 		 		// that it falls in our step listing for the range
 		 		//
-			if ( ( ( temp % cur_step ) == 0 ) && !this->contains( *list, temp ) ) {
+			if (((temp % cur_step) == 0) && !this->contains(*list, temp)) {
 				list->add( temp );
 		 	}
 		} // FOR

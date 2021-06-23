@@ -25,7 +25,6 @@
 #include "condor_classad.h"
 #include "daemon.h"
 #include "dc_schedd.h"
-#include "MyString.h"
 
 /* This file deals with the processing of various active transfer requests.
 	An active transfer request is a request that the transferd must deal with
@@ -38,7 +37,7 @@ TransferD::process_active_requests_timer()
 	TransferRequest *treq = NULL;
 	TransferRequest *tmp = NULL;
 	int found_actives = FALSE;
-	MyString key;
+	std::string key;
 
 	dprintf(D_FULLDEBUG, "Processing active requests\n");
 

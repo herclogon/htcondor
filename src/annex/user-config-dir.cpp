@@ -10,10 +10,10 @@
 bool
 createUserConfigDir( std::string & directory ) {
 	std::string userConfigName;
-	MyString userConfigSource;
+	std::string userConfigSource;
 	param( userConfigName, "USER_CONFIG_FILE" );
 	if(! userConfigName.empty()) {
-		find_user_file( userConfigSource, userConfigName.c_str(), false );
+		find_user_file( userConfigSource, userConfigName.c_str(), false, false );
 		if(! userConfigSource.empty()) {
 			// Create the containing directory if necessary, and only the
 			// containing directory -- don't do anything stupid if the

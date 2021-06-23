@@ -122,7 +122,7 @@ class UniShadow : public BaseShadow
 
 	int64_t getImageSize( int64_t & mem_usage, int64_t & rss, int64_t & pss );
 
-	int getDiskUsage( void );
+	int64_t getDiskUsage( void );
 
 	bool exitedBySignal( void );
 
@@ -156,11 +156,13 @@ class UniShadow : public BaseShadow
 
 	virtual void resourceBeganExecution( RemoteResource* rr );
 
+	virtual void resourceDisconnected( RemoteResource* rr );
+
 	virtual void resourceReconnected( RemoteResource* rr );
 
 	virtual void logDisconnectedEvent( const char* reason );
 
-	virtual bool getMachineName( MyString &machineName );
+	virtual bool getMachineName( std::string &machineName );
 	
 	/**
 	 * Handle the situation where the job is to be suspended
@@ -175,7 +177,7 @@ class UniShadow : public BaseShadow
 	virtual void exitAfterEvictingJob( int reason );
 	virtual bool exitDelayed( int &reason );
 
-	void exitLeaseHandler( void );
+	void exitLeaseHandler( void ) const;
 
  protected:
 

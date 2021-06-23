@@ -40,7 +40,7 @@ extern "C" {
 	int REMOTE_CONDOR_rename( char *path, char *newpath );
 	int REMOTE_CONDOR_read( int fd, void *data, size_t length );
 	int REMOTE_CONDOR_write( int fd, void *data, size_t length );
-	int REMOTE_CONDOR_lseek( int fd, off_t offset, int whence );
+	off_t REMOTE_CONDOR_lseek( int fd, off_t offset, int whence );
 	int REMOTE_CONDOR_mkdir( char *path, int mode );
 	int REMOTE_CONDOR_rmdir( char *path );
 	int REMOTE_CONDOR_fsync( int fd );
@@ -84,18 +84,18 @@ extern "C" {
 	int REMOTE_CONDOR_truncate( char *path, int length );
 	int REMOTE_CONDOR_utime( char *path, int actime, int modtime );
 	int REMOTE_CONDOR_dprintf_stats(const char *message);
-	int REMOTE_CONDOR_getcreds();
+	int REMOTE_CONDOR_getcreds( const char *creds_receive_dir );
 	int REMOTE_CONDOR_get_delegated_proxy( const char* proxy_source_path, const char* proxy_dest_path, time_t proxy_expiration );
 
     int REMOTE_CONDOR_get_sec_session_info(
 		char const *starter_reconnect_session_info,
-		MyString &reconnect_session_id,
-		MyString &reconnect_session_info,
-		MyString &reconnect_session_key,
+		std::string &reconnect_session_id,
+		std::string &reconnect_session_info,
+		std::string &reconnect_session_key,
 		char const *starter_filetrans_session_info,
-		MyString &filetrans_session_id,
-		MyString &filetrans_session_info,
-		MyString &filetrans_session_key);
+		std::string &filetrans_session_id,
+		std::string &filetrans_session_info,
+		std::string &filetrans_session_key);
 
 }
 

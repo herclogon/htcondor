@@ -56,7 +56,7 @@ DCMsg::setDeadlineTimeout(int timeout)
 }
 
 bool
-DCMsg::getDeadlineExpired()
+DCMsg::getDeadlineExpired() const
 {
 	if( m_deadline && m_deadline < time(NULL) ) {
 		return true;
@@ -292,7 +292,7 @@ char const *DCMessenger::peerDescription()
 
 void DCMessenger::startCommand( classy_counted_ptr<DCMsg> msg )
 {
-	MyString error;
+	std::string error;
 	msg->setMessenger( this );
 
 	if( msg->deliveryStatus() == DCMsg::DELIVERY_CANCELED ) {
@@ -319,7 +319,7 @@ void DCMessenger::startCommand( classy_counted_ptr<DCMsg> msg )
 			// timer for each case.  Then it would be possible to control
 			// priority of different messages etc.
 		dprintf(D_FULLDEBUG, "Delaying delivery of %s to %s, because %s\n",
-				msg->name(),peerDescription(),error.Value());
+				msg->name(),peerDescription(),error.c_str());
 		startCommandAfterDelay( 1, msg );
 		return;
 	}
@@ -359,6 +359,12 @@ void DCMessenger::startCommand( classy_counted_ptr<DCMsg> msg )
 		msg->name(),
 		msg->getRawProtocol(),
 		msg->getSecSessionId());
+
+	// TODO: Brian - get rid if this code and do the right thing to propagate these...
+	if (m_callback_sock) {
+		m_daemon->m_should_try_token_request = m_callback_sock->shouldTryTokenRequest();
+		m_daemon->m_trust_domain = m_callback_sock->getTrustDomain();
+	}
 }
 
 void
@@ -395,7 +401,7 @@ DCMessenger::doneWithSock(Stream *sock)
 }
 
 void
-DCMessenger::connectCallback(bool success, Sock *sock, CondorError *, void *misc_data)
+DCMessenger::connectCallback(bool success, Sock *sock, CondorError *, const std::string &trust_domain, bool should_try_token_request, void *misc_data)
 {
 	ASSERT(misc_data);
 
@@ -405,6 +411,8 @@ DCMessenger::connectCallback(bool success, Sock *sock, CondorError *, void *misc
 	self->m_callback_msg = NULL;
 	self->m_callback_sock = NULL;
 	self->m_pending_operation = NOTHING_PENDING;
+	self->m_daemon->m_trust_domain = trust_domain;
+	self->m_daemon->m_should_try_token_request = should_try_token_request;
 
 	if(!success) {
 		if( sock->deadline_expired() ) {
@@ -609,7 +617,7 @@ DCMessenger::cancelMessage( classy_counted_ptr<DCMsg> msg )
 		return;
 	}
 
-	if( m_callback_sock->is_reverse_connect_pending() ) {
+	if( m_callback_sock && m_callback_sock->is_reverse_connect_pending() ) {
 		// have to be careful, because if callback sock is doing a CCB
 		// reverse connect, close() will result in the socket callback
 		// handler getting called immediately and m_callback_sock

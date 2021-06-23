@@ -120,8 +120,12 @@ bool StrIsProcId(const char *str, int &cluster, int &proc, const char ** pend)
 	return valid;
 }
 
+void JOB_ID_KEY::sprint(std::string & s) const
+{
+	formatstr(s,"%d.%d", this->cluster, this->proc);
+}
 
-void JOB_ID_KEY::sprint(MyString &s) const 
+void JOB_ID_KEY::sprint(MyString &s) const
 {
 	s.formatstr("%d.%d", this->cluster, this->proc);
 }
@@ -219,7 +223,7 @@ inline size_t hashkey_compat_hash(const char * p)
 }
 #endif
 
-size_t JOB_ID_KEY::hash(const JOB_ID_KEY &key)
+size_t JOB_ID_KEY::hash(const JOB_ID_KEY &key) noexcept
 {
 #if JOB_HASH_ALGOR == 0
 	char buf[PROC_ID_STR_BUFLEN];

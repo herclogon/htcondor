@@ -120,18 +120,18 @@ class VMProc : public OsProc
 
 		VMGahpServer *m_vmgahp;
 		bool m_is_cleanuped;
-		MyString m_job_name;
+		std::string m_job_name;
 
 		int m_vm_id;
 		int m_vm_pid;
-		MyString m_vm_mac;
-		MyString m_vm_ip;
+		std::string m_vm_mac;
+		std::string m_vm_ip;
 
 		struct procInfo m_vm_exited_pinfo;
 		struct procInfo m_vm_alive_pinfo;
 
-		MyString m_vm_type;
-		MyString m_vmgahp_server;
+		std::string m_vm_type;
+		std::string m_vmgahp_server;
 
 		bool m_vm_checkpoint;
 		bool m_is_vacate_ckpt;

@@ -156,7 +156,7 @@ class Authentication {
     //------------------------------------------
     
 #if !defined(SKIP_AUTHENTICATION)
-	static void split_canonical_name(MyString can_name, MyString& user, MyString& domain );
+	static void split_canonical_name(const std::string& can_name, std::string& user, std::string& domain );
 		// This version of the function exists to avoid use of MyString
 		// in ReliSock, because that gets linked into std univ jobs.
 		// This function is stubbed out in cedar_no_ckpt.C.
@@ -166,12 +166,19 @@ class Authentication {
 
 	static void reconfigMapFile();
 
+		// True if the socket failed to authenticate with the remote
+		// server but may succeed with a token request workflow.
+	bool shouldTryTokenRequest() const { return m_should_try_token_request; }
+
+		// Return the current global map file
+	static MapFile* getGlobalMapFile() { return global_map_file; }
+
  private:
 #if !defined(SKIP_AUTHENTICATION)
     Authentication() {}; //should never be called, make private to help that!
     
-    int handshake(MyString clientCanUse, bool non_blocking);
-    int handshake_continue(MyString clientCanUse, bool non_blocking);
+    int handshake(const std::string& clientCanUse, bool non_blocking);
+    int handshake_continue(const std::string& clientCanUse, bool non_blocking);
 
     int authenticate_finish( CondorError* errstack );
 
@@ -179,7 +186,7 @@ class Authentication {
     
     void setAuthType( int state );
     
-    int selectAuthenticationType( MyString my_methods, int remote_methods );
+    int selectAuthenticationType( const std::string& my_methods, int remote_methods );
 
 	void map_authentication_name_to_canonical_name(int authentication_type, const char* method_string, const char* authentication_name);
 
@@ -193,6 +200,7 @@ class Authentication {
     Condor_Auth_Base *   authenticator_;    // This is it.
     ReliSock         *   mySock;
     int                  auth_status;
+	int         m_method_id;
     char*                method_used;
 	std::string	m_method_name;
 	std::string	m_methods_to_try;
@@ -202,6 +210,7 @@ class Authentication {
 	time_t		m_auth_timeout_time;
 	bool		m_continue_handshake;
 	bool		m_continue_auth;
+	bool		m_should_try_token_request{false};
 
 	static MapFile* global_map_file;
 	static bool global_map_file_load_attempted;
@@ -223,10 +232,22 @@ extern char const *EXECUTE_SIDE_MATCHSESSION_FQU;
    id. */
 extern char const *SUBMIT_SIDE_MATCHSESSION_FQU;
 
+/* This is the hard-coded name of the negotiator as seen by the schedd
+ * when using non-negotiated security sessions based on the schedd's
+ * generated capabilities. */
+extern char const *NEGOTIATOR_SIDE_MATCHSESSION_FQU;
+
+/* This is the hard-coded name of the collector as seen by the schedd
+ * when using non-negotiated security sessions.
+ */
+extern char const *COLLECTOR_SIDE_MATCHSESSION_FQU;
 
 extern char const *CONDOR_CHILD_FQU;
 extern char const *CONDOR_PARENT_FQU;
 extern char const *CONDOR_FAMILY_FQU;
+
+extern char const *AUTH_METHOD_FAMILY;
+extern char const *AUTH_METHOD_MATCH;
 
 #endif /* AUTHENTICATION_H */
 

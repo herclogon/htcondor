@@ -29,7 +29,7 @@
 #include "scheduler.h"
 #include "basename.h"
 
-TransferDaemon::TransferDaemon(MyString fquser, MyString id, TDMode status) :
+TransferDaemon::TransferDaemon(std::string fquser, std::string id, TDMode status) :
 	m_treqs_in_progress(hashFunction)
 {
 	m_fquser = fquser;
@@ -64,24 +64,24 @@ TransferDaemon::clear(void)
 }
 
 void
-TransferDaemon::set_fquser(MyString fquser)
+TransferDaemon::set_fquser(std::string fquser)
 {
 	m_fquser = fquser;
 }
 
-MyString
+std::string
 TransferDaemon::get_fquser(void)
 {
 	return m_fquser;
 }
 
 void
-TransferDaemon::set_id(MyString id)
+TransferDaemon::set_id(std::string id)
 {
 	m_id = id;
 }
 
-MyString
+std::string
 TransferDaemon::get_id(void)
 {
 	return m_id;
@@ -100,33 +100,24 @@ TransferDaemon::get_status()
 }
 
 void
-TransferDaemon::set_schedd_sinful(MyString sinful)
+TransferDaemon::set_schedd_sinful(std::string sinful)
 {
 	m_schedd_sinful = sinful;
 }
 
-MyString
+std::string
 TransferDaemon::get_schedd_sinful()
 {
 	return m_schedd_sinful;
 }
 
 void
-TransferDaemon::set_sinful(MyString sinful)
+TransferDaemon::set_sinful(const std::string &sinful)
 {
 	m_sinful = sinful;
 }
 
-void
-TransferDaemon::set_sinful(char *sinful)
-{
-	MyString sin;
-	sin = sinful;
-
-	set_sinful(sin);
-}
-
-MyString
+const std::string &
 TransferDaemon::get_sinful()
 {
 	return m_sinful;
@@ -167,8 +158,8 @@ TransferDaemon::push_transfer_requests(void)
 {
 	TransferRequest *treq = NULL;
 	TreqAction ret;
-	MyString capability;
-	MyString rej_reason;
+	std::string capability;
+	std::string rej_reason;
 	char encap[] = "ENCAPSULATION_METHOD_OLD_CLASSADS\n";
 	ClassAd respad;
 	int invalid;
@@ -279,7 +270,10 @@ TransferDaemon::push_transfer_requests(void)
 		//	ATTR_TREQ_INVALID_REQUEST (set to false)
 		//	ATTR_TREQ_CAPABILITY
 		//
-		getClassAd(m_treq_sock, respad);
+		if (!getClassAd(m_treq_sock, respad)) {
+			dprintf(D_ALWAYS, "Transferd could not get response ad from client\n");
+			return false;
+		}
 		m_treq_sock->end_of_message();
 
 		/////////////////////////////////////////////////
@@ -379,7 +373,7 @@ TransferDaemon::push_transfer_requests(void)
 bool
 TransferDaemon::update_transfer_request(ClassAd *update)
 {
-	MyString cap;
+	std::string cap;
 	TransferRequest *treq = NULL;
 	int ret;
 	TransferDaemon *td = NULL;
@@ -455,7 +449,7 @@ TransferDaemon::reap_all_transfer_requests(void)
 {
 	TransferRequest *treq = NULL;
 	TreqAction ret;
-	MyString key;
+	std::string key;
 
 	////////////////////////////////////////////////////////////////////////
 	// For each transfer request, call the associated reaper for it.
@@ -495,7 +489,7 @@ TransferDaemon::reap_all_transfer_requests(void)
 }
 
 void 
-TransferDaemon::set_reg_callback(MyString desc, TDRegisterCallback callback, 
+TransferDaemon::set_reg_callback(std::string desc, TDRegisterCallback callback, 
 	Service *base)
 {
 	m_reg_func_desc = desc;
@@ -504,7 +498,7 @@ TransferDaemon::set_reg_callback(MyString desc, TDRegisterCallback callback,
 }
 
 void 
-TransferDaemon::get_reg_callback(MyString &desc, TDRegisterCallback &callback, 
+TransferDaemon::get_reg_callback(std::string &desc, TDRegisterCallback &callback, 
 	Service *&base)
 {
 	desc = m_reg_func_desc;
@@ -527,7 +521,7 @@ TransferDaemon::call_reg_callback(TransferDaemon *td)
 }
 
 void 
-TransferDaemon::set_reaper_callback(MyString desc, TDReaperCallback callback,
+TransferDaemon::set_reaper_callback(std::string desc, TDReaperCallback callback,
 	Service *base)
 {
 	m_reap_func_desc = desc;
@@ -536,7 +530,7 @@ TransferDaemon::set_reaper_callback(MyString desc, TDReaperCallback callback,
 }
 
 void 
-TransferDaemon::get_reaper_callback(MyString &desc, 
+TransferDaemon::get_reaper_callback(std::string &desc, 
 	TDReaperCallback &callback, Service *&base)
 {
 	desc = m_reap_func_desc;
@@ -566,9 +560,9 @@ TransferDaemon::call_reaper_callback(long pid, int status, TransferDaemon *td)
 TDMan::TDMan()
 {
 	m_td_table = 
-		new HashTable<MyString, TransferDaemon*>(hashFunction);
+		new HashTable<std::string, TransferDaemon*>(hashFunction);
 	m_id_table = 
-		new HashTable<MyString, MyString>(hashFunction);
+		new HashTable<std::string, std::string>(hashFunction);
 	m_td_pid_table = 
 		new HashTable<long, TransferDaemon*>(hashFuncLong);
 }
@@ -590,7 +584,7 @@ void TDMan::register_handlers(void)
 }
 
 TransferDaemon*
-TDMan::find_td_by_user(MyString fquser)
+TDMan::find_td_by_user(std::string fquser)
 {
 	int ret;
 	TransferDaemon *td = NULL;
@@ -606,20 +600,10 @@ TDMan::find_td_by_user(MyString fquser)
 }
 
 TransferDaemon*
-TDMan::find_td_by_user(char *fquser)
-{
-	MyString str;
-
-	str = fquser;
-
-	return find_td_by_user(str);
-}
-
-TransferDaemon*
-TDMan::find_td_by_ident(MyString id)
+TDMan::find_td_by_ident(std::string id)
 {
 	int ret;
-	MyString fquser;
+	std::string fquser;
 	TransferDaemon *td = NULL;
 
 	// look up the fquser associated with this id
@@ -639,26 +623,16 @@ TDMan::find_td_by_ident(MyString id)
 	return td;
 }
 
-TransferDaemon*
-TDMan::find_td_by_ident(char *ident)
-{
-	MyString id;
-
-	id = ident;
-
-	return find_td_by_ident(id);
-}
-
 
 bool
 TDMan::invoke_a_td(TransferDaemon *td)
 {
 	TransferDaemon *found_td = NULL;
-	MyString found_id;
+	std::string found_id;
 	ArgList args;
 	char *td_path = NULL;
 	pid_t pid;
-	MyString args_display;
+	std::string args_display;
 	static int rid = -1;
 
 	ASSERT(td != NULL);
@@ -743,10 +717,10 @@ TDMan::invoke_a_td(TransferDaemon *td)
 	//////////////////////////////////////////////////////////////////////
 	// Create the process
 
-	args.GetArgsStringForDisplay(&args_display);
+	args.GetArgsStringForDisplay(args_display);
 	dprintf(D_ALWAYS, "Invoking for user '%s' a transferd: %s\n", 
-		td->get_fquser().Value(),
-		args_display.Value());
+		td->get_fquser().c_str(),
+		args_display.c_str());
 
 	// XXX needs to be the user, not root!
 	pid = daemonCore->Create_Process( td_path, args, PRIV_ROOT, rid );
@@ -786,8 +760,8 @@ TDMan::refuse(Stream *s)
 int
 TDMan::transferd_reaper(int pid, int status) 
 {
-	MyString fquser;
-	MyString id;
+	std::string fquser;
+	std::string id;
 	TransferDaemon *dead_td = NULL;
 	TdAction ret;
 
@@ -850,9 +824,9 @@ int
 TDMan::transferd_registration(int cmd, Stream *sock)
 {
 	ReliSock *rsock = (ReliSock*)sock;
-	MyString td_sinful;
-	MyString td_id;
-	MyString fquser;
+	std::string td_sinful;
+	std::string td_id;
+	std::string fquser;
 	TDUpdateContinuation *tdup = NULL;
 	TransferDaemon *td = NULL;
 	TdAction ret;
@@ -919,7 +893,7 @@ TDMan::transferd_registration(int cmd, Stream *sock)
 
 	dprintf(D_ALWAYS, "Transferd %s, id: %s, owned by '%s' "
 		"attempting to register!\n",
-		td_sinful.Value(), td_id.Value(), fquser.Value());
+		td_sinful.c_str(), td_id.c_str(), fquser.c_str());
 
 	///////////////////////////////////////////////////////////////
 	// Determine if I requested a transferd for this identity. Close if not.
@@ -1013,7 +987,7 @@ TDMan::transferd_registration(int cmd, Stream *sock)
 	dprintf(D_ALWAYS, "Creating TransferRequest channel to transferd.\n");
 	CondorError errstack;
 	ReliSock *td_req_sock = NULL;
-	DCTransferD dctd(td_sinful.Value());
+	DCTransferD dctd(td_sinful.c_str());
 
 	// XXX This connect in here should be non-blocking....
 	if (dctd.setup_treq_channel(&td_req_sock, 20, &errstack) == false) {
@@ -1039,7 +1013,7 @@ TDMan::transferd_registration(int cmd, Stream *sock)
 	///////////////////////////////////////////////////////////////
 
 	// Now, let's give a good name for the update socket.
-	MyString sock_id;
+	std::string sock_id;
 	sock_id += "<Update-Socket-For-TD-";
 	sock_id += td_sinful;
 	sock_id += "-";
@@ -1048,7 +1022,7 @@ TDMan::transferd_registration(int cmd, Stream *sock)
 	sock_id += td_id;
 	sock_id += ">";
 
-	daemonCore->Register_Socket(sock, sock_id.Value(),
+	daemonCore->Register_Socket(sock, sock_id.c_str(),
 		(SocketHandlercpp)&TDMan::transferd_update,
 		"TDMan::transferd_update", this, ALLOW);
 	
@@ -1058,7 +1032,7 @@ TDMan::transferd_registration(int cmd, Stream *sock)
 	// handlers if they determined the daemon went away. Instead I'll push an 
 	// identifier so I can see if it still exists in the pool before messing
 	// with it.
-	tdup = new TDUpdateContinuation(td_sinful, fquser, td_id, sock_id.Value());
+	tdup = new TDUpdateContinuation(td_sinful, fquser, td_id, sock_id);
 	ASSERT(tdup);
 
 	// set up the continuation for TDMan::transferd_update()
@@ -1117,9 +1091,9 @@ TDMan::transferd_update(Stream *sock)
 	ReliSock *rsock = (ReliSock*)sock;
 	TDUpdateContinuation *tdup = NULL;
 	ClassAd update;
-	MyString cap;
-	MyString status;
-	MyString reason;
+	std::string cap;
+	std::string status;
+	std::string reason;
 	TransferDaemon *td = NULL;
 
 	/////////////////////////////////////////////////////////////////////////
@@ -1132,7 +1106,7 @@ TDMan::transferd_update(Stream *sock)
 	ASSERT(tdup != NULL);
 
 	dprintf(D_ALWAYS, "Transferd update from: addr(%s) fquser(%s) id(%s)\n", 
-		tdup->sinful.Value(), tdup->fquser.Value(), tdup->id.Value());
+		tdup->sinful.c_str(), tdup->fquser.c_str(), tdup->id.c_str());
 
 	/////////////////////////////////////////////////////////////////////////
 	// Get the resultant status classad from the transferd
@@ -1144,7 +1118,7 @@ TDMan::transferd_update(Stream *sock)
 		dprintf(D_ALWAYS, "Update socket was closed. "
 			"Transferd for user: %s with id: %s at location: %s will soon be "
 			"reaped.\n", 
-			tdup->fquser.Value(), tdup->id.Value(), tdup->sinful.Value());
+			tdup->fquser.c_str(), tdup->id.c_str(), tdup->sinful.c_str());
 
 		delete tdup;
 		daemonCore->SetDataPtr(NULL);
@@ -1157,7 +1131,7 @@ TDMan::transferd_update(Stream *sock)
 	update.LookupString(ATTR_TREQ_UPDATE_REASON, reason);
 
 	dprintf(D_ALWAYS, "Update was: cap = %s, status = %s,  reason = %s\n",
-		cap.Value(), status.Value(), reason.Value());
+		cap.c_str(), status.c_str(), reason.c_str());
 
 	/////////////////////////////////////////////////////////////////////////
 	// Find the matching transfer daemon with the id in question.

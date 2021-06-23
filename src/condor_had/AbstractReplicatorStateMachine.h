@@ -108,8 +108,8 @@ protected:
 	 * Note        : returns 0 upon success, 1 - upon failure
 	 * Description : reaper of downloading 'condor_transferer' process 
      */
-	static int
-    downloadReplicaTransfererReaper(Service* service, int pid, int exitStatus);
+	int
+    downloadReplicaTransfererReaper(int pid, int exitStatus);
 	/* Function    : uploadReplicaTransfererReaper
      * Arguments   : service    - the daemon, for which the transfer has ended
      *               pid        - id of the uploading 'condor_transferer' 
@@ -120,8 +120,8 @@ protected:
      * Note        : returns 0 upon success, 1 - upon failure
      * Description : reaper of uploading 'condor_transferer' process
      */
-    static int
-    uploadReplicaTransfererReaper(Service* service, int pid, int exitStatus);
+    int
+    uploadReplicaTransfererReaper(int pid, int exitStatus);
 	/* Function   : broadcastVersion
 	 * Arguments  : command - id that is sent to other replication daemons
 	 *						  along with the local version
@@ -262,7 +262,7 @@ protected:
 		 * Description : checks the structure validity by comparing its data
 		 *				 members to the initialization value
          */
-		bool isValid()
+		bool isValid() const
 		{
 			return m_pid != -1 && m_lastTimeCreated != -1;
 		};
@@ -275,9 +275,9 @@ protected:
     // list of versions sent to the daemon during JOINING state
 	List<Version>            m_versionsList;
 	// configuration variables	
-    MyString                 m_stateFilePath;
-    MyString                 m_versionFilePath;
-	MyString                 m_transfererPath;
+    std::string              m_stateFilePath;
+    std::string              m_versionFilePath;
+    std::string                 m_transfererPath;
 
 	// the replication daemon state
     ReplicatorState          m_state;
@@ -301,8 +301,8 @@ protected:
 						   "Connection timeout     - %d\n"
 						   "Downloading reaper id  - %d\n"
 						   "Uploading reaper id    - %d\n",
-				 m_stateFilePath.Value(), m_versionFilePath.Value(), 
-				 m_state, m_transfererPath.Value(), m_connectionTimeout,
+				 m_stateFilePath.c_str(), m_versionFilePath.c_str(), 
+				 m_state, m_transfererPath.c_str(), m_connectionTimeout,
 				 m_downloadReaperId, m_uploadReaperId );    
 	};
 	// process ids of uploading/downloading 'condor_transferer' processes for

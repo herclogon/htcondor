@@ -54,6 +54,30 @@ createOneAnnex( ClassAd * command, Stream * replyStream, ClassAd * reply ) {
 		return FALSE;
 	}
 
+
+	// Handle the instance tags.
+    std::string buffer;
+	std::vector< std::pair< std::string, std::string > > tags;
+	if( command->LookupString( ATTR_EC2_TAG_NAMES, buffer ) ) {
+		StringList tagNames( buffer );
+
+		char * tagName = NULL;
+		tagNames.rewind();
+		while( (tagName = tagNames.next()) ) {
+			std::string tagAttr(ATTR_EC2_TAG_PREFIX);
+			tagAttr.append(tagName);
+
+			char * tagValue = NULL;
+			if(! command->LookupString(tagAttr, &tagValue)) {
+				return FALSE;
+			}
+
+			tags.push_back( std::make_pair( tagName, tagValue ) );
+			free( tagValue );
+		}
+    }
+
+
 	// Is this less of a hack than handing the command ad to ReplyAndClean?
 	std::string expectedDelay;
 	command->LookupString( "ExpectedDelay", expectedDelay );
@@ -284,7 +308,7 @@ createOneAnnex( ClassAd * command, Stream * replyStream, ClassAd * reply ) {
 		// instances.  Otherwise, the lease may not fire.
 		GetFunction * gf = new GetFunction( leaseFunctionARN,
 			reply, lambdaGahp, scratchpad,
-	    	lambdaURL, publicKeyFile, secretKeyFile,
+			lambdaURL, publicKeyFile, secretKeyFile,
 			commandState, commandID );
 
 		UploadFile * uf = NULL;
@@ -321,7 +345,7 @@ createOneAnnex( ClassAd * command, Stream * replyStream, ClassAd * reply ) {
 		// We now only call last->operator() on success; otherwise, we roll back
 		// and call last->rollback() after we've given up.  We can therefore
 		// remove the command ad from the commandState in this functor.
-		ReplyAndClean * last = new ReplyAndClean( reply, replyStream, gahp, scratchpad, eventsGahp, commandState, commandID, lambdaGahp );
+		ReplyAndClean * last = new ReplyAndClean( reply, replyStream, gahp, scratchpad, eventsGahp, commandState, commandID, lambdaGahp, s3Gahp );
 
 		// Note that the functor sequence takes responsibility for deleting the
 		// functor objects; the functor objects would just delete themselves when
@@ -330,7 +354,12 @@ createOneAnnex( ClassAd * command, Stream * replyStream, ClassAd * reply ) {
 		//
 		// The commandState, commandID, and scratchpad allow the functor sequence
 		// to restart a rollback, if that becomes necessary.
-		FunctorSequence * fs = new FunctorSequence( { cc, gf, uf, pr, pt, br }, last, commandState, commandID, scratchpad );
+		FunctorSequence * fs;
+		if( uf ) {
+			fs = new FunctorSequence( { cc, gf, uf, pr, pt, br }, last, commandState, commandID, scratchpad );
+		} else {
+			fs = new FunctorSequence( { cc, gf, pr, pt, br }, last, commandState, commandID, scratchpad );
+		}
 
 		// Create a timer for the gahp to fire when it gets a result.  We must
 		// use TIMER_NEVER to ensure that the timer hasn't been reaped when the
@@ -339,9 +368,9 @@ createOneAnnex( ClassAd * command, Stream * replyStream, ClassAd * reply ) {
 			(void (Service::*)()) & FunctorSequence::operator(),
 			"GetFunction, PutRule, PutTarget, BulkRequest", fs );
 		gahp->setNotificationTimerId( functorSequenceTimer );
-    	eventsGahp->setNotificationTimerId( functorSequenceTimer );
-    	lambdaGahp->setNotificationTimerId( functorSequenceTimer );
-    	s3Gahp->setNotificationTimerId( functorSequenceTimer );
+		eventsGahp->setNotificationTimerId( functorSequenceTimer );
+		lambdaGahp->setNotificationTimerId( functorSequenceTimer );
+		s3Gahp->setNotificationTimerId( functorSequenceTimer );
 
 		return KEEP_STREAM;
 	} else if( annexType == "odi" ) {
@@ -358,7 +387,7 @@ createOneAnnex( ClassAd * command, Stream * replyStream, ClassAd * reply ) {
 
 		OnDemandRequest * odr = new OnDemandRequest( reply, gahp, scratchpad,
 			serviceURL, publicKeyFile, secretKeyFile, commandState,
-			commandID, annexID );
+			commandID, annexID, tags );
 
 		time_t endOfLease = 0;
 		command->LookupInteger( "EndOfLease", endOfLease );
@@ -378,7 +407,7 @@ createOneAnnex( ClassAd * command, Stream * replyStream, ClassAd * reply ) {
 
 		GetFunction * gf = new GetFunction( leaseFunctionARN,
 			reply, lambdaGahp, scratchpad,
-	    	lambdaURL, publicKeyFile, secretKeyFile,
+			lambdaURL, publicKeyFile, secretKeyFile,
 			commandState, commandID );
 
 		UploadFile * uf = NULL;
@@ -401,7 +430,7 @@ createOneAnnex( ClassAd * command, Stream * replyStream, ClassAd * reply ) {
 			reply, eventsGahp, scratchpad,
 			eventsURL, publicKeyFile, secretKeyFile,
 			commandState, commandID, annexID );
-		ReplyAndClean * last = new ReplyAndClean( reply, replyStream, gahp, scratchpad, eventsGahp, commandState, commandID, lambdaGahp );
+		ReplyAndClean * last = new ReplyAndClean( reply, replyStream, gahp, scratchpad, eventsGahp, commandState, commandID, lambdaGahp, s3Gahp );
 
 		FunctorSequence * fs;
 		if( uf ) {
@@ -414,9 +443,9 @@ createOneAnnex( ClassAd * command, Stream * replyStream, ClassAd * reply ) {
 			(void (Service::*)()) & FunctorSequence::operator(),
 			"GetFunction, PutRule, PutTarget, OnDemandRequest", fs );
 		gahp->setNotificationTimerId( functorSequenceTimer );
-    	eventsGahp->setNotificationTimerId( functorSequenceTimer );
-    	lambdaGahp->setNotificationTimerId( functorSequenceTimer );
-    	s3Gahp->setNotificationTimerId( functorSequenceTimer );
+		eventsGahp->setNotificationTimerId( functorSequenceTimer );
+		lambdaGahp->setNotificationTimerId( functorSequenceTimer );
+		s3Gahp->setNotificationTimerId( functorSequenceTimer );
 
 		return KEEP_STREAM;
 	} else {
@@ -439,7 +468,6 @@ createOneAnnex( ClassAd * command, Stream * replyStream, ClassAd * reply ) {
 		delete s3Gahp;
 
 		delete scratchpad;
-
 		return FALSE;
 }
 
@@ -459,6 +487,7 @@ callCreateOneAnnex() {
 		reply->LookupString( ATTR_ERROR_STRING, errorString );
 		ASSERT(! errorString.empty());
 		fprintf( stderr, "%s\n", errorString.c_str() );
+		delete reply;
 		DC_Exit( 6 );
 	}
 }

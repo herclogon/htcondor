@@ -31,7 +31,6 @@
 #include "match_prefix.h"
 #include "queue_internal.h"
 #if 0
-#include "MyString.h"
 #include "ad_printmask.h"
 #include "internet.h"
 #include "sig_install.h"
@@ -194,11 +193,11 @@ int setupAnalysis(
 
 	// if there is a slot constraint, that's allowed to be a simple machine/slot name
 	// in which case we build up the actual constraint expression automatically.
-	MyString mconst; // holds the final machine/slot constraint expression 
+	std::string mconst; // holds the final machine/slot constraint expression 
 	if (user_slot_constraint) {
 		mconst = user_slot_constraint;
 		if (is_slot_name(user_slot_constraint)) {
-			mconst.formatstr("(" ATTR_NAME "==\"%s\") || (" ATTR_MACHINE "==\"%s\")", user_slot_constraint, user_slot_constraint);
+			formatstr(mconst, "(" ATTR_NAME "==\"%s\") || (" ATTR_MACHINE "==\"%s\")", user_slot_constraint, user_slot_constraint);
 			single_machine = true;
 			single_machine_label = user_slot_constraint;
 		}
@@ -206,7 +205,7 @@ int setupAnalysis(
 
 	// fetch startd ads
 	if (machineads_file != NULL) {
-		ConstraintHolder constr(mconst.empty() ? NULL : mconst.StrDup());
+		ConstraintHolder constr(mconst.empty() ? NULL : strdup(mconst.c_str()));
 		CondorClassAdFileParseHelper parse_helper("\n", machineads_file_format);
 		if ( ! iter_ads_from_file(machineads_file, AddSlotToClassAdCollection, &startdAds, parse_helper, constr.Expr())) {
 			exit (1);
@@ -264,7 +263,7 @@ int setupAnalysis(
 
 void setupUserpriosForAnalysis(DCCollector* pool, const char *userprios_file)
 {
-	string		remoteUser;
+	std::string		remoteUser;
 
 	// fetch user priorities, and propagate the user priority values into the machine ad's
 	// we fetch user priorities either directly from the negotiator, or from a file
@@ -555,8 +554,8 @@ static bool checkOffer(
 	}
 	ac.both_match++;
 
-	int offline = 0;
-	if (offer->EvalBool(ATTR_OFFLINE, NULL, offline) && offline) {
+	bool offline = false;
+	if (offer->LookupBool(ATTR_OFFLINE, offline) && offline) {
 		ac.fOffline++;
 		if (pmat) pmat->append_to_fail_list(anaMachines::Offline, slotname);
 	}
@@ -592,11 +591,6 @@ static bool checkPremption (
 				return true;
 			  } else {
 				ac.available++; // tj: is this correct?
-				//PRAGMA_REMIND("TJ: move this out of the machine iteration loop?")
-				int last_match_time = 0;
-				if (job_status.empty() && ! request->LookupInteger(ATTR_LAST_MATCH_TIME, last_match_time)) {
-					job_status = "Job has not yet been considered by the matchmaker.";
-				}
 				return true;
 			  }
 			}
@@ -668,13 +662,9 @@ static bool checkPremption (
 					// unknown problem.
 				  if (last_rej_match_time != 0) {
 					ac.fRankCond++;
-				  } else {
-					if (job_status.empty()) {
-						job_status = "Job has not yet been considered by the matchmaker.";
-					}
 				  }
 				}
-			} 
+			}
 		} else {
 			ac.fPreemptPrioCond++;
 			if (pmat) pmat->append_to_fail_list(anaMachines::PreemptPrio, slotname);
@@ -748,7 +738,7 @@ bool doJobRunAnalysis (
 	bool	val;
 	int		universe = CONDOR_UNIVERSE_MIN;
 	int		jobState;
-	int		jobMatched = false;
+	bool	jobMatched = false;
 	std::string owner;
 	std::string user;
 	std::string slotname;
@@ -773,11 +763,11 @@ bool doJobRunAnalysis (
 	}
 	if (jobState == HELD) {
 		job_status = "Job is held.";
-		MyString hold_reason;
+		std::string hold_reason;
 		request->LookupString( ATTR_HOLD_REASON, hold_reason );
-		if( hold_reason.Length() ) {
+		if( hold_reason.length() ) {
 			job_status += "\n\nHold reason: ";
-			job_status += hold_reason.Value();
+			job_status += hold_reason;
 		}
 	}
 	if (jobState == REMOVED) {
@@ -799,7 +789,7 @@ bool doJobRunAnalysis (
 	request->LookupInteger(ATTR_JOB_UNIVERSE, universe);
 	if (universe == CONDOR_UNIVERSE_LOCAL || universe == CONDOR_UNIVERSE_SCHEDULER) {
 
-		MyString match_result;
+		std::string match_result;
 		ClassAd *scheddAd = schedd ? schedd->daemonAd() : NULL;
 		if ( ! scheddAd) {
 			match_result = "WARNING: A schedd ClassAd is needed to do analysis for scheduler or Local universe jobs.\n";
@@ -812,12 +802,12 @@ bool doJobRunAnalysis (
 			char const *requirements_attr = (universe == CONDOR_UNIVERSE_LOCAL)
 				? ATTR_START_LOCAL_UNIVERSE 
 				: ATTR_START_SCHEDULER_UNIVERSE;
-			int can_start = 0;
-			if ( ! scheddAd->EvalBool(requirements_attr, request, can_start)) {
-				match_result.formatstr_cat("This schedd's %s policy failed to evalute for this job.\n",requirements_attr);
+			bool can_start = false;
+			if ( ! EvalBool(requirements_attr, scheddAd, request, can_start)) {
+				formatstr_cat(match_result, "This schedd's %s policy failed to evalute for this job.\n",requirements_attr);
 			} else {
 				if (can_start) { ac.both_match++; } else { ac.fOffConstraint++; }
-				match_result.formatstr_cat("This schedd's %s evalutes to %s for this job.\n",requirements_attr, can_start ? "true" : "false" );
+				formatstr_cat(match_result, "This schedd's %s evalutes to %s for this job.\n",requirements_attr, can_start ? "true" : "false" );
 			}
 		}
 
@@ -831,7 +821,7 @@ bool doJobRunAnalysis (
 
 	// setup submitter info
 	if (prio) {
-		if ( ! request->LookupInteger(ATTR_NICE_USER, prio->niceUser)) { prio->niceUser = 0; }
+		if ( ! request->LookupInteger(ATTR_NICE_USER_deprecated, prio->niceUser)) { prio->niceUser = 0; }
 		prio->ixSubmittor = findSubmittor(fixSubmittorName(user.c_str(), prio->niceUser));
 		if (prio->ixSubmittor >= 0) {
 			request->Assign(ATTR_SUBMITTOR_PRIO, prioTable[prio->ixSubmittor].prio);
@@ -922,8 +912,8 @@ bool doJobRunAnalysis (
 		}
 		ac.both_match++;
 
-		int offline = 0;
-		if (offer->EvalBool(ATTR_OFFLINE, NULL, offline) && offline) {
+		bool offline = false;
+		if (offer->LookupBool(ATTR_OFFLINE, offline) && offline) {
 			ac.fOffline++;
 			if (pmat) pmat->append_to_fail_list(anaMachines::Offline, slotname.c_str(), verb_width);
 			continue;
@@ -931,15 +921,10 @@ bool doJobRunAnalysis (
 	#endif
 
 		// 3. Is there a remote user?
-		string remoteUser;
+		std::string remoteUser;
 		if ( ! offer->LookupString(ATTR_REMOTE_USER, remoteUser)) {
 #if 1
 			ac.available++; // tj: is this correct?
-			int last_match_time = 0;
-			if (job_status.empty() && last_rej_match_time==0 &&
-				( ! request->LookupInteger(ATTR_LAST_MATCH_TIME, last_match_time) || ! last_match_time)) {
-				job_status = "Job has not yet been considered by the matchmaker.";
-			}
 			continue;
 #else  // i think this is bogus
 			// no remote user
@@ -958,11 +943,6 @@ bool doJobRunAnalysis (
 				continue;
 			  } else {
 				ac.available++; // tj: is this correct?
-				//PRAGMA_REMIND("TJ: move this out of the machine iteration loop?")
-				int last_match_time = 0;
-				if (job_status.empty() && ! request->LookupInteger(ATTR_LAST_MATCH_TIME, last_match_time)) {
-					job_status = "Job has not yet been considered by the matchmaker.";
-				}
 				continue;
 			  }
 			}
@@ -1034,11 +1014,6 @@ bool doJobRunAnalysis (
 				} else {
 #if 1
 					ac.available++;
-					int last_match_time = 0;
-					if (job_status.empty() && last_rej_match_time==0 &&
-						( ! request->LookupInteger(ATTR_LAST_MATCH_TIME, last_match_time) || ! last_match_time)) {
-						job_status = "Job has not yet been considered by the matchmaker.";
-					}
 #else
 					// failed 6 and 5, but satisfies 4; so have priority
 					// but not better or equally preferred than current
@@ -1047,14 +1022,10 @@ bool doJobRunAnalysis (
 					// unknown problem.
 				  if (last_rej_match_time != 0) {
 					ac.fRankCond++;
-				  } else {
-					if (job_status.empty()) {
-						job_status = "Job has not yet been considered by the matchmaker.";
-					}
 				  }
 #endif
 				}
-			} 
+			}
 		} else {
 			ac.fPreemptPrioCond++;
 			if (pmat) pmat->append_to_fail_list(anaMachines::PreemptPrio, slotname.c_str());
@@ -1099,7 +1070,7 @@ const char * appendJobRunAnalysisToBuffer(std::string &out, ClassAd *job, std::s
 		out += "Last failed match: ";
 		out += ctime(&t);
 		out += "\n";
-		string rej_reason;
+		std::string rej_reason;
 		if (job->LookupString(ATTR_LAST_REJ_MATCH_REASON, rej_reason)) {
 			out += "Reason for last match failure: ";
 			out += rej_reason;
@@ -1119,7 +1090,7 @@ const char * appendJobRunAnalysisToBuffer(std::string & out, ClassAd *job, anaCo
 
 	if (prio) {
 		formatstr_cat(out,
-			 "Submittor %s has a priority of %.3f\n", prioTable[prio->ixSubmittor].name.Value(), prioTable[prio->ixSubmittor].prio);
+			 "Submittor %s has a priority of %.3f\n", prioTable[prio->ixSubmittor].name.c_str(), prioTable[prio->ixSubmittor].prio);
 	}
 
 	const char * with_prio_tag = prio ? "considering user priority" : "ignoring user priority";
@@ -1331,7 +1302,7 @@ const char * doJobMatchAnalysisToBuffer(std::string & return_buf, ClassAd *reque
 	int universe = CONDOR_UNIVERSE_MIN;
 	request->LookupInteger( ATTR_JOB_UNIVERSE, universe );
 	bool uses_matchmaking = false;
-	MyString resource;
+	std::string resource;
 	switch(universe) {
 			// Known valid
 		case CONDOR_UNIVERSE_STANDARD:
@@ -1349,7 +1320,7 @@ const char * doJobMatchAnalysisToBuffer(std::string & return_buf, ClassAd *reque
 			/* We may be able to detect when it's valid.  Check for existance
 			 * of "$$(FOO)" style variables in the classad. */
 			request->LookupString(ATTR_GRID_RESOURCE, resource);
-			if ( strstr(resource.Value(),"$$") ) {
+			if ( strstr(resource.c_str(),"$$") ) {
 				uses_matchmaking = true;
 				break;
 			}  
@@ -1405,8 +1376,8 @@ const char * doSlotRunAnalysisToBuffer(ClassAd *slot, JobClusterMap & clusters, 
 	std::string slotname = "";
 	slot->LookupString(ATTR_NAME , slotname);
 
-	int offline = 0;
-	if (slot->EvalBool(ATTR_OFFLINE, NULL, offline) && offline) {
+	bool offline = false;
+	if (slot->LookupBool(ATTR_OFFLINE, offline) && offline) {
 		sprintf(return_buff, "%-24.24s  is offline\n", slotname.c_str());
 		return return_buff;
 	}
@@ -1474,12 +1445,6 @@ const char * doSlotRunAnalysisToBuffer(ClassAd *slot, JobClusterMap & clusters, 
 				pretty_req += "\n\n  START is\n    ";
 				PrettyPrintExprTree(tree, pretty_req, 4, console_width);
 				inline_attrs.insert(ATTR_START);
-			}
-			tree = slot->LookupExpr(ATTR_IS_VALID_CHECKPOINT_PLATFORM);
-			if (tree) {
-				pretty_req += "\n\n  " ATTR_IS_VALID_CHECKPOINT_PLATFORM " is\n    ";
-				PrettyPrintExprTree(tree, pretty_req, 4, console_width);
-				inline_attrs.insert(ATTR_IS_VALID_CHECKPOINT_PLATFORM);
 			}
 			tree = slot->LookupExpr(ATTR_WITHIN_RESOURCE_LIMITS);
 			if (tree) {
@@ -1589,7 +1554,7 @@ void buildJobClusterMap(IdToClassaAdMap & jobs, const char * attr, JobClusterMap
 
 int findSubmittor( const char *name ) 
 {
-	MyString 	sub(name);
+	std::string sub(name);
 	int			last = prioTable.getlast();
 	
 	for(int i = 0 ; i <= last ; i++ ) {
@@ -1626,21 +1591,19 @@ fixSubmittorName( const char *name, int niceUser )
 					niceUser ? NiceUserName : "",
 					niceUser ? "." : "",
 					name );
-		return buffer;
 	} else {
 		sprintf( buffer, "%s%s%s@%s", 
 					niceUser ? NiceUserName : "",
 					niceUser ? "." : "",
 					name, uid_domain );
-		return buffer;
 	}
 
-	return NULL;
+	return buffer;
 }
 
 
 
-bool warnScheddGlobalLimits(DaemonAllowLocateFull *schedd,MyString &result_buf) {
+bool warnScheddGlobalLimits(DaemonAllowLocateFull *schedd,std::string &result_buf) {
 	if( !schedd ) {
 		return false;
 	}
@@ -1650,11 +1613,11 @@ bool warnScheddGlobalLimits(DaemonAllowLocateFull *schedd,MyString &result_buf) 
 		bool exhausted = false;
 		ad->LookupBool("SwapSpaceExhausted", exhausted);
 		if (exhausted) {
-			result_buf.formatstr_cat("WARNING -- this schedd is not running jobs because it believes that doing so\n");
-			result_buf.formatstr_cat("           would exhaust swap space and cause thrashing.\n");
-			result_buf.formatstr_cat("           Set RESERVED_SWAP to 0 to tell the scheduler to skip this check\n");
-			result_buf.formatstr_cat("           Or add more swap space.\n");
-			result_buf.formatstr_cat("           The analysis code does not take this into consideration\n");
+			formatstr_cat(result_buf, "WARNING -- this schedd is not running jobs because it believes that doing so\n");
+			formatstr_cat(result_buf, "           would exhaust swap space and cause thrashing.\n");
+			formatstr_cat(result_buf, "           Set RESERVED_SWAP to 0 to tell the scheduler to skip this check\n");
+			formatstr_cat(result_buf, "           Or add more swap space.\n");
+			formatstr_cat(result_buf, "           The analysis code does not take this into consideration\n");
 			has_warn = true;
 		}
 
@@ -1666,9 +1629,9 @@ bool warnScheddGlobalLimits(DaemonAllowLocateFull *schedd,MyString &result_buf) 
 
 		if ((maxJobsRunning > -1) && (totalRunningJobs > -1) && 
 			(maxJobsRunning == totalRunningJobs)) { 
-			result_buf.formatstr_cat("WARNING -- this schedd has hit the MAX_JOBS_RUNNING limit of %d\n", maxJobsRunning);
-			result_buf.formatstr_cat("       to run more concurrent jobs, raise this limit in the config file\n");
-			result_buf.formatstr_cat("       NOTE: the matchmaking analysis does not take the limit into consideration\n");
+			formatstr_cat(result_buf, "WARNING -- this schedd has hit the MAX_JOBS_RUNNING limit of %d\n", maxJobsRunning);
+			formatstr_cat(result_buf, "       to run more concurrent jobs, raise this limit in the config file\n");
+			formatstr_cat(result_buf, "       NOTE: the matchmaking analysis does not take the limit into consideration\n");
 			has_warn = true;
 		}
 	}
@@ -1857,9 +1820,9 @@ bool print_jobs_analysis(
 #endif
 				} else {
 					if (pschedd_daemon && ! already_warned_schedd_limits) {
-						MyString buf;
+						std::string buf;
 						if (warnScheddGlobalLimits(pschedd_daemon, buf)) {
-							printf("%s", buf.Value());
+							printf("%s", buf.c_str());
 						}
 						already_warned_schedd_limits = true;
 					}

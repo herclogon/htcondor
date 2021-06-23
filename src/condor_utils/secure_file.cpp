@@ -36,6 +36,19 @@ void simple_scramble(char* scrambled,  const char* orig, int len)
 	}
 }
 
+// writes a binary file with the pool password scramble 
+// returns true(success) or false(failure)
+//
+int write_binary_password_file(const char* path, const char* password, size_t password_len)
+{
+	char *scrambled_password = (char*)malloc(password_len);
+	memset(scrambled_password, 0, password_len);
+	simple_scramble(scrambled_password, password, (int)password_len);
+	int rc = write_secure_file(path, scrambled_password, password_len, true);
+	free(scrambled_password);
+	return rc;
+}
+
 // writes a pool password file using the given password
 // returns true(success) or false(failure)
 //
@@ -45,13 +58,9 @@ int write_password_file(const char* path, const char* password)
 	// is because the passwords in the future may be read as binary data
 	// and the NULL would matter.  8.4.X is cool with no trailing NULL.
 	size_t password_len = strlen(password);
-	char *scrambled_password = (char*)malloc(password_len);
-	memset(scrambled_password, 0, password_len);
-	simple_scramble(scrambled_password, password, (int)password_len);
-	int rc = write_secure_file(path, scrambled_password, password_len, true);
-	free(scrambled_password);
-	return rc;
+	return write_binary_password_file(path, password, password_len);
 }
+
 
 #if 0
 FILE* open_secure_file_for_write(const char* path, bool as_root, bool group_readable /*= false*/)
@@ -159,8 +168,8 @@ bool write_secure_file(const char* path, const void* data, size_t len, bool as_r
 		dprintf(D_ALWAYS,
 			"ERROR: write_secure_file(%s): open() failed: %s (%d)\n",
 			path,
-			strerror(errno),
-				errno);
+			strerror(save_errno),
+				save_errno);
 		return false;
 	}
 	FILE *fp = fdopen(fd, fdopen_format);
@@ -282,7 +291,7 @@ read_secure_file(const char *fname, void **buf, size_t *len, bool as_root, int v
 	char *fbuf = (char*)malloc(fsize);
 	if(fbuf == NULL) {
 		dprintf(D_ALWAYS,
-			"ERROR: read_secure_file(%s): malloc(%lu) failed!\n", fname, fsize);
+			"ERROR: read_secure_file(%s): malloc(%zu) failed!\n", fname, fsize);
 		fclose(fp);
 		return false;
 	}
@@ -299,7 +308,7 @@ read_secure_file(const char *fname, void **buf, size_t *len, bool as_root, int v
 	//
 	if(readsize != fsize) {
 		dprintf(D_ALWAYS,
-			"ERROR: read_secure_file(%s): failed due to short read: %lu != %lu!\n",
+			"ERROR: read_secure_file(%s): failed due to short read: %zu != %zu!\n",
 			fname, readsize, fsize);
 		fclose(fp);
 		free(fbuf);
@@ -342,6 +351,59 @@ read_secure_file(const char *fname, void **buf, size_t *len, bool as_root, int v
 	*buf = fbuf;
 	*len = fsize;
 
+	return true;
+}
+
+// write a secure temp file, then rename/replace it over the given file 
+bool replace_secure_file(const char* path, const char * tmpext, const void* data, size_t len, bool as_root, bool group_readable)
+{
+	// build the temp filename by appending tmpext to path
+	std::string tmpfile;
+	tmpfile.reserve(strlen(path) + strlen(tmpext));
+	tmpfile = path;
+	tmpfile += tmpext;
+	const char * tmpfilename = tmpfile.c_str();
+
+	int rc = -1;
+#ifdef WIN32
+	DWORD err = 0;
+#else
+	int err = 0;
+#endif
+
+	if ( ! write_secure_file(tmpfilename, data, len, as_root, group_readable)) {
+		dprintf(D_ALWAYS, "Failed to write secure temp file %s\n", tmpfilename);
+		return false;
+	}
+
+	// now move into place
+	dprintf(D_SECURITY, "Renaming secure temp file %s to %s\n", tmpfilename, path);
+	priv_state priv;
+	if (as_root) { priv = set_root_priv(); }
+#ifdef WIN32
+	if (MoveFileEx(tmpfilename, path, MOVEFILE_REPLACE_EXISTING)) {
+		rc = 0;
+	} else {
+		rc = -1;
+		err = GetLastError();
+	}
+#else
+	rc = rename(tmpfilename, path);
+	if (rc == -1) {
+		err = errno;
+	}
+#endif
+	if (as_root) { set_priv(priv); }
+	if (rc == -1) {
+		dprintf(D_ALWAYS, "Failed to rename secure temp file %s to %s, error=%d : %s\n",
+#ifdef WIN32
+			tmpfilename, path, err, GetLastErrorString(err));
+#else
+			tmpfilename, path, err, strerror(err));
+#endif
+		unlink(tmpfilename);
+		return false;
+	}
 	return true;
 }
 

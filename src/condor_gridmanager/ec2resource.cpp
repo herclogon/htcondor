@@ -25,31 +25,31 @@
 #include "ec2resource.h"
 #include "gridmanager.h"
 
-HashTable <std::string, EC2Resource *>
-    EC2Resource::ResourcesByName( hashFunction );
+std::map <std::string, EC2Resource *>
+    EC2Resource::ResourcesByName;
 
-const char * EC2Resource::HashName( const char * resource_name,
+std::string & EC2Resource::HashName( const char * resource_name,
 		const char * public_key_file, const char * private_key_file )
 {
 	static std::string hash_name;
 	formatstr( hash_name, "ec2 %s#%s#%s", resource_name, public_key_file, private_key_file );
-	return hash_name.c_str();
+	return hash_name;
 }
 
 
 EC2Resource* EC2Resource::FindOrCreateResource(const char * resource_name,
 	const char * public_key_file, const char * private_key_file )
 {
-	int rc;
 	EC2Resource *resource = NULL;
-
-	rc = ResourcesByName.lookup( HashName( resource_name, public_key_file, private_key_file ), resource );
-	if ( rc != 0 ) {
+	std::string &key = HashName( resource_name, public_key_file, private_key_file );
+	auto itr = ResourcesByName.find( key );
+	if ( itr == ResourcesByName.end() ) {
 		resource = new EC2Resource( resource_name, public_key_file, private_key_file );
 		ASSERT(resource);
 		resource->Reconfig();
-		ResourcesByName.insert( HashName( resource_name, public_key_file, private_key_file ), resource );
+		ResourcesByName[key] = resource;
 	} else {
+		resource = itr->second;
 		ASSERT(resource);
 	}
 
@@ -107,7 +107,7 @@ EC2Resource::EC2Resource( const char *resource_name,
 
 EC2Resource::~EC2Resource()
 {
-	ResourcesByName.remove( HashName( resourceName, m_public_key_file,
+	ResourcesByName.erase( HashName( resourceName, m_public_key_file,
 										m_private_key_file ) );
 	if ( gahp ) delete gahp;
 	if (m_public_key_file) free(m_public_key_file);
@@ -129,7 +129,7 @@ const char *EC2Resource::ResourceType()
 
 const char *EC2Resource::GetHashName()
 {
-	return HashName( resourceName, m_public_key_file, m_private_key_file );
+	return HashName( resourceName, m_public_key_file, m_private_key_file ).c_str();
 }
 
 void EC2Resource::PublishResourceAd( ClassAd *resource_ad )
@@ -475,7 +475,7 @@ EC2Resource::BatchStatusResult EC2Resource::FinishBatchStatus() {
     return StartBatchStatus();
 }
 
-bool EC2Resource::ServerTypeQueried( EC2Job *job ) {
+bool EC2Resource::ServerTypeQueried( EC2Job *job ) const {
 	if ( !m_serverType.empty() ) {
 		return true;
 	}
@@ -486,7 +486,7 @@ bool EC2Resource::ServerTypeQueried( EC2Job *job ) {
 	return false;
 }
 
-bool EC2Resource::ClientTokenWorks( EC2Job *job )
+bool EC2Resource::ClientTokenWorks( EC2Job *job ) const
 {
 	if ( m_serverType == "Amazon" || m_serverType == "Nimbus" ) {
 		return true;
@@ -501,7 +501,7 @@ bool EC2Resource::ClientTokenWorks( EC2Job *job )
 	return false;
 }
 
-bool EC2Resource::ShuttingDownTrusted( EC2Job *job ) {
+bool EC2Resource::ShuttingDownTrusted( EC2Job *job ) const {
 	std::string type = m_serverType;
 	if( type.empty() && job ) {
 		// CODE REVIEWER: This assumes that LookupString() will leave

@@ -26,14 +26,13 @@
 #include "condor_io.h"
 #include "enum_utils.h"
 #include "daemon.h"
-#include "MyString.h"
 
 
 typedef enum {
 	AR_ERROR,
-	AR_SUCCESS, 
-	AR_NOT_FOUND, 
-	AR_BAD_STATUS, 
+	AR_SUCCESS,
+	AR_NOT_FOUND,
+	AR_BAD_STATUS,
 	AR_ALREADY_DONE,
 	AR_PERMISSION_DENIED
 } action_result_t;
@@ -46,9 +45,13 @@ typedef enum {
 	AR_TOTALS = 2	// want totals for each possible result
 } action_result_type_t;
 
+// Callback after an impersonation token command
+//
+typedef void ImpersonationTokenCallbackType(bool success, const std::string &token, const CondorError &err,
+	void *misc_data);
 
 /** This is the Schedd-specific class derived from Daemon.  It
-	implements some of the schedd's daemonCore command interface.  
+	implements some of the schedd's daemonCore command interface.
 	For now, it implements the "ACT_ON_JOBS" command, which is used
 	for the new condor_(rm|hold|release) tools.
 */
@@ -57,7 +60,7 @@ public:
 
 		/** Constructor.  Same as a Daemon object.
 		  @param name The name (or sinful string) of the daemon, NULL
-		              if you want local  
+		              if you want local
 		  @param pool The name of the pool, NULL if you want local
 		*/
 	DCSchedd( const char* const name = NULL, const char* pool = NULL );
@@ -130,7 +133,7 @@ public:
 
 		/** Hold all jobs specified in the given StringList.  The list
 			should contain a comma-seperated list of cluster.proc job
-			ids.  Also, set ATTR_HOLD_REASON to the given reason. 
+			ids.  Also, set ATTR_HOLD_REASON to the given reason.
 			@param constraint What jobs to act on
 			@param reason Why the action is being done
 			@param result_type What kind of results you want
@@ -146,7 +149,7 @@ public:
 		/** Remove all jobs specified in the given StringList.  The
 			list should contain a comma-seperated list of cluster.proc
 			job ids.  Also, set ATTR_REMOVE_REASON to the given
-			reason. 
+			reason.
 			@param constraint What jobs to act on
 			@param reason Why the action is being done
 			@param result_type What kind of results you want
@@ -216,7 +219,7 @@ public:
 						 CondorError * errstack,
 						 action_result_type_t result_type = AR_TOTALS );
 
-	
+
 	/** Suspend all jobs specified in the given StringList.  The list
 			should contain a comma-seperated list of cluster.proc job
 			ids.
@@ -230,7 +233,7 @@ public:
 	ClassAd* suspendJobs( StringList* ids, const char* reason,
 						 CondorError * errstack,
 						 action_result_type_t result_type = AR_LONG );
-	
+
 	/** Suspend all jobs that match the given constraint.
 			@param constraint What jobs to act on
 			@param reason Why the action is being done
@@ -242,7 +245,7 @@ public:
 	ClassAd* suspendJobs( const char* constraint, const char* reason,
 						  CondorError * errstack,
 						  action_result_type_t result_type = AR_TOTALS );
-	
+
 	/** Continue all jobs specified in the given StringList.  The list
 			should contain a comma-seperated list of cluster.proc job
 			ids.
@@ -256,7 +259,7 @@ public:
 	ClassAd* continueJobs( StringList* ids, const char* reason,
 						 CondorError * errstack,
 						 action_result_type_t result_type = AR_LONG );
-	
+
 		/** Continue all jobs that match the given constraint.
 			@param constraint What jobs to act on
 			@param reason Why the action is being done
@@ -268,7 +271,7 @@ public:
 	ClassAd* continueJobs( const char* constraint, const char* reason,
 						  CondorError * errstack,
 						  action_result_type_t result_type = AR_TOTALS );
-	
+
 	/** Clear dirty attributes for a list of job ids
 			@param ids What jobs to act on
 			@param result_type What kind of results you want
@@ -308,14 +311,14 @@ public:
 							char const *session_info,
 							int timeout,
 							CondorError *errstack,
-							MyString &starter_addr,
-							MyString &starter_claim_id,
-							MyString &starter_version,
-							MyString &slot_name,
-							MyString &error_msg,
+							std::string &starter_addr,
+							std::string &starter_claim_id,
+							std::string &starter_version,
+							std::string &slot_name,
+							std::string &error_msg,
 							bool &retry_is_sensible,
 							int &job_status,
-							MyString &hold_reason);
+							std::string &hold_reason);
 
 
 		/** Request the schedd to initiate a negoitation cycle.
@@ -329,32 +332,32 @@ public:
 	bool receiveJobSandbox(const char* constraint, CondorError * errstack, int * numdone = 0);
 
 
-	bool register_transferd(MyString sinful, MyString id, int timeout, 
+	bool register_transferd(const std::string &sinful, const std::string &id, int timeout, 
 		ReliSock **regsock_ptr, CondorError *errstack);
-	
+
 
 	// Request a sandbox location for a set of ads described by a
 	// constraint as applied to the job queue
-	bool requestSandboxLocation(int direction, MyString &constraint, 
+	bool requestSandboxLocation(int direction, std::string & constraint,
 		int protocol, ClassAd *respad, CondorError * errstack);
 
 	// Request a sandbox location for a set of specific job ids.
-	bool requestSandboxLocation(int direction, int JobAdsArrayLen, 
-		ClassAd* JobAdsArray[], int protocol, ClassAd *respad, 
+	bool requestSandboxLocation(int direction, int JobAdsArrayLen,
+		ClassAd* JobAdsArray[], int protocol, ClassAd *respad,
 		CondorError * errstack);
-		
+
 	// Request a sandbox location using a raw request classad.
 	bool requestSandboxLocation(ClassAd *reqad, ClassAd *respad,
 		CondorError * errstack);
 
-	bool updateGSIcredential(const int cluster, const int proc, 
+	bool updateGSIcredential(const int cluster, const int proc,
 		const char* path_to_proxy_file, CondorError * errstack);
 
 		// expiration_time: 0 if none; o.w. time to expire delegated proxy
 		// result_expiration_time: if non-NULL, gets set to the delegated
 		//                         proxy expiration time, which may be sooner
 		//                         than requested if source proxy expires
-	bool delegateGSIcredential(const int cluster, const int proc, 
+	bool delegateGSIcredential(const int cluster, const int proc,
 							   const char* path_to_proxy_file, time_t expiration_time,
 							   time_t *result_expiration_time,
 							   CondorError * errstack);
@@ -362,7 +365,16 @@ public:
 		// Caller should delete new_job_ad when done with it.
 		// Returns false on error (see error_msg)
 		// If no new job found, returns true with *new_job_ad=NULL
-	bool recycleShadow( int previous_job_exit_reason, ClassAd **new_job_ad, MyString &error_msg );
+	bool recycleShadow( int previous_job_exit_reason, ClassAd **new_job_ad, std::string & error_msg );
+
+
+		/*
+		 * Retrieve a token with someone else's identity from a remote schedd,
+		 * based on an existing session.
+		 */
+	bool requestImpersonationTokenAsync(const std::string &identity,
+		const std::vector<std::string> &authz_bounding_set, int lifetime,
+		ImpersonationTokenCallbackType callback, void *misc_data, CondorError &err);
 
 private:
 		/** This method actually does all the brains for all versions
@@ -387,12 +399,17 @@ private:
 			if we couldn't get any results.  The caller must delete
 			this ClassAd when they are done with the results.
 		*/
-	ClassAd* actOnJobs( JobAction action, 
-						const char* constraint, StringList* ids, 
+	ClassAd* actOnJobs( JobAction action,
+						const char* constraint, StringList* ids,
 						const char* reason, const char* reason_attr,
 						const char* reason_code, const char* reason_code_attr,
 						action_result_type_t result_type,
 						CondorError * errstack );
+
+	void requestImpersonationTokenContinued(bool success, Sock *sock, CondorError *errstack,
+		const std::string &trust_domain, bool should_try_token_request, void *misc_data);
+
+	int requestImpersonationTokenFinish(Stream *stream);
 
 		// I can't be copied (yet)
 	DCSchedd( const DCSchedd& );
@@ -408,7 +425,7 @@ private:
 	call the readResults() method and pass in whatever ClassAd you got
 	back from DCSchedd::*Jobs().  Then you can call methods to query
 	the results for specific jobs, or to access the totals, depending
-	on what kind of results you requested when you sent the command. 
+	on what kind of results you requested when you sent the command.
 */
 class JobActionResults {
 public:
@@ -441,12 +458,12 @@ public:
 		*/
 	void record( PROC_ID job_id, action_result_t result );
 
-	int numError( void ) { return ar_error; };
-	int numSuccess( void ) { return ar_success; };
-	int numNotFound( void ) { return ar_not_found; };
-	int numBadStatus( void ) { return ar_bad_status; };
-	int numAlreadyDone( void ) { return ar_already_done; };
-	int numPermissionDenied( void ) { return ar_permission_denied; }; 
+	int numError( void ) const { return ar_error; };
+	int numSuccess( void ) const { return ar_success; };
+	int numNotFound( void ) const { return ar_not_found; };
+	int numBadStatus( void ) const { return ar_bad_status; };
+	int numAlreadyDone( void ) const { return ar_already_done; };
+	int numPermissionDenied( void ) const { return ar_permission_denied; };
 
 		/** Return the result code for the given job.
 			@param job_id The job you care about

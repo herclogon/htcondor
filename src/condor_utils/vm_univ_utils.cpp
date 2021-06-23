@@ -23,7 +23,6 @@
 #include "condor_debug.h"
 #include "condor_config.h"
 #include "basename.h"
-#include "MyString.h"
 #include "string_list.h"
 #include "directory.h"
 #include "condor_attributes.h"
@@ -31,10 +30,10 @@
 #include "vm_univ_utils.h"
 
 // Removes leading/tailing single(') or double(") quote
-MyString 
+std::string 
 delete_quotation_marks(const char *value)
 {
-	MyString fixedvalue;
+	std::string fixedvalue;
 
 	if( !value || (value[0] == '\0')) {
 		return fixedvalue;
@@ -58,7 +57,7 @@ delete_quotation_marks(const char *value)
 	}
 		   
 	fixedvalue = tmpvalue;
-	fixedvalue.trim();
+	trim(fixedvalue);
 	free(tmpvalue);
 	return fixedvalue;
 }
@@ -184,10 +183,10 @@ has_suffix(const char *filename, const char *suffix)
 }
 
 void
-parse_param_string(const char *line, MyString &name, MyString &value, bool del_quotes)
+parse_param_string(const char *line, std::string &name, std::string &value, bool del_quotes)
 {
-	MyString one_line;
-	int pos=0;
+	std::string one_line;
+	size_t pos=0;
 
 	name = "";
 	value = "";
@@ -197,30 +196,30 @@ parse_param_string(const char *line, MyString &name, MyString &value, bool del_q
 	}
 
 	one_line = line;
-	one_line.chomp();
-	pos = one_line.FindChar('=', 0);
-	if( pos <= 0 ) {
+	chomp(one_line);
+	pos = one_line.find('=');
+	if( pos == 0 || pos == std::string::npos ) {
 		return;
 	}
 
 	name = one_line.substr(0, pos);
-	if( pos == (one_line.Length() - 1) ) {
+	if( pos == (one_line.length() - 1) ) {
 		value = "";
 	}else {
-		value = one_line.substr( pos+1, one_line.Length());
+		value = one_line.substr( pos+1 );
 	}
 
-	name.trim();
-	value.trim();
+	trim(name);
+	trim(value);
 
 	if( del_quotes ) {
-		value = delete_quotation_marks(value.Value());
+		value = delete_quotation_marks(value.c_str());
 	}
 	return;
 }
 
 bool 
-create_name_for_VM(ClassAd *ad, MyString& vmname)
+create_name_for_VM(ClassAd *ad, std::string& vmname)
 {
 	if( !ad ) {
 		return false;
@@ -240,7 +239,7 @@ create_name_for_VM(ClassAd *ad, MyString& vmname)
 		return false;
 	}
 
-	MyString stringattr;
+	std::string stringattr;
 	if( ad->LookupString(ATTR_USER, stringattr) != 1 ) {
 		dprintf(D_ALWAYS, "%s cannot be found in job classAd\n", 
 				ATTR_USER); 
@@ -248,11 +247,11 @@ create_name_for_VM(ClassAd *ad, MyString& vmname)
 	}
 
 	// replace '@' with '_'
-	int pos = -1;
-	while( (pos = stringattr.find("@") ) >= 0 ) {
-		stringattr.setAt(pos, '_');
+	size_t pos = std::string::npos;
+	while( (pos = stringattr.find("@") ) != std::string::npos ) {
+		stringattr[pos] = '_';
 	}
 
-	formatstr( vmname, "%s_%d.%d", stringattr.Value(), cluster_id, proc_id );
+	formatstr( vmname, "%s_%d.%d", stringattr.c_str(), cluster_id, proc_id );
 	return true;
 }

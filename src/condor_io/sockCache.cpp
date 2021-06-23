@@ -134,7 +134,7 @@ SocketCache::isFull( void )
 
 
 int
-SocketCache::size( void )
+SocketCache::size( void ) const
 {
 	return cacheSize;
 }
@@ -168,7 +168,7 @@ SocketCache::getCacheSlot()
 
 	// evict the oldest
 	dprintf (D_FULLDEBUG, "SocketCache:  Evicting old connection to %s\n", 
-			 sockCache[oldest].addr.Value());
+			 sockCache[oldest].addr.c_str());
 	if(oldest != -1) {
 		invalidateEntry( oldest );
 	}

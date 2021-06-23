@@ -115,6 +115,7 @@ QmgrJobUpdater::initJobQueueAttrLists( void )
 	common_job_queue_attrs->insert( ATTR_PROPORTIONAL_SET_SIZE );
 	common_job_queue_attrs->insert( ATTR_MEMORY_USAGE );
 	common_job_queue_attrs->insert( ATTR_DISK_USAGE );
+	common_job_queue_attrs->insert( ATTR_SCRATCH_DIR_FILE_COUNT );
 	common_job_queue_attrs->insert( ATTR_JOB_REMOTE_SYS_CPU );
 	common_job_queue_attrs->insert( ATTR_JOB_REMOTE_USER_CPU );
 	common_job_queue_attrs->insert( ATTR_JOB_CUMULATIVE_REMOTE_SYS_CPU );
@@ -151,6 +152,7 @@ QmgrJobUpdater::initJobQueueAttrLists( void )
 	common_job_queue_attrs->insert( ATTR_BLOCK_READS );
 	common_job_queue_attrs->insert( ATTR_NETWORK_IN );
 	common_job_queue_attrs->insert( ATTR_NETWORK_OUT );
+	common_job_queue_attrs->insert( ATTR_JOB_CPU_INSTRUCTIONS );
     common_job_queue_attrs->insert( "Recent" ATTR_BLOCK_READ_KBYTES );
     common_job_queue_attrs->insert( "Recent" ATTR_BLOCK_WRITE_KBYTES );
     common_job_queue_attrs->insert( "Recent" ATTR_BLOCK_READ_BYTES );
@@ -283,7 +285,7 @@ bool
 QmgrJobUpdater::updateAttr( const char *name, const char *expr, bool updateMaster, bool log )
 {
 	bool result;
-	MyString err_msg;
+	std::string err_msg;
 	SetAttributeFlags_t flags=0;
 
 	dprintf( D_FULLDEBUG, "QmgrJobUpdater::updateAttr: %s = %s\n",
@@ -301,7 +303,7 @@ QmgrJobUpdater::updateAttr( const char *name, const char *expr, bool updateMaste
 	if (log) {
 		flags = SHOULDLOG;
 	}
-	if( ConnectQ(schedd_addr,SHADOW_QMGMT_TIMEOUT,false,NULL,m_owner.Value(),schedd_ver) ) {
+	if( ConnectQ(schedd_addr,SHADOW_QMGMT_TIMEOUT,false,NULL,m_owner.c_str(),schedd_ver) ) {
 		if( SetAttribute(cluster,p,name,expr,flags) < 0 ) {
 			err_msg = "SetAttribute() failed";
 			result = FALSE;
@@ -316,7 +318,7 @@ QmgrJobUpdater::updateAttr( const char *name, const char *expr, bool updateMaste
 
 	if( result == FALSE ) {
 		dprintf( D_ALWAYS, "QmgrJobUpdater::updateAttr: failed to "
-				 "update (%s = %s): %s\n", name, expr, err_msg.Value() );
+				 "update (%s = %s): %s\n", name, expr, err_msg.c_str() );
 	}
 	return result;
 }
@@ -325,9 +327,9 @@ QmgrJobUpdater::updateAttr( const char *name, const char *expr, bool updateMaste
 bool
 QmgrJobUpdater::updateAttr( const char *name, int value, bool updateMaster, bool log )
 {
-	MyString buf;
-    buf.formatstr("%d", value);
-	return updateAttr(name, buf.Value(), updateMaster, log);
+	std::string buf;
+	formatstr(buf, "%d", value);
+	return updateAttr(name, buf.c_str(), updateMaster, log);
 }
 
 
@@ -393,7 +395,7 @@ QmgrJobUpdater::updateJob( update_t type, SetAttributeFlags_t commit_flags )
 			 job_queue_attrs->contains_anycase(name)) ) {
 
 			if( ! is_connected ) {
-				if( ! ConnectQ(schedd_addr, SHADOW_QMGMT_TIMEOUT, false, NULL, m_owner.Value(),schedd_ver) ) {
+				if( ! ConnectQ(schedd_addr, SHADOW_QMGMT_TIMEOUT, false, NULL, m_owner.c_str(),schedd_ver) ) {
 					return false;
 				}
 				is_connected = true;
@@ -401,7 +403,7 @@ QmgrJobUpdater::updateJob( update_t type, SetAttributeFlags_t commit_flags )
 			if( ! updateExprTree(name, tree) ) {
 				had_error = true;
 			}
-			undirty_attrs.push_back( name );
+			undirty_attrs.emplace_back(name );
 		}
 	}
 	m_pull_attrs->rewind();
@@ -416,7 +418,7 @@ QmgrJobUpdater::updateJob( update_t type, SetAttributeFlags_t commit_flags )
 			had_error = true;
 		} else {
 			job_ad->AssignExpr( name, value );
-			undirty_attrs.push_back( name );
+			undirty_attrs.emplace_back(name );
 		}
 		free( value );
 	}
@@ -449,7 +451,6 @@ QmgrJobUpdater::retrieveJobUpdates( void )
 	CondorError errstack;
 	StringList job_ids;
 	char id_str[PROC_ID_STR_BUFLEN];
-	MyString error;
 
 	ProcIdToStr(cluster, proc, id_str);
 	job_ids.insert(id_str);
@@ -484,7 +485,7 @@ QmgrJobUpdater::periodicUpdateQ( void )
 }
 
 bool
-QmgrJobUpdater::updateExprTree( const char *name, ExprTree* tree )
+QmgrJobUpdater::updateExprTree( const char *name, ExprTree* tree ) const
 {
 	if( ! tree ) {
 		dprintf( D_ALWAYS, "QmgrJobUpdater::updateExprTree: tree is NULL!\n" );

@@ -65,7 +65,7 @@ class GridUniverseLogic : public Service
 		static gman_node_t* lookupGmanByOwner(const char* owner, 
 							const char* attr_name, int cluster, int proc);
 
-		static int GManagerReaper(Service *,int pid, int exit_status);
+		static int GManagerReaper(int pid, int exit_status);
 
 		static gman_node_t* StartOrFindGManager(const char* owner, 
 				const char* domain, const char* attr_value,  const char* attr_name,
@@ -77,9 +77,9 @@ class GridUniverseLogic : public Service
 
 		// given a pointer to a gman_node_t, return path to a scratch
 		// write the scratch dirctory into the path argument and return path.Value()
-		static const char *scratchFilePath(gman_node_t *, MyString & path);
+		static const char *scratchFilePath(gman_node_t *, std::string & path);
 
-		typedef HashTable<MyString,gman_node_t *> GmanPidTable_t;
+		typedef HashTable<std::string,gman_node_t *> GmanPidTable_t;
 		static GmanPidTable_t * gman_pid_table;
 
 		static int rid;

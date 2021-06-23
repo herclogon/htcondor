@@ -199,7 +199,7 @@ public:
 		// how_fast: DRAIN_GRACEFUL, DRAIN_QUICK, DRAIN_FAST
 		// check_expr: optional expression that must be true for all slots to be drained or request fails
 		// start_expr: optional, specifies START expression to use while draining
-	bool drainJobs(int how_fast,bool resume_on_completion,char const *check_expr,char const *start_expr,std::string &request_id);
+	bool drainJobs(int how_fast,const char * reason,int on_completion,char const *check_expr,char const *start_expr,std::string &request_id);
 
 		// request_id: the draining request id
 		// returns: true/false on success/failure
@@ -236,15 +236,15 @@ public:
 	char const *claim_id() {return m_claim_id.c_str();}
 
 		// Message results:
-	bool claimed_startd_success() { return m_reply == OK; }
+	bool claimed_startd_success() const { return m_reply == OK; }
 	char const *startd_ip_addr() {return m_startd_ip_addr.c_str();}
 	char const *startd_fqu() {return m_startd_fqu.c_str();}
-	bool have_leftovers() { return m_have_leftovers; }
+	bool have_leftovers() const { return m_have_leftovers; }
 	char const *leftover_claim_id() { return m_leftover_claim_id.c_str(); }
 	ClassAd * leftover_startd_ad() 
 		{ return m_have_leftovers ? &m_leftover_startd_ad : NULL; }
 
-	bool have_paired_slot() { return m_have_paired_slot; }
+	bool have_paired_slot() const { return m_have_paired_slot; }
 	char const *paired_claim_id() { return m_paired_claim_id.c_str(); }
 	ClassAd *paired_startd_ad()
 		{ return m_have_paired_slot ? &m_paired_startd_ad : NULL; }
@@ -294,7 +294,7 @@ public:
 	char const *dest_slot_name() {return m_dest_slot_name.c_str();}
 
 		// Message results:
-	bool swap_claims_success() { return m_reply == OK || m_reply == SWAP_CLAIM_ALREADY_SWAPPED; }
+	bool swap_claims_success() const { return m_reply == OK || m_reply == SWAP_CLAIM_ALREADY_SWAPPED; }
 private:
 	std::string m_claim_id;
 	std::string m_description;

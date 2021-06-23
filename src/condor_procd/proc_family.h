@@ -29,6 +29,10 @@
 #include "../condor_starter.V6.1/cgroup.linux.h"
 #endif
 
+#ifdef LINUX
+#include "../condor_utils/perf_counter.linux.h"
+#endif
+
 class ProcFamilyMonitor;
 
 class ProcFamily {
@@ -54,19 +58,19 @@ public:
 
 	// accessor for the "root" process PID
 	//
-	pid_t get_root_pid() { return m_root_pid; };
+	pid_t get_root_pid() const { return m_root_pid; };
 
 	// accessor for the "root" process birthday
 	//
-	birthday_t get_root_birthday() { return m_root_birthday; }
+	birthday_t get_root_birthday() const { return m_root_birthday; }
 
 	// accessor for the "watcher" process PID
 	//
-	pid_t get_watcher_pid() { return m_watcher_pid; };
+	pid_t get_watcher_pid() const { return m_watcher_pid; };
 
 	// accessor for the requested maximum snapshot interval
 	//
-	int get_max_snapshot_interval() { return m_max_snapshot_interval; }
+	int get_max_snapshot_interval() const { return m_max_snapshot_interval; }
 
 	// since we maintain the tree of process families in
 	// ProcFamilyMonitor, not here, we need help in maintaining the
@@ -81,7 +85,7 @@ public:
 
 	// return the maximum image size
 	//
-	unsigned long get_max_image_size() { return m_max_image_size; }
+	unsigned long get_max_image_size() const { return m_max_image_size; }
 
 	// fill in usage information about this family
 	//
@@ -192,6 +196,9 @@ private:
 	// this flag will be true.  This avoids a Linux kernel panic.
 	bool m_last_signal_was_sigstop;
 
+#ifdef LINUX
+	PerfCounter m_perf_counter;
+#endif
 	int count_tasks_cgroup();
 	int aggregate_usage_cgroup_blockio(ProcFamilyUsage*);
 	int aggregate_usage_cgroup_blockio_io_serviced(ProcFamilyUsage*);
@@ -200,7 +207,6 @@ private:
 	int freezer_cgroup(const char *);
 	int spree_cgroup(int);
 	int migrate_to_cgroup(pid_t);
-	void update_max_image_size_cgroup();
 	int get_cpu_usage_cgroup(long &user_cpu, long &sys_cpu);
 #endif
 };

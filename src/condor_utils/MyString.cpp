@@ -22,7 +22,6 @@
 #include "MyString.h"
 #include "condor_snutils.h"
 #include "condor_debug.h"
-#include "condor_random_num.h"
 #include "strupr.h"
 #include <limits>
 #include <vector>
@@ -70,7 +69,7 @@ MyString::~MyString()
 
 MyString::operator std::string() const
 {
-    std::string r = this->Value();
+    std::string r = this->c_str();
     return r;
 }
 
@@ -132,8 +131,19 @@ MyString::truncate(int pos)
 MyString& MyString::
 operator=(const MyString& S) 
 {
-	assign_str(S.Value(), S.Len);
+	assign_str(S.c_str(), S.Len);
     return *this;
+}
+
+/** Destructively moves a MyString guts from rhs to this */
+MyString& 
+MyString::operator=(MyString &&rhs)  noexcept {
+	delete [] Data;
+	this->Data     = rhs.Data;
+	this->Len      = rhs.Len;
+	this->capacity = rhs.capacity;
+	rhs.init();
+	return *this;
 }
 
 MyString& MyString::
@@ -225,7 +235,7 @@ MyString::reserve_at_least(const int sz)
 	bool success;
 
 	twice_as_much = 2 * capacity;
-	if (sz <= capacity && capacity > 0) {
+	if (sz <= capacity && capacity > 0 && Data) {
 		success = true;
 	} else if (twice_as_much > sz) {
 		success = reserve(twice_as_much);
@@ -248,7 +258,7 @@ MyString&
 MyString::operator+=(const MyString& S) 
 {
 	
-    append_str( S.Value(), S.Len );
+    append_str( S.c_str(), S.Len );
     return *this;
 }
 
@@ -314,7 +324,7 @@ MyString::append_to_list(char const *str,char const *delim /* = "," */) {
 
 void
 MyString::append_to_list(MyString const &str,char const *delim /* ="," */) {
-	append_to_list(str.Value(),delim);
+	append_to_list(str.c_str(),delim);
 }
 
 MyString& 
@@ -360,10 +370,6 @@ template <> bool MyString::serialize_int<bool>(bool val) { append_str(val ? "1" 
 
 #ifdef WIN32
 #define strtoull _strtoui64
-#pragma push_macro("min")
-#pragma push_macro("max")
-#undef min
-#undef max
 #endif
 
 // deserialize an int into the given value, and advance the deserialization pointer.
@@ -380,13 +386,21 @@ template <class T> bool YourStringDeserializer::deserialize_int(T* val)
 	if (std::numeric_limits<T>::is_signed) {
 		long long tmp;
 		tmp = strtoll(m_p, &endp, 10);
-		if (tmp < (long long)std::numeric_limits<T>::min() || tmp > (long long)std::numeric_limits<T>::max()) return false;
+
+			// following code is dead if T is 64 bits
+		if (sizeof(T) != sizeof(long long)) {
+				if (tmp < (long long)std::numeric_limits<T>::min() || tmp > (long long)std::numeric_limits<T>::max()) return false;
+		}
 		if (endp == m_p) return false;
 		*val = (T)tmp;
 	} else {
 		unsigned long long tmp;
 		tmp = strtoull(m_p, &endp, 10);
-		if (tmp > (unsigned long long)std::numeric_limits<T>::max()) return false;
+
+			// following code is dead if T is 64 bits
+		if (sizeof(T) != sizeof(long long)) {
+			if (tmp > (unsigned long long)std::numeric_limits<T>::max()) return false;
+		}
 		if (endp == m_p) return false;
 		*val = (T)tmp;
 	}
@@ -440,6 +454,14 @@ bool YourStringDeserializer::deserialize_string(MyString & val, const char * sep
 	return true;
 }
 
+bool YourStringDeserializer::deserialize_string(std::string & val, const char * sep)
+{
+	const char * p; size_t len;
+	if ( ! deserialize_string(p, len, sep)) return false;
+	val.assign(p, len);
+	return true;
+}
+
 // force instantiation of the serialize and deserialize functions that users of condor_utils will need
 template bool MyString::serialize_int<int>(int val);
 template bool MyString::serialize_int<long>(long val);
@@ -484,11 +506,6 @@ void force_mystring_templates() {
 }
 #endif
 
-#ifdef WIN32
- #pragma pop_macro("min")
- #pragma pop_macro("max")
-#endif
-
 MSC_RESTORE_WARNING(6052) // call to snprintf might not null terminate string.
 
 
@@ -510,7 +527,7 @@ MyString::substr(int pos, int len) const
 	if ( pos < 0 ) {
 		pos = 0;
 	}
-	if ( pos + len > Len ) {
+	if ( len > Len - pos ) {
 		len = Len - pos;
 	}
 	S.reserve( len );
@@ -655,7 +672,7 @@ MyString::vformatstr_cat(const char *format,va_list args)
 	int s_len;
 
     if( !format || *format == '\0' ) {
-		return Value();
+		return c_str();
 	}
 #ifdef HAVE_VASPRINTF
 	s_len = vasprintf(&buffer, format, args);
@@ -681,7 +698,7 @@ MyString::vformatstr_cat(const char *format,va_list args)
 	::vsprintf(Data + Len, format, args);
 #endif
 	Len += s_len;
-    return Value();
+    return c_str();
 }
 
 const char *
@@ -847,82 +864,6 @@ MyString::remove_prefix(const char * prefix)
 }
 
 void
-MyString::RemoveAllWhitespace( void )
-{
-	int i;
-	int j;
-	for ( i = 0, j = 0; i < Length(); i++ ) {
-		if ( !isspace( Data[i] ) ) {
-			if ( i != j ) {
-				Data[j] = Data[i];
-			}
-			j++;
-		}
-	}
-	Data[j] = '\0';
-	Len = j;
-}
-
-// if len is 10, this means 10 random ascii characters from the set.
-void
-MyString::randomlyGenerate(const char *set, int len)
-{
-	int i;
-	int idx;
-	int set_len;
-
-    if (!set || len <= 0) {
-		// passed in NULL set, so automatically MyString is empty
-		// or told the string size is negative or nothing, again empty string.
-		if (Data) {
-			Data[0] = '\0';
-		}
-		Len = 0;
-		// leave capacity alone.
-		return;
-	}
-
-	// start over from scratch with this string.
-    if (Data) {
-		delete[] Data;
-	}
-
-	Data = new char[len+1]; 
-	Data[len] = '\0';
-	Len = len;
-	capacity = len;
-
-	set_len = (int)strlen(set);
-
-	// now pick randomly from the set and fill stuff in
-	for (i = 0; i < len ; i++) {
-		idx = get_random_int() % set_len;
-		Data[i] = set[idx];
-	}
-}
-
-void
-MyString::randomlyGenerateHex(int len)
-{
-	randomlyGenerate("0123456789abcdef", len);
-}
-
-void
-MyString::randomlyGeneratePassword(int len)
-{
-	// Create a randome password of alphanumerics
-	// and safe-to-print punctuation.
-	//
-	randomlyGenerate(
-				"abcdefghijklmnopqrstuvwxyz"
-				"ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-				"0123456789"
-				"!@#$%^&*()-_=+,<.>/?",
-				len
-				);
-}
-
-void
 MyString::init()
 {
     Data=NULL;
@@ -961,7 +902,7 @@ int operator==(const MyString& S1, const MyString& S2)
 
 int operator==(const MyString& S1, const char *S2) 
 {
-    if ((!S1.Data || !S1.Length()) && (!S2 || !strlen(S2))) {
+    if ((!S1.Data || !S1.length()) && (!S2 || !strlen(S2))) {
 		return 1;
 	}
     if (!S1.Data || !S2) {
@@ -975,7 +916,7 @@ int operator==(const MyString& S1, const char *S2)
 
 int operator==(const char *S1, const MyString& S2) 
 {
-    if ((!S2.Data || !S2.Length()) && (!S1 || !strlen(S1))) {
+    if ((!S2.Data || !S2.length()) && (!S1 || !strlen(S1))) {
 		return 1;
 	}
     if (!S2.Data || !S1) {
@@ -1074,11 +1015,25 @@ MyStringFpSource::readLine(MyString & str, bool append /* = false*/)
 }
 
 bool
+MyStringFpSource::readLine(std::string & str, bool append /* = false*/)
+{
+    return ::readLine(str, fp, append);
+}
+
+bool
 MyStringFpSource::isEof()
 {
 	return feof(fp) != 0;
 }
 
+
+bool
+MyStringCharSource::readLine(std::string & str, bool append /* = false*/) {
+    MyString ms(str);
+    bool rv = readLine(ms, append);
+    str = ms;
+    return rv;
+}
 
 // the MyStringCharSource scans a string buffer returning
 // whenver it sees a \n
@@ -1136,12 +1091,17 @@ bool MyString::readLine( MyStringSource & src, bool append /*= false*/) {
  *--------------------------------------------------------------------*/
 
 MyStringTokener::MyStringTokener() : tokenBuf(NULL), nextToken(NULL) {}
-/*
-MyStringTokener::MyStringTokener(const char *str) : tokenBuf(NULL), nextToken(NULL)
-{
-	if (str) Tokenize(str);
+
+MyStringTokener &
+MyStringTokener::operator=(MyStringTokener &&rhs)  noexcept {
+	free(tokenBuf);
+	this->tokenBuf = rhs.tokenBuf;
+	this->nextToken = rhs.nextToken;
+	rhs.tokenBuf = nullptr;
+	rhs.nextToken = nullptr;
+	return *this;
 }
-*/
+
 MyStringTokener::~MyStringTokener()
 {
 	if (tokenBuf) {
@@ -1198,7 +1158,7 @@ const char *MyStringTokener::GetNextToken(const char *delim, bool skipBlankToken
 MyStringWithTokener::MyStringWithTokener(const MyString &S)
 {
 	init();
-	assign_str(S.Value(), S.Len);
+	assign_str(S.c_str(), S.Len);
 }
 
 MyStringWithTokener::MyStringWithTokener(const char *s)
@@ -1206,6 +1166,13 @@ MyStringWithTokener::MyStringWithTokener(const char *s)
 	init();
 	size_t s_len = s ? strlen(s) : 0;
 	assign_str(s, (int)s_len);
+}
+
+MyStringWithTokener &
+MyStringWithTokener::operator=(MyStringWithTokener &&rhs)  noexcept {
+	MyString::operator=(rhs);
+	this->tok = std::move(rhs.tok);
+	return *this;
 }
 
 #if 1

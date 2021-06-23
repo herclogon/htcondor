@@ -24,7 +24,6 @@
 #include "condor_attributes.h"
 #include "condor_classad.h"
 #include "condor_daemon_core.h"
-#include "MyString.h"
 #include "gahp_common.h"
 #include "my_popen.h"
 #include "vmgahp_common.h"
@@ -32,15 +31,13 @@
 #include "vmgahp.h"
 #include "vmgahp_error_codes.h"
 #include "condor_vm_universe_types.h"
-#include "../condor_privsep/condor_privsep.h"
 #include "sig_install.h"
-#include "../condor_privsep/privsep_fork_exec.h"
 
 // FreeBSD 6, OS X 10.4, Solaris 5.9 don't automatically give you environ to work with
 extern DLL_IMPORT_MAGIC char **environ;
 
-MyString caller_name;
-MyString job_user_name;
+std::string caller_name;
+std::string job_user_name;
 
 uid_t caller_uid = ROOT_UID;
 gid_t caller_gid = ROOT_UID;
@@ -203,7 +200,7 @@ write_local_settings_from_file(FILE* out_fp,
 	if (tmp == NULL) {
 		return true;
 	}
-	MyString local_settings_file = tmp;
+	std::string local_settings_file = tmp;
 	free(tmp);
 	if (start_mark != NULL) {
 		if (fprintf(out_fp, "%s\n", start_mark) < 0) {
@@ -213,17 +210,17 @@ write_local_settings_from_file(FILE* out_fp,
 			return false;
 		}
 	}
-	FILE* in_fp = safe_fopen_wrapper_follow(local_settings_file.Value(), "r");
+	FILE* in_fp = safe_fopen_wrapper_follow(local_settings_file.c_str(), "r");
 	if (in_fp == NULL) {
 		vmprintf(D_ALWAYS,
 		         "fopen error on %s: %s\n",
-		         local_settings_file.Value(),
+		         local_settings_file.c_str(),
 		         strerror(errno));
 		return false;
 	}
-	MyString line;
-	while (line.readLine(in_fp)) {
-		if (fputs(line.Value(), out_fp) == EOF) {
+	std::string line;
+	while (readLine(line, in_fp)) {
+		if (fputs(line.c_str(), out_fp) == EOF) {
 			vmprintf(D_ALWAYS,
 			         "fputs error copying local settings: %s\n",
 			         strerror(errno));
@@ -241,35 +238,6 @@ write_local_settings_from_file(FILE* out_fp,
 		}
 	}
 	return true;
-}
-
-// extract the n-th field string from string result.
-// field_num starts from 1.
-// For example, if result_string is "10 0 internal_error",
-// field_num = 1 will return "10";
-// field_num = 2 will return "0";
-// field_num = 3 will return "internal_error"
-MyString parse_result_string( const char *result_string, int field_num)
-{
-	StringList result_list(result_string, " ");
-	if( result_list.isEmpty() ) {
-		return "";
-	}
-
-	if( field_num > result_list.number() ) {
-		return "";
-	}
-
-	char *arg = NULL;
-	int field = 0;
-	result_list.rewind();
-	while( (arg = result_list.next()) != NULL ) {
-		field++;
-		if( field == field_num ) {
-			return arg;
-		}
-	}
-	return "";
 }
 
 bool verify_digit_arg(const char *s)
@@ -349,12 +317,12 @@ write_to_daemoncore_pipe(const char* fmt, ... )
 		return;
 	}
 
-	MyString output;
+	std::string output;
 	va_list args;
 	va_start(args, fmt);
-	output.vformatstr(fmt, args);
+	vformatstr(output, fmt, args);
 	write_to_daemoncore_pipe(vmgahp_stdout_pipe, 
-			output.Value(), output.Length());
+			output.c_str(), output.length());
 	va_end(args);
 }
 
@@ -397,12 +365,12 @@ void vmprintf( int flags, const char *fmt, ... )
 	saved_flags = oriDebugFlags;	/* Limit recursive calls */
 	oriDebugFlags = 0;
 
-	MyString output;
+	std::string output;
 	va_list args;
 	va_start(args, fmt);
-	output.vsprintf(fmt, args);
+	vformatstr(output, fmt, args);
 	va_end(args);
-	if( output.IsEmpty() ) {
+	if( output.empty() ) {
 		oriDebugFlags = saved_flags;
 		return;
 	}
@@ -410,18 +378,18 @@ void vmprintf( int flags, const char *fmt, ... )
 	if( Termlog ) {
 		if( (vmgahp_mode == VMGAHP_TEST_MODE) ||
 				(vmgahp_mode == VMGAHP_KILL_MODE) ) {
-			fprintf(stderr, "VMGAHP[%d]: %s", (int)mypid, output.Value());
+			fprintf(stderr, "VMGAHP[%d]: %s", (int)mypid, output.c_str());
 			oriDebugFlags = saved_flags;
 			return;
 		}
 
 		if( (vmgahp_stderr_tid != -1 ) &&
 				(vmgahp_stderr_pipe != -1 )) {
-			vmgahp_stderr_buffer.Write(output.Value());
+			vmgahp_stderr_buffer.Write(output.c_str());
 			daemonCore->Reset_Timer(vmgahp_stderr_tid, 0, 2);
 		}
 	}else {
-		dprintf(flags, "VMGAHP[%d]: %s", (int)mypid, output.Value());
+		dprintf(flags, "VMGAHP[%d]: %s", (int)mypid, output.c_str());
 	}
 	oriDebugFlags = saved_flags;
 }
@@ -439,8 +407,8 @@ initialize_uids(void)
 	name = my_username();
 	domain = my_domainname();
 
-	caller_name = name;
-	job_user_name = name;
+	caller_name = name ? name : "";
+	job_user_name = name ? name : "";
 
 	if ( !init_user_ids(name, domain ) ) {
 		// shouldn't happen - we always can get our own token
@@ -448,7 +416,7 @@ initialize_uids(void)
 	}
 
 	vmprintf(D_ALWAYS, "Initialize Uids: caller=%s@%s, job user=%s@%s\n", 
-			caller_name.Value(), domain, job_user_name.Value(), domain);
+			caller_name.c_str(), domain, job_user_name.c_str(), domain);
 
 	if( name ) {
 		free(name);
@@ -465,7 +433,7 @@ initialize_uids(void)
 			(int)get_condor_uid(), (int)get_condor_gid());
 
 	vmprintf(D_ALWAYS, "Initialize Uids: caller=%s, job user=%s\n", 
-			caller_name.Value(), job_user_name.Value());
+			caller_name.c_str(), job_user_name.c_str());
 	
 	return;
 #endif
@@ -498,13 +466,13 @@ get_job_user_gid(void)
 const char* 
 get_caller_name(void)
 {
-	return caller_name.Value();
+	return caller_name.c_str();
 }
 
 const char* 
 get_job_user_name(void)
 {
-	return job_user_name.Value();
+	return job_user_name.c_str();
 }
 
 bool canSwitchUid(void)
@@ -524,7 +492,7 @@ int systemCommand( ArgList &args, priv_state priv, StringList *cmd_out, StringLi
 	FILE *fp = NULL;
 	FILE * fp_for_stdin = NULL;
 	FILE * childerr = NULL;
-	MyString line;
+	std::string line;
 	char buff[1024];
 	StringList *my_cmd_out = cmd_out;
 
@@ -533,7 +501,6 @@ int systemCommand( ArgList &args, priv_state priv, StringList *cmd_out, StringLi
 	int stdout_pipes[2];
 	int stdin_pipes[2];
 	int pid;
-	bool use_privsep = false;
 	switch ( priv ) {
 	case PRIV_ROOT:
 		prev = set_root_priv();
@@ -541,11 +508,6 @@ int systemCommand( ArgList &args, priv_state priv, StringList *cmd_out, StringLi
 	case PRIV_USER:
 	case PRIV_USER_FINAL:
 		prev = set_user_priv();
-#if !defined(WIN32)
-		if ( privsep_enabled() && (job_user_uid != get_condor_uid()) ) {
-			use_privsep = true;
-		}
-#endif
 		break;
 	default:
 		// Stay as Condor user, this should be a no-op
@@ -558,12 +520,7 @@ int systemCommand( ArgList &args, priv_state priv, StringList *cmd_out, StringLi
 	    set_priv( prev );
 	    return -1;
 	  }
-	//if ( use_privsep ) {
-	//	fp = privsep_popen(args, "r", want_stderr, job_user_uid);
-	//}
-	//else {
 	fp = my_popen( args, "r", merge_stderr_with_stdout ? MY_POPEN_OPT_WANT_STDERR : 0 );
-	//}
 #else
 	// The old way of doing things (and the Win32 way of doing
 	//	things)
@@ -575,10 +532,8 @@ int systemCommand( ArgList &args, priv_state priv, StringList *cmd_out, StringLi
 	    return -1;
 	  }
 
-	PrivSepForkExec psforkexec;
 	char ** args_array = args.GetStringArray();
 	int error_pipe[2];
-		// AIX 5.2, Solaris 5.9, HPUX 11 don't have AF_LOCAL
 
 	if(pipe(stdin_pipes) < 0)
 	  {
@@ -596,22 +551,6 @@ int systemCommand( ArgList &args, priv_state priv, StringList *cmd_out, StringLi
 	    set_priv( prev );
 	    return -1;
 	  }
-
-	if ( use_privsep ) {
-	  if(!psforkexec.init())
-	    {
-	      vmprintf(D_ALWAYS,
-		       "my_popenv failure on %s\n",
-		       args_array[0]);
-	      close(stdin_pipes[0]);
-	      close(stdin_pipes[1]);
-	      close(stdout_pipes[0]);
-	      close(stdout_pipes[1]);
-		  deleteStringArray( args_array );
-	      set_priv( prev );
-	      return -1;
-	    }
-	}
 
 	if(cmd_err != NULL)
 	  {
@@ -674,7 +613,7 @@ int systemCommand( ArgList &args, priv_state priv, StringList *cmd_out, StringLi
 	    uid_t euid = geteuid();
 	    gid_t egid = getegid();
 	    if ( seteuid( 0 ) ) { }
-	    setgroups( 1, &egid );
+	    (void) setgroups( 1, &egid );
 	    if ( setgid( egid ) ) { }
 	    if ( setuid( euid ) ) _exit(ENOEXEC); // Unsafe?
 	    
@@ -684,18 +623,9 @@ int systemCommand( ArgList &args, priv_state priv, StringList *cmd_out, StringLi
 	    sigprocmask(SIG_UNBLOCK, &sigs, NULL);
 
 
-	    MyString cmd = args_array[0];
+		std::string cmd = args_array[0];
 
-	    if ( use_privsep ) {
-	    
-	      ArgList al;
-	      psforkexec.in_child(cmd, al);
-          deleteStringArray( args_array );
-	      args_array = al.GetStringArray();
-	    }
-
-
-	    execvp(cmd.Value(), args_array);
+	    execvp(cmd.c_str(), args_array);
 	    vmprintf(D_ALWAYS, "Could not execute %s: %s\n", args_array[0], strerror(errno));
 	    exit(-1);
 	  }
@@ -721,45 +651,18 @@ int systemCommand( ArgList &args, priv_state priv, StringList *cmd_out, StringLi
 	      }
 	  }
 
-	if ( use_privsep ) {
-	  FILE* _fp = psforkexec.parent_begin();
-	  privsep_exec_set_uid(_fp, job_user_uid);
-	  privsep_exec_set_path(_fp, args_array[0]);
-	  privsep_exec_set_args(_fp, args);
-	  Env env;
-	  env.MergeFrom(environ);
-	  privsep_exec_set_env(_fp, env);
-	  privsep_exec_set_iwd(_fp, ".");
-
-	  privsep_exec_set_inherit_fd(_fp, 1);
-	  privsep_exec_set_inherit_fd(_fp, 2);
-	  privsep_exec_set_inherit_fd(_fp, 0);
-	
-	  if (!psforkexec.parent_end()) {
-	    vmprintf(D_ALWAYS,
-		     "my_popenv failure on %s\n",
-		     args_array[0]);
-	    fclose(fp);
-		fclose(fp_for_stdin);
-		if (childerr) {
-			fclose(childerr);
-		}
-		deleteStringArray( args_array );
-		set_priv( prev );
-	    return -1;
-	  }
-	}
-
 	deleteStringArray( args_array );
 #endif
 	set_priv( prev );
 	if ( fp == NULL ) {
-		MyString args_string;
-		args.GetArgsStringForDisplay( &args_string, 0 );
+		std::string args_string;
+		args.GetArgsStringForDisplay( args_string, 0 );
 		vmprintf( D_ALWAYS, "Failed to execute command: %s\n",
-				  args_string.Value() );
-		if (childerr)
+				  args_string.c_str() );
+		if (childerr) {
 			fclose(childerr);
+			fclose(fp_for_stdin);
+		}
 		return -1;
 	}
 
@@ -784,8 +687,8 @@ int systemCommand( ArgList &args, priv_state priv, StringList *cmd_out, StringLi
 
 	while ( fgets( buff, sizeof(buff), fp ) != NULL ) {
 		line += buff;
-		if ( line.chomp() ) {
-			my_cmd_out->append( line.Value() );
+		if ( chomp(line) ) {
+			my_cmd_out->append( line.c_str() );
 			line = "";
 		}
 	}
@@ -795,9 +698,9 @@ int systemCommand( ArgList &args, priv_state priv, StringList *cmd_out, StringLi
 	    while(fgets(buff, sizeof(buff), childerr) != NULL)
 	      {
 		line += buff;
-		if(line.chomp())
+		if(chomp(line))
 		  {
-		    cmd_err->append(line.Value());
+		    cmd_err->append(line.c_str());
 		    line = "";
 		  }
 	      }
@@ -821,11 +724,11 @@ int systemCommand( ArgList &args, priv_state priv, StringList *cmd_out, StringLi
 	  }
 #endif
 	if( result != 0 ) {
-		MyString args_string;
-		args.GetArgsStringForDisplay(&args_string,0);
+		std::string args_string;
+		args.GetArgsStringForDisplay(args_string,0);
 		vmprintf(D_ALWAYS,
 		         "Command returned non-zero: %s\n",
-		         args_string.Value());
+		         args_string.c_str());
 		my_cmd_out->rewind();
 		const char *next_line;
 		while ( (next_line = my_cmd_out->next()) ) {
@@ -838,10 +741,10 @@ int systemCommand( ArgList &args, priv_state priv, StringList *cmd_out, StringLi
 	return result;
 }
 
-MyString
+std::string
 makeErrorMessage(const char* err_string)
 {
-	MyString buffer;
+	std::string buffer;
 
 	if( err_string ) {
 		for( int i = 0; err_string[i] != '\0'; i++ ) {

@@ -660,7 +660,7 @@ int RefreshProxyThruMyProxy(Proxy * proxy)
 {
 	char * proxy_filename = proxy->proxy_filename;
 	MyProxyEntry * myProxyEntry = NULL;
-	MyString args_string;
+	std::string args_string;
 	int pid;
 
 	// Starting from the most recent myproxy entry
@@ -709,7 +709,7 @@ int RefreshProxyThruMyProxy(Proxy * proxy)
 	if (myproxyGetDelegationReaperId == 0 ) {
 		myproxyGetDelegationReaperId = daemonCore->Register_Reaper(
 					   "GetDelegationReaper",
-					   (ReaperHandler) &MyProxyGetDelegationReaper,
+					    &MyProxyGetDelegationReaper,
 					   "GetDelegation Reaper");
  	}
 
@@ -737,6 +737,15 @@ int RefreshProxyThruMyProxy(Proxy * proxy)
 				"for writing password, aborting\n");
 		return FALSE;
 	}
+
+	// Just to be sure
+	if ((myProxyEntry->get_delegation_password_pipe[0] < 0) ||
+		(myProxyEntry->get_delegation_password_pipe[1] < 0)) {
+
+		dprintf(D_ALWAYS, "pipe(2) returned negative fds in RefreshProxyThruMyProxy, aborting\n");
+	   return FALSE;
+	}	   
+
 	int written = write (myProxyEntry->get_delegation_password_pipe[1],
 		   myProxyEntry->myproxy_password,
 		   strlen (myProxyEntry->myproxy_password));
@@ -795,8 +804,10 @@ int RefreshProxyThruMyProxy(Proxy * proxy)
 	if(!myProxyEntry->get_delegation_err_filename) {
 		dprintf( D_ALWAYS, "Failed to create temp file\n");
 	} else {
-		MSC_SUPPRESS_WARNING_FIXME(6031) // warning: return value of 'chmod' ignored.
-		chmod (myProxyEntry->get_delegation_err_filename, 0600);
+		int r = chmod (myProxyEntry->get_delegation_err_filename, 0600);
+		if (r < 0) {
+			dprintf( D_ALWAYS, "Failed to chmod %s to 0600, continuing anyway\n", myProxyEntry->get_delegation_err_filename);
+		}
 		myProxyEntry->get_delegation_err_fd = safe_open_wrapper_follow(myProxyEntry->get_delegation_err_filename,O_RDWR);
 		if (myProxyEntry->get_delegation_err_fd == -1) {
 			dprintf (D_ALWAYS, "Error opening file %s\n",
@@ -817,8 +828,8 @@ int RefreshProxyThruMyProxy(Proxy * proxy)
 	}
 
 
-	args.GetArgsStringForDisplay(&args_string);
-	dprintf (D_ALWAYS, "Calling %s %s\n", myproxy_get_delegation_pgm, args_string.Value());
+	args.GetArgsStringForDisplay(args_string);
+	dprintf (D_ALWAYS, "Calling %s %s\n", myproxy_get_delegation_pgm, args_string.c_str());
 
 	pid = daemonCore->Create_Process (
 					myproxy_get_delegation_pgm,
@@ -872,7 +883,7 @@ int RefreshProxyThruMyProxy(Proxy * proxy)
 }
 
 
-int MyProxyGetDelegationReaper(Service *, int exitPid, int exitStatus)
+int MyProxyGetDelegationReaper(int exitPid, int exitStatus)
 {
 	// Find the right MyProxyEntry
 	Proxy *proxy=NULL;

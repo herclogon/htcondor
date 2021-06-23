@@ -36,7 +36,7 @@ extern "C" char* d_format_time(double);   // this should be in a .h
 
 
 // "private" helper for when we already know the cluster/proc
-static FILE* email_user_open_id( ClassAd *jobAd, int cluster, int proc, 
+static FILE* email_user_open_id( ClassAd *jobAd, int cluster, int proc,
 								 const char *subject );
 
 static void
@@ -56,7 +56,7 @@ email_user_open_id( ClassAd *jobAd, int, int, const char *subject )
 	  message should go.  This info is in the classad.
     */
     if( ! jobAd->LookupString(ATTR_NOTIFY_USER, &email_addr) ) {
-			// no email address specified in the job ad; try owner 
+			// no email address specified in the job ad; try owner
 		if( ! jobAd->LookupString(ATTR_OWNER, &email_addr) ) {
 				// we're screwed, give up.
 			return NULL;
@@ -81,7 +81,7 @@ email_custom_attributes( FILE* mailer, ClassAd* job_ad )
     MyString attributes;
 
     construct_custom_attributes( attributes, job_ad );
-    fprintf( mailer, "%s", attributes.Value( ) );
+    fprintf( mailer, "%s", attributes.c_str( ) );
     return;
 }
 
@@ -107,7 +107,7 @@ construct_custom_attributes( MyString &attributes, ClassAd* job_ad )
 	while( (tmp = email_attrs.next()) ) {
 		expr_tree = job_ad->LookupExpr(tmp);
 		if( ! expr_tree ) {
-            dprintf(D_ALWAYS, "Custom email attribute (%s) is undefined.", 
+            dprintf(D_ALWAYS, "Custom email attribute (%s) is undefined.",
                     tmp);
 			continue;
 		}
@@ -131,7 +131,7 @@ email_check_domain( const char* addr, ClassAd* job_ad )
 		return strdup( addr );
 	}
 
-		// No host name specified; add a domain. 
+		// No host name specified; add a domain.
 	char* domain = NULL;
 
 		// First, we check for EMAIL_DOMAIN in the config file
@@ -145,11 +145,11 @@ email_check_domain( const char* addr, ClassAd* job_ad )
 		// If that's not there, look for UID_DOMAIN in the config file
 	if( ! domain ) {
 		domain = param( "UID_DOMAIN" );
-	} 
+	}
 	
 	if( ! domain ) {
 			// we're screwed, we can't append a domain, just return
-			// the username again... 
+			// the username again...
 		return strdup( addr );
 	}
 	
@@ -160,7 +160,7 @@ email_check_domain( const char* addr, ClassAd* job_ad )
 		// we've got to free() it now so we don't leak memory.
 	free( domain );
 
-	return strdup( full_addr.Value() );
+	return strdup( full_addr.c_str() );
 }
 
 
@@ -189,55 +189,55 @@ Email::init()
 
 
 void
-Email::sendHold( ClassAd* ad, const char* reason )
+Email::sendHold( ClassAd* ad, const char* reason)
 {
-	sendAction( ad, reason, "put on hold" );
+	sendAction( ad, reason, "put on hold", JOB_SHOULD_HOLD);
 }
 
 
 void
-Email::sendRemove( ClassAd* ad, const char* reason )
+Email::sendRemove( ClassAd* ad, const char* reason)
 {
-	sendAction( ad, reason, "removed" );
+	sendAction( ad, reason, "removed", -1);
 }
 
 void
-Email::sendRelease( ClassAd* ad, const char* reason )
+Email::sendRelease( ClassAd* ad, const char* reason)
 {
-	sendAction( ad, reason, "released from hold" );
+	sendAction( ad, reason, "released from hold", -1);
 }
 
 void
-Email::sendHoldAdmin( ClassAd* ad, const char* reason )
+Email::sendHoldAdmin( ClassAd* ad, const char* reason)
 {
 	email_admin = true;
-	sendAction( ad, reason, "put on hold" );
+	sendAction( ad, reason, "put on hold", JOB_SHOULD_HOLD);
 }
 
 void
 Email::sendRemoveAdmin( ClassAd* ad, const char* reason )
 {
 	email_admin = true;
-	sendAction( ad, reason, "removed" );
+	sendAction( ad, reason, "removed", -1);
 }
 
 void
 Email::sendReleaseAdmin( ClassAd* ad, const char* reason )
 {
 	email_admin = true;
-	sendAction( ad, reason, "released from hold" );
+	sendAction( ad, reason, "released from hold", -1);
 }
 
 
 void
 Email::sendAction( ClassAd* ad, const char* reason,
-						const char* action )
+						const char* action, int exit_code)
 {
 	if( ! ad ) {
 		EXCEPT( "Email::sendAction() called with NULL ad!" );
 	}
 
-	if( ! open_stream(ad, -1, action) ) {
+	if( ! open_stream(ad, exit_code, action) ) {
 			// nothing to do
 		return;
 	}
@@ -253,7 +253,7 @@ Email::sendAction( ClassAd* ad, const char* reason,
 
 /*
 void
-Email::sendError( ClassAd* ad, const char* err_summary, 
+Email::sendError( ClassAd* ad, const char* err_summary,
 				  const char* err_msg )
 {
 		// TODO!
@@ -279,11 +279,11 @@ Email::open_stream( ClassAd* ad, int exit_reason, const char* subject )
 		full_subject += subject;
 	}
 	if(email_admin) {
-		fp = email_admin_open( full_subject.Value() );
+		fp = email_admin_open( full_subject.c_str() );
 	} else {
-		fp = email_user_open_id( ad, cluster, proc, full_subject.Value() );
+		fp = email_user_open_id( ad, cluster, proc, full_subject.c_str() );
 	}
-	return fp; 
+	return fp;
 }
 
 
@@ -298,19 +298,33 @@ Email::writeJobId( ClassAd* ad )
 	char* cmd = NULL;
 	ad->LookupString( ATTR_JOB_CMD, &cmd );
 
+	std::string batch_name;
+	ad->LookupString(ATTR_JOB_BATCH_NAME, batch_name);
+
+	std::string iwd;
+	ad->LookupString(ATTR_JOB_IWD, iwd);
+
 	MyString args;
 	ArgList::GetArgsStringForDisplay(ad,&args);
 
 	fprintf( fp, "Condor job %d.%d\n", cluster, proc);
+
 	if( cmd ) {
 		fprintf( fp, "\t%s", cmd );
 		free( cmd );
 		cmd = NULL;
-		if( !args.IsEmpty() ) {
-			fprintf( fp, " %s\n", args.Value() );
+		if( !args.empty() ) {
+			fprintf( fp, " %s\n", args.c_str() );
 		} else {
 			fprintf( fp, "\n" );
 		}
+	}
+
+	if (batch_name.length() > 0) {
+		fprintf( fp, "\tfrom batch %s\n", batch_name.c_str());
+	}
+	if (iwd.length() > 0) {
+		fprintf( fp, "\tsubmitted from directory %s\n", iwd.c_str());
 	}
 	return true;
 }
@@ -324,13 +338,13 @@ Email::writeExit( ClassAd* ad, int exit_reason )
 		return false;
 	}
 
-		// gather all the info out of the job ad which we want to 
+		// gather all the info out of the job ad which we want to
 		// put into the email message.
 
-	int had_core = FALSE;
+	bool had_core = false;
 	if( ! ad->LookupBool(ATTR_JOB_CORE_DUMPED, had_core) ) {
 		if( exit_reason == JOB_COREDUMPED ) {
-			had_core = TRUE;
+			had_core = true;
 		}
 	}
 
@@ -365,11 +379,11 @@ Email::writeExit( ClassAd* ad, int exit_reason )
 	time_t now = time(NULL);
 
 	writeJobId( ad );
-	MyString msg;
+	std::string msg;
 	if( ! printExitString(ad, exit_reason, msg)	) {
 		msg += "exited in an unknown way";
 	}
-	fprintf( fp, "%s\n", msg.Value() );
+	fprintf( fp, "%s\n", msg.c_str() );
 
 	if( had_core ) {
 			// TODO!
@@ -385,7 +399,7 @@ Email::writeExit( ClassAd* ad, int exit_reason )
 		arch_time = now;
 		fprintf(fp, "Completed at:        %s", ctime(&arch_time));
 		
-		fprintf(fp, "Real Time:           %s\n", 
+		fprintf(fp, "Real Time:           %s\n",
 				d_format_time(real_time));
 	}	
 
@@ -428,17 +442,17 @@ Email::writeBytes( float run_sent, float run_recv, float tot_sent,
 	}
 
 	fprintf( fp, "\nNetwork:\n" );
-	fprintf( fp, "%10s Run Bytes Received By Job\n", 
+	fprintf( fp, "%10s Run Bytes Received By Job\n",
 			 metric_units(run_recv) );
 	fprintf( fp, "%10s Run Bytes Sent By Job\n",
 			 metric_units(run_sent) );
-	fprintf( fp, "%10s Total Bytes Received By Job\n", 
+	fprintf( fp, "%10s Total Bytes Received By Job\n",
 			 metric_units(tot_recv) );
 	fprintf( fp, "%10s Total Bytes Sent By Job\n",
 			 metric_units(tot_sent) );
 }
 
-void 
+void
 Email::writeCustom( ClassAd *ad )
 {
 		// if we're not currently open w/ a message, we're done
@@ -449,7 +463,7 @@ Email::writeCustom( ClassAd *ad )
     MyString attributes;
 
     construct_custom_attributes( attributes, ad );
-    fprintf( fp, "%s", attributes.Value() );
+    fprintf( fp, "%s", attributes.c_str() );
 
     return;
 }
@@ -499,7 +513,7 @@ Email::shouldSend( ClassAd* ad, int exit_reason, bool is_error )
 	}
 
 	int ad_cluster = 0, ad_proc = 0;
-	int exit_by_signal = FALSE;
+	bool exit_by_signal = false;
 	int code = -1, status = -1;
 	int exitCode = 0, successExitCode = 0;
 

@@ -23,8 +23,7 @@
 #include "internet.h"
 #include "condor_attributes.h"
 #include "daemon.h"	// for global_dc_sinful()
-
-#include <sstream>
+#include "condor_config.h"
 
 /* Split "<host:port?params>" into parts: host, port, and params. If
    the port or params are not in the string, the result is set to
@@ -397,9 +396,7 @@ Sinful::setPort(char const *port)
 void
 Sinful::setPort(int port)
 {
-	std::ostringstream tmp;
-	tmp << port;
-	m_port = tmp.str();
+	m_port = std::to_string(port);
 	regenerateStrings();
 }
 
@@ -469,6 +466,19 @@ Sinful::addressPointsToMe( Sinful const &addr ) const
 		  )
 		{
 			return true;
+		}
+		// If only one address has a shared port id, check if it matches
+		// the default id (usually "collector").
+		if ((spid == NULL) != (addr_spid == NULL)) {
+			const char *ck_spid = (spid != NULL) ? spid : addr_spid;
+			std::string default_spid;
+			param(default_spid, "SHARED_PORT_DEFAULT_ID");
+			if ( default_spid.empty() ) {
+				default_spid = "collector";
+			}
+			if ( !strcmp(ck_spid, default_spid.c_str()) ) {
+				return true;
+			}
 		}
 	}
 
@@ -559,7 +569,7 @@ bool hasTwoColonsInHost( char const * sinful ) {
 	return false;
 }
 
-Sinful::Sinful( char const * sinful ) {
+Sinful::Sinful( char const * sinful ) : m_valid(false) {
 	if( sinful == NULL ) {
 		// default constructor
 		m_valid = true;
@@ -737,10 +747,10 @@ bool Sinful::getSourceRoutes( std::vector< SourceRoute > & v, std::string * host
 		if( remainder == NULL ) { return false; }
 
 		// Yes, yes, yes, I know.
-		char nameBuffer[64];
-		char addressBuffer[64];
+		char nameBuffer[65];
+		char addressBuffer[65];
 		int port = -1;
-		char protocolBuffer[16];
+		char protocolBuffer[17];
 		int matches = sscanf( open, "[ p=%16s a=%64s port=%d; n=%64s ",
 			protocolBuffer, addressBuffer, & port, nameBuffer );
 		if( matches != 4 ) { return false; }
@@ -958,7 +968,7 @@ void Sinful::parseV1String() {
 			m_valid = false;
 			return;
 		}
-		MyString ccbContactString;
+		std::string ccbContactString;
 		CCBServer::CCBIDToContactString( ccbAddress.c_str(), ccbID, ccbContactString );
 		ccbList.append( ccbContactString.c_str() );
 	}
@@ -1111,7 +1121,7 @@ Sinful::regenerateV1String() {
 				return;
 			}
 			v.push_back( * sr );
-			free( sr );
+			delete sr;
 		}
 	}
 
@@ -1124,8 +1134,8 @@ Sinful::regenerateV1String() {
 		brokers.rewind();
 		char * contact = NULL;
 		while( (contact = brokers.next()) != NULL ) {
-			MyString ccbAddr, ccbID;
-			MyString peer( "er, constructing v1 Sinful string" );
+			std::string ccbAddr, ccbID;
+			std::string peer( "er, constructing v1 Sinful string" );
 			bool contactOK = CCBClient::SplitCCBContact( contact, ccbAddr, ccbID, peer, NULL );
 			if(! contactOK ) {
 				m_valid = false;

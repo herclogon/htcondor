@@ -23,6 +23,7 @@
     
 #include "condor_common.h"
 #include "condor_daemon_core.h"
+#include <map>
 
 #include "infnbatchjob.h"
 #include "baseresource.h"
@@ -35,21 +36,23 @@ class INFNBatchResource : public BaseResource
 public:
 	void Reconfig();
 
-	static const char *HashName( const char * batch_type, 
-								 const char * resource_name );
+	static std::string & HashName( const char * batch_type,
+	                             const char * gahp_args );
 
 	static INFNBatchResource* FindOrCreateResource( const char * batch_type, 
-													const char * resource_name );
+	                                                const char * resource_name,
+	                                                const char * gahp_args );
 
 	GahpClient *gahp;
 	GahpClient *m_xfer_gahp;
 
 	INFNBatchResource( const char * batch_type,
-					   const char * resource_name );
+	                   const char * resource_name,
+	                   const char * gahp_args );
 
 	~INFNBatchResource();
 
-	static HashTable <std::string, INFNBatchResource *> ResourcesByName;
+	static std::map <std::string, INFNBatchResource *> ResourcesByName;
 
 	const char *ResourceType();
 
@@ -57,7 +60,7 @@ public:
 
 	void PublishResourceAd( ClassAd *resource_ad );
 
-	bool GahpIsRemote() { return m_gahpIsRemote; };
+	bool GahpIsRemote() const { return m_gahpIsRemote; };
 	const char *RemoteHostname() { return m_remoteHostname.c_str(); };
 	bool GahpCanRefreshProxy();
 
@@ -67,6 +70,7 @@ private:
 				bool & ping_succeeded  );
 
 	std::string m_batchType;
+	std::string m_gahpArgs;
 	bool m_gahpIsRemote;
 	bool m_gahpCanRefreshProxy;
 	bool m_gahpRefreshProxyChecked;

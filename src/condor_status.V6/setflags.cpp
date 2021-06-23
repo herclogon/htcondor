@@ -94,7 +94,7 @@ int PrettyPrinter::setPPstyle( ppOption pps, int arg_index, const char * argv )
 	// If setting a 'normal' output, check to see if there is a user-defined normal output
 	if ( ! disable_user_print_files && ! explicit_format
 		&& !PP_IS_LONGish(pps) && pps != PP_CUSTOM && pps != ppStyle) {
-		MyString param_name("STATUS_DEFAULT_"); param_name += AdTypeToString(setby.adType); param_name += "_PRINT_FORMAT_FILE";
+		std::string param_name("STATUS_DEFAULT_"); param_name += AdTypeToString(setby.adType); param_name += "_PRINT_FORMAT_FILE";
 		auto_free_ptr pf_file(param(param_name.c_str()));
 		if (pf_file) {
 			struct stat stat_buff;
@@ -261,7 +261,7 @@ AdTypes PrettyPrinter::resetMode(int sm, int arg_index, const char * arg)
 	return setMode(sm, arg_index, arg);
 }
 
-void PrettyPrinter::dumpPPMode(FILE* out)
+void PrettyPrinter::dumpPPMode(FILE* out) const
 {
 	const char * sdo_str = getSDOModeStr(sdo_mode);
 	const char * adtype_str = AdTypeToString(setby.adType);
@@ -275,7 +275,7 @@ void PrettyPrinter::dumpPPMode(FILE* out)
 	fprintf (out, "PrettyPrint: %s   (Set by arg %d '%s')\n", style_str, setby.ppArgIndex, setby.ppArg ? setby.ppArg : "NULL");
 }
 
-const char * PrettyPrinter::adtypeNameFromPPMode()
+const char * PrettyPrinter::adtypeNameFromPPMode() const
 {
 	return AdTypeToString(setby.adType);
 }

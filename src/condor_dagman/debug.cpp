@@ -24,6 +24,7 @@
 #include "condor_daemon_core.h"
 #include "MyString.h"
 #include "dagman_main.h"
+#include "../condor_utils/dagman_utils.h"
 
 debug_level_t debug_level    = DEBUG_NORMAL;
 const char *        debug_progname = NULL;
@@ -224,7 +225,7 @@ debug_cache_insert(int flags, const char *fmt, va_list args)
 	cache += (tstamp + fds + line + cid);
 
 	// if the cache has surpassed the highwater mark, then flush it.
-	if (cache.Length() > cache_size) {
+	if (cache.length() > cache_size) {
 		debug_cache_flush();
 	}
 }
@@ -239,7 +240,7 @@ debug_cache_flush(void)
 
 	if (cache != "") {
 		dprintf(D_ALWAYS, "LOG LINE CACHE: Begin Flush\n");
-		dprintf(D_ALWAYS | D_NOHEADER, "%s", cache.Value());
+		dprintf(D_ALWAYS | D_NOHEADER, "%s", cache.c_str());
 		dprintf(D_ALWAYS, "LOG LINE CACHE: End Flush\n");
 		cache = "";
 	}
@@ -267,7 +268,7 @@ bool check_warning_strictness( strict_level_t strictness, bool quit_if_error )
 		debug_printf( DEBUG_QUIET, "ERROR: Warning is fatal "
 					"error because of DAGMAN_USE_STRICT setting\n" );
 		if ( quit_if_error ) {
-			main_shutdown_rescue( EXIT_ERROR, Dag::DAG_STATUS_ERROR );
+			main_shutdown_rescue( EXIT_ERROR, DagStatus::DAG_STATUS_ERROR );
 		}
 
 		return true;

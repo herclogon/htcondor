@@ -38,9 +38,11 @@ my $firstappend_condor_config = '
 	WANT_SUSPEND = False
 	KILL = FALSE
 	NUM_CPUS = 2
+	MASTER_UPDATE_INTERVAL = 2
 ';
 
 my $secondappend_condor_config = '
+	SHARED_PORT_PORT = 0
 	DAEMON_LIST = MASTER,SCHEDD,STARTD
 	MAX_SCHEDD_LOG = 5000000000
 	WANT_SUSPEND = False
@@ -49,6 +51,7 @@ my $secondappend_condor_config = '
 	STARTD_NAME = master_remote
 	MASTER_NAME = master_remote
 	NUM_CPUS = 4
+	MASTER_UPDATE_INTERVAL = 2
 ';
 
 
@@ -133,14 +136,14 @@ sub SetUp
 
 	SimpleJob::RunCheck(
 		no_wait => 1,
-		duration => 0,
+		duration => 3600,
 		on_abort => $on_abort,
 		on_evictedwithoutcheckpoint => $on_evictedwithoutcheckpoint,
 	);
 
 	SimpleJob::RunCheck(
 		no_wait => 1,
-		duration => 0,
+		duration => 3600,
 		on_abort => $on_abort,
 		on_evictedwithoutcheckpoint => $on_evictedwithoutcheckpoint,
 	);
@@ -191,14 +194,14 @@ sub SetUp
 
 	SimpleJob::RunCheck(
 		no_wait => 1,
-		duration => 0,
+		duration => 3600,
 		on_abort => $on_abort,
 		on_evictedwithoutcheckpoint => $on_evictedwithoutcheckpoint,
 	);
 
 	SimpleJob::RunCheck(
 		no_wait => 1,
-		duration => 0,
+		duration => 3600,
 		on_abort => $on_abort,
 		on_evictedwithoutcheckpoint => $on_evictedwithoutcheckpoint,
 	);

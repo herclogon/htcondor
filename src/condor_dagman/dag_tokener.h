@@ -19,9 +19,9 @@
 
 #ifndef __DAG_TOKENER__
 #define __DAG_TOKENER__
-#include "list.h"
 #include <string>
 
+#if 0 // Moved to dagman_utils
 // this is a simple tokenizer class for parsing keywords out of a line of text
 // token separator defaults to whitespace, "" or '' can be used to have tokens
 // containing whitespace, but there is no way to escape " inside a "" string or
@@ -33,8 +33,9 @@ public:
 	void rewind() { tokens.Rewind(); }
 	const char * next() { return tokens.AtEnd() ? NULL : tokens.Next()->c_str(); }
 protected:
-	List<std::string> tokens; // parsed tokens
+	std::list<std::string> tokens; // parsed tokens
 };
+#endif
 
 
 #endif // __DAG_TOKENER__

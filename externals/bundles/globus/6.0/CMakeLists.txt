@@ -40,16 +40,18 @@ if (WITH_GLOBUS)
 			message(FATAL_ERROR "Missing perl module Digest::MD5, needed to build globus external!")
 		endif()
 
-		condor_pre_external( GLOBUS globus-6.0-p2 "lib;include" "done")
+		condor_pre_external( GLOBUS globus-6.0-p3 "lib;include" "done")
 
 		if ( DARWIN )
 			set( GLOBUS_PATCH patch -p1 -i ${CMAKE_CURRENT_SOURCE_DIR}/unregister.patch &&
+				patch -p1 -i ${CMAKE_CURRENT_SOURCE_DIR}/gssapi_init.patch &&
 				patch -p1 -i ${CMAKE_CURRENT_SOURCE_DIR}/libressl.patch &&
 				patch -p1 -i ${CMAKE_CURRENT_SOURCE_DIR}/libtool.patch &&
 				patch -p1 -i ${CMAKE_CURRENT_SOURCE_DIR}/no-pkg-config.patch )
 			set( GLOBUS_FLAGS CFLAGS=-I${DARWIN_OPENSSL_INCLUDE} LDFLAGS=-L${DARWIN_OPENSSL_LIB_DIR} )
 		else()
-			set( GLOBUS_PATCH patch -p1 -i ${CMAKE_CURRENT_SOURCE_DIR}/unregister.patch )
+			set( GLOBUS_PATCH patch -p1 -i ${CMAKE_CURRENT_SOURCE_DIR}/unregister.patch &&
+				patch -p1 -i ${CMAKE_CURRENT_SOURCE_DIR}/gssapi_init.patch )
 			set( GLOBUS_FLAGS "" )
 		endif()
 
@@ -61,7 +63,7 @@ if (WITH_GLOBUS)
 							#--Patch step ----------
 							PATCH_COMMAND ${GLOBUS_PATCH}
 							#--Configure step ----------
-							CONFIGURE_COMMAND ./configure ${GLOBUS_FLAGS} --prefix=${GLOBUS_INSTALL_LOC}
+							CONFIGURE_COMMAND ./configure ${GLOBUS_FLAGS} --prefix=${GLOBUS_INSTALL_LOC} --disable-gsi-openssh
 							#--Build Step ----------
 							BUILD_COMMAND make &&
 								ln -sfn . ${GLOBUS_INSTALL_LOC}/include/globus
@@ -135,7 +137,7 @@ if (WITH_GLOBUS)
 				"${GLOBUS_INSTALL_LOC}/lib/libglobus_ftp_client.a;${GLOBUS_INSTALL_LOC}/lib/libglobus_ftp_control.a")
 		endif()
 
-		condor_post_external( globus include OFF )
+		condor_post_external( globus include OFF "${GLOBUS_GRID_UNIVERSE_NORDUGRID};${GLOBUS_GRID_UNIVERSE_GT2};${GLOBUS_GRID_UNIVERSE_COMMON};${GLOBUS_FOUND}" )
 
 		if ( LINUX )
 			# Install the Globus libraries manually.

@@ -65,7 +65,7 @@ VMManager::~VMManager()
 }
 
 int
-VMManager::numOfVM(void)
+VMManager::numOfVM(void) const
 {
 	return m_vm_registered_num;
 }
@@ -230,7 +230,7 @@ vmapi_create_vmmanager(const char *list)
 		addrinfo* ai = iter.next();
 		if (ai) {
 			condor_sockaddr addr(ai->ai_addr);
-			vm_list->append(addr.to_ip_string().Value());
+			vm_list->append(addr.to_ip_string().c_str());
 		}
 	}
 

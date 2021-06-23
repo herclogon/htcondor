@@ -11,6 +11,7 @@
 #include "param_info.h"
 #include "old_boost.h"
 #include "classad_wrapper.h"
+#include "htcondor.h"
 
 using namespace boost::python;
 
@@ -20,7 +21,7 @@ do_start_command(int cmd, ReliSock &rsock, const ClassAdWrapper &ad)
     std::string addr_str;
     if (!ad.EvaluateAttrString(ATTR_MY_ADDRESS, addr_str))
     {
-        THROW_EX(ValueError, "Address not available in location ClassAd.");
+        THROW_EX(HTCondorValueError, "Address not available in location ClassAd.");
     }
     ClassAd ad_copy; ad_copy.CopyFrom(ad);
     Daemon target(&ad_copy, DT_GENERIC, NULL);
@@ -41,7 +42,7 @@ do_start_command(int cmd, ReliSock &rsock, const ClassAdWrapper &ad)
 
     if (connect_error)
     {
-        THROW_EX(RuntimeError, "Failed to connect to daemon");
+        THROW_EX(HTCondorIOError, "Failed to connect to daemon");
     }
     target.startCommand(cmd, &rsock, 30);
 }
@@ -50,23 +51,23 @@ do_start_command(int cmd, ReliSock &rsock, const ClassAdWrapper &ad)
 void
 set_remote_param(const ClassAdWrapper &ad, std::string param, std::string value)
 {
-    if (!is_valid_param_name(param.c_str())) {THROW_EX(ValueError, "Invalid parameter name.");}
+    if (!is_valid_param_name(param.c_str())) {THROW_EX(HTCondorValueError, "Invalid parameter name.");}
 
     ReliSock rsock;
     do_start_command(DC_CONFIG_RUNTIME, rsock, ad);
 
     rsock.encode();
-    if (!rsock.code(param)) {THROW_EX(RuntimeError, "Can't send param name.");}
+    if (!rsock.code(param)) {THROW_EX(HTCondorIOError, "Can't send param name.");}
     std::stringstream ss;
     ss << param << " = " << value;
-    if (!rsock.put(ss.str())) {THROW_EX(RuntimeError, "Can't send parameter value.");}
-    if (!rsock.end_of_message()) {THROW_EX(RuntimeError, "Can't send EOM for param set.");}
+    if (!rsock.put(ss.str())) {THROW_EX(HTCondorIOError, "Can't send parameter value.");}
+    if (!rsock.end_of_message()) {THROW_EX(HTCondorIOError, "Can't send EOM for param set.");}
 
     int rval = 0;
     rsock.decode();
-    if (!rsock.code(rval)) {THROW_EX(RuntimeError, "Can't get parameter set response.");}
-    if (!rsock.end_of_message()) {THROW_EX(RuntimeError, "Can't get EOM for parameter set.");}
-    if (rval < 0) {THROW_EX(RuntimeError, "Failed to set remote daemon parameter.");}
+    if (!rsock.code(rval)) {THROW_EX(HTCondorIOError, "Can't get parameter set response.");}
+    if (!rsock.end_of_message()) {THROW_EX(HTCondorIOError, "Can't get EOM for parameter set.");}
+    if (rval < 0) {THROW_EX(HTCondorReplyError, "Failed to set remote daemon parameter.");}
 }
 
 
@@ -79,22 +80,22 @@ get_remote_param(const ClassAdWrapper &ad, std::string param)
     rsock.encode();
     if (!rsock.code(param))
     {
-        THROW_EX(RuntimeError, "Can't send requested param name.");
+        THROW_EX(HTCondorIOError, "Can't send requested param name.");
     }
     if (!rsock.end_of_message())
     {
-        THROW_EX(RuntimeError, "Can't send EOM for param name.");
+        THROW_EX(HTCondorIOError, "Can't send EOM for param name.");
     }
 
     std::string val;
     rsock.decode();
     if (!rsock.code(val))
     {
-        THROW_EX(RuntimeError, "Can't receive reply from daemon for param value.");
+        THROW_EX(HTCondorIOError, "Can't receive reply from daemon for param value.");
     }
     if (!rsock.end_of_message())
     {
-        THROW_EX(RuntimeError, "Can't receive EOM from daemon for param value.");
+        THROW_EX(HTCondorIOError, "Can't receive EOM from daemon for param value.");
     }
 
     return val;
@@ -114,35 +115,35 @@ get_remote_names(const ClassAdWrapper &ad)
     std::string names = "?names";
     if (!rsock.put(names))
     {
-        THROW_EX(RuntimeError, "Failed to send request for parameter names.");
+        THROW_EX(HTCondorIOError, "Failed to send request for parameter names.");
     }
     if (!rsock.end_of_message())
     {
-        THROW_EX(RuntimeError, "Failed to send EOM for parameter names.");
+        THROW_EX(HTCondorIOError, "Failed to send EOM for parameter names.");
     }
 
     rsock.decode();
     std::string val;
     if (!rsock.code(val))
     {
-        THROW_EX(RuntimeError, "Cannot receive reply for parameter names.");
+        THROW_EX(HTCondorIOError, "Cannot receive reply for parameter names.");
     }
     if (val == "Not defined")
     {
         if (!rsock.end_of_message())
         {
-            THROW_EX(RuntimeError, "Unable to receive EOM from remote daemon (unsupported version).");
+            THROW_EX(HTCondorIOError, "Unable to receive EOM from remote daemon (unsupported version).");
         }
         if (get_remote_param(ad, "MASTER") == "Not defined")
         {
-            THROW_EX(RuntimeError, "Not authorized to query remote daemon.");
+            THROW_EX(HTCondorReplyError, "Not authorized to query remote daemon.");
         }
-        else {THROW_EX(RuntimeError, "Remote daemon is an unsupported version; 8.1.2 or later is required.");}
+        else {THROW_EX(HTCondorReplyError, "Remote daemon is an unsupported version; 8.1.2 or later is required.");}
     }
     if (val[0] == '!')
     {
         rsock.end_of_message();
-        THROW_EX(RuntimeError, "Remote daemon failed to get parameter name list");
+        THROW_EX(HTCondorReplyError, "Remote daemon failed to get parameter name list");
     }
     if (!val.empty())
     {
@@ -152,13 +153,13 @@ get_remote_names(const ClassAdWrapper &ad)
     {
         if (!rsock.code(val))
         {
-            THROW_EX(RuntimeError, "Failed to read parameter name.");
+            THROW_EX(HTCondorIOError, "Failed to read parameter name.");
         }
         retval.attr("append")(val);
     }
     if (!rsock.end_of_message())
     {
-        THROW_EX(RuntimeError, "Failed to receive final EOM for parameter names");
+        THROW_EX(HTCondorIOError, "Failed to receive final EOM for parameter names");
     }
     return retval;
 }
@@ -242,7 +243,7 @@ struct RemoteParam
         {
             return this->update(source.attr("items")());
         }
-        if (!py_hasattr(source, "__iter__")) { THROW_EX(ValueError, "Must provide a dictionary-like object to update()"); }
+        if (!py_hasattr(source, "__iter__")) { THROW_EX(HTCondorTypeError, "Must provide a dictionary-like object to update()"); }
 
         object iter = source.attr("__iter__")();
         while (true) {
@@ -369,7 +370,9 @@ struct Param
         case PARAM_TYPE_STRING:
         {
             std::string result;
-            if (!param(result, attr)) { THROW_EX(ValueError, ("Unable to convert value for param " + std::string(attr) + " to string (raw value " + raw_string + ")").c_str()); }
+            if (!param(result, attr)) {
+                THROW_EX(HTCondorValueError, ("Unable to convert value for param " + std::string(attr) + " to string (raw value " + raw_string + ")").c_str());
+            }
             pyresult = object(result);
             break;
         }
@@ -404,7 +407,7 @@ struct Param
 
     object getitem_impl(const std::string &attr, object default_val, bool throw_exception)
     {
-        MyString name_used;
+        std::string name_used;
         const char *pdef_value;
         const MACRO_META *pmeta;
         const char * result_str = param_get_info(attr.c_str(), NULL, NULL, name_used, &pdef_value, &pmeta);
@@ -577,7 +580,7 @@ struct Param
         {
             return this->update(source.attr("items")());
         }
-        if (!py_hasattr(source, "__iter__")) { THROW_EX(ValueError, "Must provide a dictionary-like object to update()"); }
+        if (!py_hasattr(source, "__iter__")) { THROW_EX(HTCondorTypeError, "Must provide a dictionary-like object to update()"); }
 
         object iter = source.attr("__iter__")();
         while (true) {
@@ -614,16 +617,16 @@ void configWrapper() {
 	// environment for variables on interest to HTCondor's config(), and
 	// copying them into the C runtime environment.
 	char *env_str = GetEnvironmentStrings();
-	const char *ptr = env_str;
-	while ( *ptr != '\0' ) {
-		if (strncasecmp("CONDOR_CONFIG=",ptr,14)==0 ||
-			strncasecmp("_CONDOR_",ptr,8)==0)
-		{
-			_putenv(ptr);
-		}
-		ptr += strlen(ptr) + 1;
-	}
 	if (env_str) {
+        const char *ptr = env_str;
+        while ( *ptr != '\0' ) {
+            if (strncasecmp("CONDOR_CONFIG=",ptr,14)==0 ||
+                strncasecmp("_CONDOR_",ptr,8)==0)
+            {
+                _putenv(ptr);
+            }
+            ptr += strlen(ptr) + 1;
+        }
 		FreeEnvironmentStrings(env_str);
 		env_str = NULL;
 	}
@@ -633,19 +636,39 @@ void configWrapper() {
 
 void export_config()
 {
+    dprintf_make_thread_safe(); // make sure that any dprintf's we do are thread safe on Linux (they always are on Windows)
     config_ex(CONFIG_OPT_NO_EXIT | CONFIG_OPT_WANT_META);
     param_insert("ENABLE_CLASSAD_CACHING", "false");
     classad::ClassAdSetExpressionCaching(false);
 
-    def("version", CondorVersionWrapper, "Returns the version of HTCondor this module is linked against.");
-    def("platform", CondorPlatformWrapper, "Returns the platform of HTCondor this module is running on.");
-    def("reload_config", configWrapper, "Reload the HTCondor configuration from disk.");
-    class_<Param>("_Param")
+    def("version", CondorVersionWrapper,
+        R"C0ND0R(
+        Returns the version of HTCondor this module is linked against.
+        )C0ND0R");
+    def("platform", CondorPlatformWrapper,
+        R"C0ND0R(
+        Returns the platform of HTCondor this module is running on.
+        )C0ND0R");
+    def("reload_config", configWrapper,
+        R"C0ND0R(
+        Reload the HTCondor configuration from disk.
+        )C0ND0R");
+    class_<Param>("_Param",
+            R"C0ND0R(
+            A dictionary-like object for the local HTCondor configuration; the keys and
+            values of this object are the keys and values of the HTCondor configuration.
+
+            The  ``get``, ``setdefault``, ``update``, ``keys``, ``items``, and ``values``
+            methods of this class have the same semantics as a Python dictionary.
+
+            Writing to a ``_Param`` object will update the in-memory HTCondor configuration.
+            )C0ND0R",
+            init<>(args("self")))
         .def("__getitem__", &Param::getitem)
         .def("__setitem__", &Param::setitem)
         .def("__contains__", &Param::contains)
         .def("setdefault", &Param::setdefault)
-        .def("get", &Param::get, "Returns the value associated with the key; if the key is not a defined parameter, returns the default argument.  Default is None.", (arg("self"), arg("key"), arg("default")=object()))
+        .def("get", &Param::get, (arg("self"), arg("key"), arg("default")=object()))
         .def("keys", &Param::keys)
         .def("__iter__", &Param::iter)
         .def("__len__", &Param::len)
@@ -653,21 +676,42 @@ void export_config()
         .def("update", &Param::update)
         ;
     object param = object(Param());
-    param.attr("__doc__") = "A dictionary-like object containing the HTCondor configuration.";
+    param.attr("__doc__") =
+        R"C0ND0R(
+        Provides dictionary-like access the HTCondor configuration.
+
+        An instance of :class:`_Param`.  Upon importing the :mod:`htcondor` module, the
+        HTCondor configuration files are parsed and populate this dictionary-like object.
+        )C0ND0R";
     scope().attr("param") = param;
 
-    class_<RemoteParam>("RemoteParam", boost::python::init<const ClassAdWrapper &>(":param ad: An ad containing the location of the remote daemon."))
+    class_<RemoteParam>("RemoteParam",
+                R"C0ND0R(
+                The :class:`RemoteParam` class provides a dictionary-like interface to the configuration of an HTCondor daemon.
+                The  ``get``, ``setdefault``, ``update``, ``keys``, ``items``, and ``values``
+                methods of this class have the same semantics as a Python dictionary.
+                )C0ND0R",
+            boost::python::init<const ClassAdWrapper &>(
+                R"C0ND0R(
+                :param ad: An ad containing the location of the remote daemon.
+                :type ad: :class:`~classad.ClassAd`
+                )C0ND0R",
+                args("self", "ad")))
         .def("__getitem__", &RemoteParam::getitem)
         .def("__setitem__", &RemoteParam::setitem)
         .def("__contains__", &RemoteParam::contains)
         .def("setdefault", &RemoteParam::setdefault)
-        .def("get", &RemoteParam::get, "Returns the value associated with the remote parameter; if the parameter is not defined, return the default argument.  Default is None.", (arg("self"), arg("key"), arg("default")=boost::python::object()))
+        .def("get", &RemoteParam::get, (arg("self"), arg("key"), arg("default")=boost::python::object()))
         .def("keys", &RemoteParam::keys)
         .def("__iter__", &RemoteParam::iter)
         .def("__len__", &RemoteParam::len)
         .def("__delitem__", &RemoteParam::delitem)
         .def("items", &RemoteParam::items)
         .def("update", &RemoteParam::update)
-        .def("refresh", &RemoteParam::refresh)
+        .def("refresh", &RemoteParam::refresh,
+            R"C0ND0R(
+            Rebuilds the dictionary based on the current configuration of the daemon.
+            )C0ND0R",
+            args("self"))
         ;
 }

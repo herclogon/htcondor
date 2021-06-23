@@ -71,29 +71,32 @@ void process_err_stack(CondorError *errstack) {
 }
 
 
-void print_useful_info_1(bool rv, MyString name, Sock*, ClassAd *ad, ClassAd *authz_ad, CondorError *) {
-	MyString  val;
+void print_useful_info_1(bool rv, const char* dname, const std::string & name, Sock*, ClassAd *ad, ClassAd *authz_ad, CondorError *) {
+	std::string  val;
 
 	if(!rv) {
-		printf("%s failed!  Use -verbose for more information.\n", name.Value());
+		printf("%s failed!  Use -verbose for more information.\n", name.c_str());
 		return;
 	}
 
-	printf("%s using (", name.Value());
+	printf("%s command using (", name.c_str());
 
-	ad->LookupString("encryption", val);
-	if (strcasecmp(val.Value(), "no") == 0) {
+	std::string encryption_method;
+	ad->LookupString("encryption", encryption_method);
+	if (strcasecmp(encryption_method.c_str(), "no") == 0) {
 		printf("no encryption");
 	} else {
-		ad->LookupString("cryptomethods", val);
-		printf("%s", val.Value());
+		ad->LookupString("cryptomethods", encryption_method);
+		printf("%s", encryption_method.c_str());
 	}
 
 	printf(", ");
 
 	ad->LookupString("integrity", val);
-	if (strcasecmp(val.Value(), "no") == 0) {
+	if (strcasecmp(val.c_str(), "no") == 0) {
 		printf("no integrity");
+	} else if (encryption_method == "AES") {
+		printf("AES");
 	} else {
 #ifdef FIPS_MODE
 		printf("SHA");
@@ -105,11 +108,11 @@ void print_useful_info_1(bool rv, MyString name, Sock*, ClassAd *ad, ClassAd *au
 	printf(", and ");
 
 	ad->LookupString("authentication", val);
-	if (strcasecmp(val.Value(), "no") == 0) {
+	if (strcasecmp(val.c_str(), "no") == 0) {
 		printf("no authentication");
 	} else {
 		ad->LookupString("authmethods", val);
-		printf("%s", val.Value());
+		printf("%s", val.c_str());
 	}
 
 	printf(") ");
@@ -121,44 +124,48 @@ void print_useful_info_1(bool rv, MyString name, Sock*, ClassAd *ad, ClassAd *au
 	printf(" as ");
 
 	ad->LookupString("myremoteusername", val);
-	printf("%s", val.Value());
-
+	printf("%s", val.c_str());
+	printf(" to %s.", dname);
 	printf ("\n");
 }
 
 
-void print_useful_info_2(bool rv, int cmd, MyString name, Sock*, ClassAd *ad, ClassAd *authz_ad, CondorError *errstack) {
-	MyString  val;
+void print_useful_info_2(bool rv, const char* dname, int cmd, const std::string & name, Sock*, ClassAd *ad, ClassAd *authz_ad, CondorError *errstack) {
+	std::string  val;
 
 	if(!rv) {
-		printf("%s failed!\n", name.Value());
+		printf("%s failed!\n", name.c_str());
 		process_err_stack(errstack);
 		printf("\n");
 		return;
 	}
 
+	printf("Destination:                 %s\n", dname);
 	ad->LookupString("remoteversion", val);
-	printf("Remote Version:              %s\n", val.Value());
+	printf("Remote Version:              %s\n", val.c_str());
 	val = CondorVersion();
-	printf("Local  Version:              %s\n", val.Value());
+	printf("Local  Version:              %s\n", val.c_str());
 
 	ad->LookupString("sid", val);
-	printf("Session ID:                  %s\n", val.Value());
-	printf("Instruction:                 %s\n", name.Value());
+	printf("Session ID:                  %s\n", val.c_str());
+	printf("Instruction:                 %s\n", name.c_str());
 	printf("Command:                     %i\n", cmd);
 
 
-	ad->LookupString("encryption", val);
-	if (strcasecmp(val.Value(), "no") == 0) {
+	std::string encryption_method;
+	ad->LookupString("encryption", encryption_method);
+	if (strcasecmp(encryption_method.c_str(), "no") == 0) {
 		printf("Encryption:                  none\n");
 	} else {
-		ad->LookupString("cryptomethods", val);
-		printf("Encryption:                  %s\n", val.Value());
+		ad->LookupString("cryptomethods", encryption_method);
+		printf("Encryption:                  %s\n", encryption_method.c_str());
 	}
 
 	ad->LookupString("integrity", val);
-	if (strcasecmp(val.Value(), "no") == 0) {
+	if (strcasecmp(val.c_str(), "no") == 0) {
 		printf("Integrity:                   none\n");
+	} else if ("AES" == encryption_method) {
+		printf("Integrity:                   AES\n");
 	} else {
 #ifdef FIPS_MODE
 		printf("Integrity:                   SHA\n");
@@ -168,17 +175,17 @@ void print_useful_info_2(bool rv, int cmd, MyString name, Sock*, ClassAd *ad, Cl
 	}
 
 	ad->LookupString("authentication", val);
-	if (strcasecmp(val.Value(), "no") == 0) {
+	if (strcasecmp(val.c_str(), "no") == 0) {
 		printf("Authentication:              none\n");
 	} else {
 		ad->LookupString("authmethods", val);
-		printf("Authenticated using:         %s\n", val.Value());
+		printf("Authenticated using:         %s\n", val.c_str());
 		ad->LookupString("authmethodslist", val);
-		printf("All authentication methods:  %s\n", val.Value());
+		printf("All authentication methods:  %s\n", val.c_str());
 	}
 
 	ad->LookupString("myremoteusername", val);
-	printf("Remote Mapping:              %s\n", val.Value());
+	printf("Remote Mapping:              %s\n", val.c_str());
 
 	bool bval;
 	authz_ad->LookupBool(ATTR_SEC_AUTHORIZATION_SUCCEEDED, bval);
@@ -195,10 +202,10 @@ void print_useful_info_2(bool rv, int cmd, MyString name, Sock*, ClassAd *ad, Cl
 }
 
 
-void print_useful_info_10(bool rv, MyString name, Sock*, ClassAd *ad, ClassAd *authz_ad, CondorError *) {
-	MyString  val;
+void print_useful_info_10(bool rv, const char*, const std::string & name, Sock*, ClassAd *ad, ClassAd *authz_ad, CondorError *) {
+	std::string  val;
 
-	printf("%20s", name.Value());
+	printf("%20s", name.c_str());
 
 	if(!rv) {
 		printf ("           FAIL       FAIL      FAIL     FAIL FAIL  (use -verbose for more info)\n");
@@ -206,24 +213,27 @@ void print_useful_info_10(bool rv, MyString name, Sock*, ClassAd *ad, ClassAd *a
 	}
 
 	ad->LookupString("authentication", val);
-	if (strcasecmp(val.Value(), "no") == 0) {
+	if (strcasecmp(val.c_str(), "no") == 0) {
 		val = "none";
 	} else {
 		ad->LookupString("authmethods", val);
 	}
-	printf("%15s", val.Value());
+	printf("%15s", val.c_str());
 
-	ad->LookupString("encryption", val);
-	if (strcasecmp(val.Value(), "no") == 0) {
-		val = "none";
+	std::string encryption_method;
+	ad->LookupString("encryption", encryption_method);
+	if (strcasecmp(encryption_method.c_str(), "no") == 0) {
+		encryption_method = "none";
 	} else {
-		ad->LookupString("cryptomethods", val);
+		ad->LookupString("cryptomethods", encryption_method);
 	}
-	printf("%11s", val.Value());
+	printf("%11s", encryption_method.c_str());
 
 	ad->LookupString("integrity", val);
-	if (strcasecmp(val.Value(), "no") == 0) {
+	if (strcasecmp(val.c_str(), "no") == 0) {
 		val = "none";
+	} else if (encryption_method == "AES") {
+		val = encryption_method;
 	} else {
 #ifdef FIPS_MODE
 		val = "SHA";
@@ -231,33 +241,33 @@ void print_useful_info_10(bool rv, MyString name, Sock*, ClassAd *ad, ClassAd *a
 		val = "MD5";
 #endif
 	}
-	printf("%10s", val.Value());
+	printf("%10s", val.c_str());
 
 	bool bval;
 	authz_ad->LookupBool(ATTR_SEC_AUTHORIZATION_SUCCEEDED, bval);
 	printf(bval ? "    ALLOW " : "     DENY ");
 
 	ad->LookupString("myremoteusername", val);
-	printf("%s", val.Value());
+	printf("%s", val.c_str());
 
 	printf("\n");
 }
 
 
-void print_info(bool rv, const char * addr, Sock* s, MyString name, int cmd, ClassAd *authz_ad, CondorError *errstack, int output_mode) {
-	MyString cmd_map_ent;
-        const std::string &tag = SecMan::getTag();
+void print_info(bool rv, const char* dname, const char * addr, Sock* s, const std::string & name, int cmd, ClassAd *authz_ad, CondorError *errstack, int output_mode) {
+	std::string cmd_map_ent;
+	const std::string &tag = SecMan::getTag();
 	if (tag.size()) {
-		cmd_map_ent.formatstr ("{%s,%s,<%i>}", tag.c_str(), addr, cmd);
+		formatstr(cmd_map_ent, "{%s,%s,<%i>}", tag.c_str(), addr, cmd);
 	} else {
-		cmd_map_ent.formatstr ("{%s,<%i>}", addr, cmd);
+		formatstr(cmd_map_ent, "{%s,<%i>}", addr, cmd);
 	}
 
-	MyString session_id;
+	std::string session_id;
 	KeyCacheEntry *k = NULL;
 	ClassAd *policy = NULL;
 	int ret = 0;
-	
+
 	if(rv) {
 		// IMPORTANT: this hashtable returns 0 on success!
 		ret = (SecMan::command_map).lookup(cmd_map_ent, session_id);
@@ -267,7 +277,7 @@ void print_info(bool rv, const char * addr, Sock* s, MyString name, int cmd, Cla
 		}
 
 		// IMPORTANT: this hashtable returns 1 on success!
-		ret = (SecMan::session_cache)->lookup(session_id.Value(), k);
+		ret = (SecMan::session_cache)->lookup(session_id.c_str(), k);
 		if (!ret) {
 			printf("no session!\n");
 			return;
@@ -280,11 +290,11 @@ void print_info(bool rv, const char * addr, Sock* s, MyString name, int cmd, Cla
 	if (output_mode == 0) {
 		// print nothing!!
 	} else if (output_mode == 1) {
-		print_useful_info_1(rv, name, s, policy, authz_ad, errstack);
+		print_useful_info_1(rv, dname, name, s, policy, authz_ad, errstack);
 	} else if (output_mode == 2) {
-		print_useful_info_2(rv, cmd, name, s, policy, authz_ad, errstack);
+		print_useful_info_2(rv, dname, cmd, name, s, policy, authz_ad, errstack);
 	} else if (output_mode == 10) {
-		print_useful_info_10(rv, name, s, policy, authz_ad, errstack);
+		print_useful_info_10(rv, dname, name, s, policy, authz_ad, errstack);
 	}
 }
 
@@ -321,7 +331,7 @@ int getSomeCommandFromString ( const char * cmdstring ) {
 }
 
 
-bool do_item(Daemon* d, MyString name, int num, int output_mode) {
+bool do_item(Daemon* d, const std::string & name, int num, int output_mode) {
 
 	CondorError errstack;
 	ClassAd authz_ad;
@@ -341,7 +351,8 @@ bool do_item(Daemon* d, MyString name, int num, int output_mode) {
 				fn_success = true;
 			}
 		}
-		print_info(fn_success, sock->get_connect_addr(), sock, name, num, &authz_ad, &errstack, output_mode);
+		const char* dname = d->idStr();
+		print_info(fn_success, dname, sock->get_connect_addr(), sock, name, num, &authz_ad, &errstack, output_mode);
 	} else {
 		// we know that d->addr() is not null because we checked before
 		// calling do_item.  but i'll be paranoid and check again.
@@ -499,10 +510,10 @@ int main( int argc, char *argv[] )
 
 	// use some default
 	if(worklist_name.size() == 0) {
-		if(output_mode) {
-			fprintf( stderr, "WARNING: Missing <authz-level | command-name | command-int> argument, defaulting to DC_NOP\n");
+		if(output_mode > 1) {
+			fprintf( stderr, "WARNING: Missing <authz-level | command-name | command-int> argument, defaulting to WRITE.\n");
 		}
-		worklist_name.push_back("DC_NOP");
+		worklist_name.push_back("WRITE");
 	}
 
 
@@ -527,7 +538,10 @@ int main( int argc, char *argv[] )
 	// LETS GET TO WORK!
 	//
 
-	if(dtype == DT_NONE) {
+	if(dtype == DT_NONE && !address) {
+		if(output_mode > 1) {
+			fprintf( stderr, "WARNING: Missing daemon argument, defaulting to SCHEDD.\n");
+		}
 		dtype = DT_SCHEDD;
 	}
 

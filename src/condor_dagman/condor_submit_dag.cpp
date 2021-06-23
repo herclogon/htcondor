@@ -24,7 +24,6 @@
 #include "../condor_utils/dagman_utils.h"
 #include "MyString.h"
 #include "which.h"
-#include "string_list.h"
 #include "condor_distribution.h"
 #include "condor_config.h"
 #include "env.h"
@@ -64,17 +63,17 @@ int parseJobOrDagLine( const char *dagLine, dag_tokener &tokens,
 #if 0 // Moved to dagman_utils
 int setUpOptions( SubmitDagDeepOptions &deepOpts,
 			SubmitDagShallowOptions &shallowOpts,
-			StringList &dagFileAttrLines );
-#endif
+			std::list<std::string> &dagFileAttrLines );
 void ensureOutputFilesExist(const SubmitDagDeepOptions &deepOpts,
 			SubmitDagShallowOptions &shallowOpts);
-int getOldSubmitFlags( SubmitDagShallowOptions &shallowOpts );
+#endif
+			int getOldSubmitFlags( SubmitDagShallowOptions &shallowOpts );
 int parseArgumentsLine( const MyString &subLine,
 			SubmitDagShallowOptions &shallowOpts );
 #if 0 // Moved to dagman_utils
 void writeSubmitFile(/* const */ SubmitDagDeepOptions &deepOpts,
 			/* const */ SubmitDagShallowOptions &shallowOpts,
-			/* const */ StringList &dagFileAttrLines );
+			/* const */ std::list<std::string> &dagFileAttrLines );
 #endif
 int submitDag( SubmitDagShallowOptions &shallowOpts );
 
@@ -97,7 +96,7 @@ int main(int argc, char *argv[])
 	myDistro->Init( argc, argv );
 
 		// Save submit append lines from DAG file here (see gittrac #5107).
-	StringList dagFileAttrLines;
+	std::list<std::string> dagFileAttrLines;
 
 		// Load command-line arguments into the deepOpts and shallowOpts
 		// structures.
@@ -112,8 +111,14 @@ int main(int argc, char *argv[])
 		// command line, if we don't set the values here, condor_dagman
 		// won't be able to find those files when it tries to communicate
 		/// with the schedd.  wenger 2013-03-11
-	shallowOpts.strScheddDaemonAdFile = param( "SCHEDD_DAEMON_AD_FILE" );
-	shallowOpts.strScheddAddressFile = param( "SCHEDD_ADDRESS_FILE" );
+	char * schedd_daemon_ad_file = param( "SCHEDD_DAEMON_AD_FILE" );
+	shallowOpts.strScheddDaemonAdFile = schedd_daemon_ad_file;
+	if (schedd_daemon_ad_file) free(schedd_daemon_ad_file);
+
+	char * schedd_address_file = param( "SCHEDD_ADDRESS_FILE" );
+	shallowOpts.strScheddAddressFile = schedd_address_file;
+	if (schedd_address_file) free(schedd_address_file);
+
 	parseCommandLine(deepOpts, shallowOpts, argc, argv);
 
 	int tmpResult;
@@ -141,7 +146,9 @@ int main(int argc, char *argv[])
 		// Check whether the output files already exist; if so, we may
 		// abort depending on the -f flag and whether we're running
 		// a rescue DAG.
-	ensureOutputFilesExist( deepOpts, shallowOpts );
+	if ( !dagmanUtils.ensureOutputFilesExist( deepOpts, shallowOpts ) ) {
+		exit( 1 );
+	}
 
 		// Make sure that all node jobs have log files, the files
 		// aren't on NFS, etc.
@@ -155,7 +162,9 @@ int main(int argc, char *argv[])
 	}
 
 		// Write the actual submit file for DAGMan.
-	dagmanUtils.writeSubmitFile( deepOpts, shallowOpts, dagFileAttrLines );
+	if ( !dagmanUtils.writeSubmitFile( deepOpts, shallowOpts, dagFileAttrLines ) ) {
+		exit( 1 );
+	}
 
 	return submitDag( shallowOpts );
 }
@@ -171,18 +180,15 @@ doRecursionNew( SubmitDagDeepOptions &deepOpts,
 {
 	int result = 0;
 
-	shallowOpts.dagFiles.rewind();
-
 		// Go through all DAG files specified on the command line...
-	const char *dagFile;
-	while ( (dagFile = shallowOpts.dagFiles.next()) ) {
+	for (auto dagfile_it = shallowOpts.dagFiles.begin(); dagfile_it != shallowOpts.dagFiles.end(); ++dagfile_it) {
 
 			// Get logical lines from this DAG file.
 		MultiLogFiles::FileReader reader;
-		MyString errMsg = reader.Open( dagFile );
+		MyString errMsg = reader.Open( dagfile_it->c_str() );
 		if ( errMsg != "" ) {
 			fprintf( stderr, "Error reading DAG file: %s\n",
-						errMsg.Value() );
+						errMsg.c_str() );
 			return 1;
 		}
 
@@ -190,7 +196,7 @@ doRecursionNew( SubmitDagDeepOptions &deepOpts,
 			// Find and parse JOB and SUBDAG lines.
 		MyString dagLine;
 		while ( reader.NextLogicalLine( dagLine ) ) {
-			dag_tokener tokens( dagLine.Value() );
+			dag_tokener tokens( dagLine.c_str() );
 			tokens.rewind();
 			const char *first = tokens.next();
 
@@ -200,7 +206,7 @@ doRecursionNew( SubmitDagDeepOptions &deepOpts,
 					// file line.
 				const char *subFile;
 				const char *directory;
-				if ( parseJobOrDagLine( dagLine.Value(), tokens, "submit",
+				if ( parseJobOrDagLine( dagLine.c_str(), tokens, "submit",
 							subFile, directory ) != 0 ) {
 					return 1;
 				}
@@ -213,13 +219,13 @@ doRecursionNew( SubmitDagDeepOptions &deepOpts,
 				int start = submitFile.find( DAG_SUBMIT_FILE_SUFFIX );
 				if ( start >= 0 &&
 							start + (int)strlen( DAG_SUBMIT_FILE_SUFFIX) ==
-							submitFile.Length() ) {
+							submitFile.length() ) {
 
 						// Change submit file name to DAG file name.
 					submitFile.replaceString( DAG_SUBMIT_FILE_SUFFIX, "" );
 
 						// Now run condor_submit_dag on the DAG file.
-					if ( dagmanUtils.runSubmitDag( deepOpts, submitFile.Value(),
+					if ( dagmanUtils.runSubmitDag( deepOpts, submitFile.c_str(),
 								directory, shallowOpts.priority,
 								false ) != 0 ) {
 						result = 1;
@@ -231,7 +237,7 @@ doRecursionNew( SubmitDagDeepOptions &deepOpts,
 				const char *inlineOrExt = tokens.next();
 				if ( strcasecmp( inlineOrExt, "EXTERNAL" ) ) {
 					fprintf( stderr, "ERROR: only SUBDAG EXTERNAL is supported "
-								"at this time (line: <%s>)\n", dagLine.Value() );
+								"at this time (line: <%s>)\n", dagLine.c_str() );
 					return 1;
 				}
 
@@ -239,7 +245,7 @@ doRecursionNew( SubmitDagDeepOptions &deepOpts,
 					// file line.
 				const char *nestedDagFile;
 				const char *directory;
-				if ( parseJobOrDagLine( dagLine.Value(), tokens, "DAG",
+				if ( parseJobOrDagLine( dagLine.c_str(), tokens, "DAG",
 							nestedDagFile, directory ) != 0 ) {
 					return 1;
 				}
@@ -312,7 +318,7 @@ parseJobOrDagLine( const char *dagLine, dag_tokener &tokens,
 int
 setUpOptions( SubmitDagDeepOptions &deepOpts,
 			SubmitDagShallowOptions &shallowOpts,
-			StringList &dagFileAttrLines )
+			std::list<std::string> &dagFileAttrLines )
 {
 	shallowOpts.strLibOut = shallowOpts.primaryDagFile + ".lib.out";
 	shallowOpts.strLibErr = shallowOpts.primaryDagFile + ".lib.err";
@@ -389,15 +395,15 @@ submitDag( SubmitDagShallowOptions &shallowOpts )
 {
 	printf("-----------------------------------------------------------------------\n");
 	printf("File for submitting this DAG to HTCondor           : %s\n", 
-			shallowOpts.strSubFile.Value());
+			shallowOpts.strSubFile.c_str());
 	printf("Log of DAGMan debugging messages                 : %s\n",
-		   	shallowOpts.strDebugLog.Value());
+		   	shallowOpts.strDebugLog.c_str());
 	printf("Log of HTCondor library output                     : %s\n", 
-			shallowOpts.strLibOut.Value());
+			shallowOpts.strLibOut.c_str());
 	printf("Log of HTCondor library error messages             : %s\n", 
-			shallowOpts.strLibErr.Value());
+			shallowOpts.strLibErr.c_str());
 	printf("Log of the life of condor_dagman itself          : %s\n",
-		   	shallowOpts.strSchedLog.Value());
+		   	shallowOpts.strSchedLog.c_str());
 	printf("\n");
 
 	if (shallowOpts.bSubmit)
@@ -423,11 +429,11 @@ submitDag( SubmitDagShallowOptions &shallowOpts )
 			// before the execvp().
 		if ( shallowOpts.strScheddDaemonAdFile != "" ) {
 			SetEnv("_CONDOR_SCHEDD_DAEMON_AD_FILE",
-				   shallowOpts.strScheddDaemonAdFile.Value());
+				   shallowOpts.strScheddDaemonAdFile.c_str());
 		}
 		if ( shallowOpts.strScheddAddressFile != "" ) {
 			SetEnv("_CONDOR_SCHEDD_ADDRESS_FILE",
-				   shallowOpts.strScheddAddressFile.Value());
+				   shallowOpts.strScheddAddressFile.c_str());
 		}
 
 		int retval = my_system( args );
@@ -440,13 +446,14 @@ submitDag( SubmitDagShallowOptions &shallowOpts )
 	{
 		printf("-no_submit given, not submitting DAG to HTCondor.  "
 					"You can do this with:\n");
-		printf("\"condor_submit %s\"\n", shallowOpts.strSubFile.Value());
+		printf("\"condor_submit %s\"\n", shallowOpts.strSubFile.c_str());
 	}
 	printf("-----------------------------------------------------------------------\n");
 
 	return 0;
 }
 
+#if 0 // Moved to dagman_utils
 //---------------------------------------------------------------------------
 bool fileExists(const MyString &strFile)
 {
@@ -561,6 +568,7 @@ void ensureOutputFilesExist(const SubmitDagDeepOptions &deepOpts,
 	    exit( 1 );
 	}
 }
+#endif
 
 //---------------------------------------------------------------------------
 /** Get the command-line options we want to preserve from the .condor.sub
@@ -573,20 +581,27 @@ int
 getOldSubmitFlags(SubmitDagShallowOptions &shallowOpts)
 {
 		// It's not an error for the submit file to not exist.
-	if ( fileExists( shallowOpts.strSubFile ) ) {
+	if ( dagmanUtils.fileExists( shallowOpts.strSubFile ) ) {
 		MultiLogFiles::FileReader reader;
 		MyString error = reader.Open( shallowOpts.strSubFile );
 		if ( error != "" ) {
 			fprintf( stderr, "Error reading submit file: %s\n",
-						error.Value() );
+						error.c_str() );
 			return 1;
 		}
 
 		MyString subLine;
 		while ( reader.NextLogicalLine( subLine ) ) {
-			StringList tokens( subLine.Value(), " \t" );
-			tokens.rewind();
-			const char *first = tokens.next();
+			// Initialize list of tokens from subLine
+			std::list<std::string> tokens;
+			MyStringTokener tok;
+			subLine.trim();
+			tok.Tokenize( subLine.c_str() );
+			while( const char* token = tok.GetNextToken( " \t", true ) ) {
+				tokens.push_back( std::string( token ) );
+			}
+
+			const char *first = tokens.front().c_str();
 			if ( first && !strcasecmp( first, "arguments" ) ) {
 				if ( parseArgumentsLine( subLine, shallowOpts ) != 0 ) {
 					return 1;
@@ -611,7 +626,7 @@ int
 parseArgumentsLine( const MyString &subLine,
 			SubmitDagShallowOptions &shallowOpts )
 {
-	const char *line = subLine.Value();
+	const char *line = subLine.c_str();
 	const char *start = strchr( line, '"' );
 	const char *end = strrchr( line, '"' );
 
@@ -620,15 +635,15 @@ parseArgumentsLine( const MyString &subLine,
 		arguments = subLine.substr( start - line, 1 + end - start );
 	} else {
 		fprintf( stderr, "Missing quotes in arguments line: <%s>\n",
-					subLine.Value() );
+					subLine.c_str() );
 		return 1;
 	}
 
 	ArgList arglist;
 	MyString error;
-	if ( !arglist.AppendArgsV2Quoted( arguments.Value(),
+	if ( !arglist.AppendArgsV2Quoted( arguments.c_str(),
 				&error ) ) {
-		fprintf( stderr, "Error parsing arguments: %s\n", error.Value() );
+		fprintf( stderr, "Error parsing arguments: %s\n", error.c_str() );
 		return 1;
 	}
 
@@ -666,7 +681,7 @@ EnvFilter::ImportFilter( const MyString &var, const MyString &val ) const
 //---------------------------------------------------------------------------
 void writeSubmitFile( /* const */ SubmitDagDeepOptions &deepOpts,
 			/* const */ SubmitDagShallowOptions &shallowOpts,
-			/* const */ StringList &dagFileAttrLines )
+			/* const */ std::list<std::string> &dagFileAttrLines )
 {
 	FILE *pSubFile = safe_fopen_wrapper_follow(shallowOpts.strSubFile.Value(), "w");
 	if (!pSubFile)
@@ -981,7 +996,7 @@ parseCommandLine(SubmitDagDeepOptions &deepOpts,
 		{
 				// We assume an argument without a leading hyphen is
 				// a DAG file name.
-			shallowOpts.dagFiles.append(strArg.Value());
+			shallowOpts.dagFiles.push_back(strArg.c_str());
 			if ( shallowOpts.primaryDagFile == "" ) {
 				shallowOpts.primaryDagFile = strArg;
 			}
@@ -1099,7 +1114,7 @@ parseCommandLine(SubmitDagDeepOptions &deepOpts,
 					// several paths point to the same file.
 				MyString	errMsg;
 				if (!dagmanUtils.MakePathAbsolute(shallowOpts.strConfigFile, errMsg)) {
-					fprintf( stderr, "%s\n", errMsg.Value() );
+					fprintf( stderr, "%s\n", errMsg.c_str() );
    					exit( 1 );
 				}
 			}
@@ -1109,7 +1124,7 @@ parseCommandLine(SubmitDagDeepOptions &deepOpts,
 					fprintf(stderr, "-append argument needs a value\n");
 					printUsage();
 				}
-				shallowOpts.appendLines.append(argv[++iArg]);
+				shallowOpts.appendLines.push_back(argv[++iArg]);
 			}
 			else if (strArg.find("-bat") != -1) // -batch-name
 			{
@@ -1130,7 +1145,7 @@ parseCommandLine(SubmitDagDeepOptions &deepOpts,
 				if (shallowOpts.appendFile != "") {
 					printf("Note: -insert_sub_file value (%s) overriding "
 								"DAGMAN_INSERT_SUB_FILE setting (%s)\n",
-								argv[iArg], shallowOpts.appendFile.Value());
+								argv[iArg], shallowOpts.appendFile.c_str());
 				}
 				shallowOpts.appendFile = argv[iArg];
 			}
@@ -1234,7 +1249,7 @@ parseCommandLine(SubmitDagDeepOptions &deepOpts,
 			}
 			else
 			{
-				fprintf( stderr, "ERROR: unknown option %s\n", strArg.Value() );
+				fprintf( stderr, "ERROR: unknown option %s\n", strArg.c_str() );
 				printUsage();
 			}
 		}

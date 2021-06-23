@@ -119,8 +119,8 @@ bool _condorPacket :: set_encryption_id(const char * keyId)
         outgoingEidLen_   = strlen(outgoingEncKeyId_);
 		if( IsDebugVerbose(D_SECURITY) ) {
 			dprintf( D_SECURITY, 
-					 "set_encryption_id: setting key length %d\n", 
-					 outgoingEidLen_ );  
+					 "set_encryption_id: setting key length %d (%s)\n", 
+					 outgoingEidLen_, keyId );  
 		}
         if ( curIndex == 0 ) {
             curIndex += SAFE_MSG_CRYPTO_HEADER_SIZE;
@@ -264,6 +264,7 @@ void _condorPacket :: checkHeader(int & len, void *& dta)
             incomingHashKeyId_ = (char *) malloc(mdKeyIdLen+1);
             memset(incomingHashKeyId_, 0, mdKeyIdLen+1);
             memcpy(incomingHashKeyId_, data, mdKeyIdLen);
+            dprintf(D_NETWORK|D_VERBOSE, "UDP: HashKeyID is %s\n", incomingHashKeyId_);
             data += mdKeyIdLen;
             length -= mdKeyIdLen;
 
@@ -284,6 +285,7 @@ void _condorPacket :: checkHeader(int & len, void *& dta)
             incomingEncKeyId_ = (char *) malloc(encKeyIdLen+1);
             memset(incomingEncKeyId_, 0, encKeyIdLen + 1);
             memcpy(incomingEncKeyId_, data, encKeyIdLen);
+            dprintf(D_NETWORK|D_VERBOSE, "UDP: EncKeyID is %s\n", incomingEncKeyId_);
             data += encKeyIdLen;
             length -= encKeyIdLen;
         }
@@ -368,21 +370,21 @@ int _condorPacket::getn(char* dta, const int size)
  */
 int _condorPacket::getPtr(void *&ptr, const char delim)
 {
-	int temp;
-	int size =  1;
-
-	temp = curIndex;
-	while(temp < length && data[temp] != delim) {
-		temp++;
-		size++;
-	}
-
-	if(temp == length) // not found
+	if(curIndex >= length) {
 		return -1;
-	// found
+	}
+	char *msgbuf = &data[curIndex];
+	size_t msgbufsize = length - curIndex;
+	char *delim_ptr = (char *)memchr(msgbuf, delim, msgbufsize);
+
+	if(delim_ptr == NULL) {
+		return -1;
+	}
+	// read past the delimiter
+	delim_ptr++;
 	ptr = &data[curIndex];
-	curIndex += size;
-	return size;
+	curIndex = delim_ptr - data;
+	return delim_ptr - msgbuf;
 }
 
 
@@ -442,7 +444,7 @@ void _condorPacket::reset()
 }
 
 /* Check if every data in the packet has been read */
-bool _condorPacket::consumed()
+bool _condorPacket::consumed() const
 {
 	return(curIndex == length);
 }
@@ -490,7 +492,7 @@ void _condorPacket::addExtendedHeader(unsigned char * mac)
     }
 }
 
-bool _condorPacket::full()
+bool _condorPacket::full() const
 {
     return (curIndex == USABLE_PACKET_SIZE);
 }
@@ -556,22 +558,22 @@ void _condorPacket::makeHeader(bool last, int seqNo,
 	memcpy(dataGram, SAFE_MSG_MAGIC, 8);
 
 	dataGram[8] = (char) last;
-	stemp = htons((u_short)seqNo);
+	stemp = htons((unsigned short)seqNo);
 	memcpy(&dataGram[9], &stemp, 2);
 
-	stemp = htons((u_short)length);
+	stemp = htons((unsigned short)length);
 	memcpy(&dataGram[11], &stemp, 2);
 
-	ltemp = htonl((u_long)msgID.ip_addr);
+	ltemp = htonl((unsigned long)msgID.ip_addr);
 	memcpy(&dataGram[13], &ltemp, 4);
 
-	stemp = htons((u_short)msgID.pid);
+	stemp = htons((unsigned short)msgID.pid);
 	memcpy(&dataGram[17], &stemp, 2);
 
-	ltemp = htonl((u_long)msgID.time);
+	ltemp = htonl((unsigned long)msgID.time);
 	memcpy(&dataGram[19], &ltemp, 4);
 
-	stemp = htons((u_short)msgID.msgNo);
+	stemp = htons((unsigned short)msgID.msgNo);
 	memcpy(&dataGram[23], &stemp, 2);
 
     // Above is the end of the regular 6.2 version header
@@ -589,13 +591,13 @@ void _condorPacket::makeHeader(bool last, int seqNo,
         // First, set our special handshake code
         memcpy(&dataGram[25], THIS_IS_TOO_UGLY_FOR_THE_SAKE_OF_BACKWARD, 4);
 
-        stemp = htons((u_short)flags);
+        stemp = htons((unsigned short)flags);
         memcpy(&dataGram[29], &stemp, 2);
         // how long is the outgoing MD key?
-        stemp = htons((u_short) outgoingMdLen_);
+        stemp = htons((unsigned short) outgoingMdLen_);
         memcpy(&dataGram[31], &stemp, 2);
         // Maybe one for encryption as well
-        stemp = htons((u_short) outgoingEidLen_);
+        stemp = htons((unsigned short) outgoingEidLen_);
         memcpy(&dataGram[33], &stemp, 2);
 
         addExtendedHeader(mac);   // Add encryption id if necessary
@@ -765,7 +767,7 @@ int _condorOutMsg::sendMsg(const int sock,
 
 		dprintf( D_NETWORK, "SEND [%d] %s ", sent, sock_to_string(sock) );
 		dprintf( D_NETWORK|D_NOHEADER, "%s\n",
-				 who.to_sinful().Value());
+				 who.to_sinful().c_str());
 		total += sent;
 		delete tempPkt;
         md = 0;
@@ -796,7 +798,7 @@ int _condorOutMsg::sendMsg(const int sock,
         //}
         //dprintf(D_NETWORK, "--->packet [%d bytes]: %s\n", sent, str);
 		dprintf( D_NETWORK, "SEND [%d] %s ", sent, sock_to_string(sock) );
-		dprintf( D_NETWORK|D_NOHEADER, "%s\n", who.to_sinful().Value());
+		dprintf( D_NETWORK|D_NOHEADER, "%s\n", who.to_sinful().c_str());
 		total = sent;
     }
     else {
@@ -816,7 +818,7 @@ int _condorOutMsg::sendMsg(const int sock,
         //}
         //dprintf(D_NETWORK, "--->packet [%d bytes]: %s\n", sent, str);
         dprintf( D_NETWORK, "SEND [%d] %s ", sent, sock_to_string(sock) );
-        dprintf( D_NETWORK|D_NOHEADER, "%s\n", who.to_sinful().Value());
+        dprintf( D_NETWORK|D_NOHEADER, "%s\n", who.to_sinful().c_str());
         total += sent;
     }
 
@@ -830,7 +832,7 @@ int _condorOutMsg::sendMsg(const int sock,
 }
 
 
-unsigned long _condorOutMsg::getAvgMsgSize()
+unsigned long _condorOutMsg::getAvgMsgSize() const
 {
 	return avgMsgSize;
 }
@@ -1262,7 +1264,7 @@ int _condorInMsg::peek(char &c)
 }
 
 /* Check if every data in all the bytes of the message have been read */
-bool _condorInMsg::consumed()
+bool _condorInMsg::consumed() const
 {
 	return(msgLen != 0 && msgLen == passed);
 }
@@ -1323,7 +1325,7 @@ void _condorInMsg :: resetMD()
     }
 }
 
-void _condorInMsg::dumpMsg()
+void _condorInMsg::dumpMsg() const
 {
     char str[10000];
     struct in_addr in;

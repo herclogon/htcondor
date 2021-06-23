@@ -58,16 +58,17 @@ temp_dir_path()
 }
 
 /*
-  Concatenates a given directory path and filename into a single
-  string, stored in result argument. This function makes sure
+  Concatenates a given directory path and filename and optional file extension
+  into a single string, stored in result argument. This function makes sure
   sure that if the given directory path doesn't end with the
   appropriate directory delimiter for this platform, that the new
-  string includes that.  Delete return string with delete[].
+  string includes that.
 */
-const char* dircat(const char *dirpath, const char *filename, MyString &result )
+const char* dircat(const char *dirpath, const char *filename, const char * fileext, std::string &result )
 {
 	ASSERT(dirpath);
 	ASSERT(filename);
+	// fileext may be NULL
 
 	// skip leading directory separator characters from the filename.
 	while (IS_ANY_DIR_DELIM_CHAR(*filename)) {
@@ -81,19 +82,32 @@ const char* dircat(const char *dirpath, const char *filename, MyString &result )
 		--dirlen;
 	}
 
-	// reserve space for directory and filename plus delim and \0 at the end plus 1 more for dirscat
-	result.reserve(3 + dirlen + strlen(filename));
+	int extlen = 0;
+	if (fileext) { extlen = strlen(fileext); }
+
+	// reserve space for directory and filename and fileext plus delim and \0 at the end plus 1 more for dirscat
+	result.reserve(3 + dirlen + strlen(filename) + extlen);
 
 	// copy the directory minus any trailing delims, then append the platform specific delim, and then the filename
-	result.set(dirpath, dirlen);
+	result = dirpath;
+	result.resize(dirlen);
+
 	result += DIR_DELIM_STRING;
 	result += filename;
+	if (fileext) {
+		result += fileext;
+	}
 
 	// return the result
-	return result.Value();
+	return result.c_str();
 }
 
-const char* dirscat(const char *dirpath, const char *subdir, MyString &result )
+
+const char* dircat(const char *dirpath, const char *filename, std::string &result ) {
+	return dircat(dirpath, filename, NULL, result);
+}
+
+const char* dirscat(const char *dirpath, const char *subdir, std::string &result )
 {
 	// dircat will make sure that directory delims between dirpath and subdir are minimal and correct
 	// but it will not correct trailing delims on the overall result.
@@ -101,20 +115,20 @@ const char* dirscat(const char *dirpath, const char *subdir, MyString &result )
 
 	// remove any trailing directory delims and replace with a single directory delim
 	// that is correct for this platform.
-	int len = result.Length();
+	int len = result.length();
 	if (len > 0 && IS_ANY_DIR_DELIM_CHAR(result[len-1])) {
 		// make sure there is only one trailing directory delim and it is the correct one (if on windows)
 		do {
 			#ifdef WIN32
-			result.setAt(len-1, DIR_DELIM_CHAR);
+			result[len-1] = DIR_DELIM_CHAR;
 			#endif
-			result.truncate(len); // this is a noop unless there are multiple trailing directory delims
+			result.resize(len); // this is a noop unless there are multiple trailing directory delims
 			--len;
 		} while (len > 0 && IS_ANY_DIR_DELIM_CHAR(result[len-1]));
 	} else {
 		result += DIR_DELIM_STRING;
 	}
-	return result.Value();
+	return result.c_str();
 }
 
 
@@ -196,7 +210,6 @@ rec_touch_file(char *path, mode_t file_mode, mode_t directory_mode , int pos)
 					char *dir = new char[pos+1];
 					strncpy(dir, path, pos);
 					dir[pos] = '\0';
-					dprintf(D_FULLDEBUG, "directory_util::rec_touch_file: Creating directory %s \n", dir);
 					int err = mkdir(dir, directory_mode);
 					if (err != 0) {
 						if (errno != EEXIST) {
@@ -204,6 +217,8 @@ rec_touch_file(char *path, mode_t file_mode, mode_t directory_mode , int pos)
 							delete []dir;
 							return -1;
 						}
+					} else {
+						dprintf(D_FULLDEBUG, "directory_util::rec_touch_file: Created directory %s \n", dir);
 					}
 					delete []dir;
 					++pos;

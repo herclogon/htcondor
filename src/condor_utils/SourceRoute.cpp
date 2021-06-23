@@ -19,11 +19,15 @@
 
 #include "condor_common.h"
 #include "condor_debug.h"
+#include "stl_string_utils.h"
 #include "SourceRoute.h"
 
 condor_sockaddr SourceRoute::getSockAddr() const {
 	condor_sockaddr sa;
-	sa.from_ip_string( a.c_str() );
+	int r = sa.from_ip_string( a.c_str() );
+	if (!r) {
+		dprintf( D_NETWORK, "Warning -- format of source route %s is not valid.\n", a.c_str());
+	}
 	sa.set_port( port );
 	if( sa.get_protocol() != p ) {
 		dprintf( D_NETWORK, "Warning -- protocol of source route doesn't match its address in getSockAddr().\n" );

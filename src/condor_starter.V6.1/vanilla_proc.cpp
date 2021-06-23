@@ -23,11 +23,9 @@
 #include "condor_debug.h"
 #include "condor_daemon_core.h"
 #include "condor_attributes.h"
-#include "condor_syscall_mode.h"
 #include "exit.h"
 #include "vanilla_proc.h"
 #include "starter.h"
-#include "syscall_numbers.h"
 #include "condor_config.h"
 #include "domain_tools.h"
 #include "classad_helpers.h"
@@ -51,7 +49,7 @@
 #include <sys/eventfd.h>
 #endif
 
-extern CStarter *Starter;
+extern Starter *Starter;
 
 void StarterStatistics::Clear() {
    this->InitTime = time(NULL);
@@ -180,9 +178,9 @@ VanillaProc::StartJob()
 										  MATCH == strcasecmp ( ".com", extension ) ) ),
 				java_universe		= ( CONDOR_UNIVERSE_JAVA == job_universe );
 	ArgList		arguments;
-	MyString	filename,
-				jobname, 
-				error;
+	std::string	filename;
+	std::string	jobname;
+	std::string error;
 	
 	if ( extension && !java_universe && !binary_executable ) {
 
@@ -224,12 +222,12 @@ VanillaProc::StartJob()
 				a the correct extension before it will run. */
 			if ( MATCH == strcasecmp ( 
 					CONDOR_EXEC, 
-					condor_basename ( jobname.Value () ) ) ) {
-				filename.formatstr ( "condor_exec%s", extension );
-				if (rename(CONDOR_EXEC, filename.Value()) != 0) {
+					condor_basename ( jobname.c_str () ) ) ) {
+				formatstr ( filename, "condor_exec%s", extension );
+				if (rename(CONDOR_EXEC, filename.c_str()) != 0) {
 					dprintf (D_ALWAYS, "VanillaProc::StartJob(): ERROR: "
 							"failed to rename executable from %s to %s\n", 
-							CONDOR_EXEC, filename.Value() );
+							CONDOR_EXEC, filename.c_str() );
 				}
 			} else {
 				filename = jobname;
@@ -253,15 +251,14 @@ VanillaProc::StartJob()
 			/** We've moved the script to argv[1], so we need to 
 				add	the remaining arguments to positions argv[2]..
 				argv[/n/]. */
-			if ( !arguments.AppendArgsFromClassAd ( JobAd, &error ) ||
-				 !arguments.InsertArgsIntoClassAd ( JobAd, NULL, 
-				&error ) ) {
+			if ( !arguments.AppendArgsFromClassAd ( JobAd, error ) ||
+				 !arguments.InsertArgsIntoClassAd ( JobAd, NULL, error ) ) {
 
 				dprintf (
 					D_ALWAYS,
 					"VanillaProc::StartJob(): ERROR: failed to "
 					"get arguments from job ad: %s\n",
-					error.Value () );
+					error.c_str () );
 
 				return FALSE;
 
@@ -272,7 +269,7 @@ VanillaProc::StartJob()
 				will stop the file transfer mechanism from considering
 				it for transfer back to its submitter */
 			Starter->jic->removeFromOutputFiles (
-				filename.Value () );
+				filename.c_str () );
 
 		}
 			
@@ -314,12 +311,11 @@ VanillaProc::StartJob()
 	//
 	gid_t tracking_gid = 0;
 	if (param_boolean("USE_GID_PROCESS_TRACKING", false)) {
-		if (!can_switch_ids() &&
-		    (Starter->condorPrivSepHelper() == NULL))
+		if (!can_switch_ids())
 		{
 			EXCEPT("USE_GID_PROCESS_TRACKING enabled, but can't modify "
 			           "the group list of our children unless running as "
-			           "root or using PrivSep");
+			           "root");
 		}
 		fi.group_ptr = &tracking_gid;
 	}
@@ -335,7 +331,7 @@ VanillaProc::StartJob()
 	// Determine the cgroup
 	std::string cgroup_base;
 	param(cgroup_base, "BASE_CGROUP", "");
-	MyString cgroup_str;
+	std::string cgroup_str;
 	const char *cgroup = NULL;
 		/* Note on CONDOR_UNIVERSE_LOCAL - The cgroup setup code below
 		 *  requires a unique name for the cgroup. It relies on
@@ -354,25 +350,25 @@ VanillaProc::StartJob()
 		 *  out. -matt 7 nov '12
 		 */
 	if (CONDOR_UNIVERSE_LOCAL != job_universe && cgroup_base.length() && can_switch_ids() && has_sysadmin_cap()) {
-		MyString cgroup_uniq;
+		std::string cgroup_uniq;
 		std::string starter_name, execute_str;
 		param(execute_str, "EXECUTE", "EXECUTE_UNKNOWN");
 			// Note: Starter is a global variable from os_proc.cpp
-		Starter->jic->machClassAd()->EvalString(ATTR_NAME, NULL, starter_name);
+		Starter->jic->machClassAd()->LookupString(ATTR_NAME, starter_name);
 		if (starter_name.size() == 0) {
 			char buf[16];
 			sprintf(buf, "%d", getpid());
 			starter_name = buf;
 		}
 		//ASSERT (starter_name.size());
-		cgroup_uniq.formatstr("%s_%s", execute_str.c_str(), starter_name.c_str());
+		formatstr(cgroup_uniq, "%s_%s", execute_str.c_str(), starter_name.c_str());
 		const char dir_delim[2] = {DIR_DELIM_CHAR, '\0'};
-		cgroup_uniq.replaceString(dir_delim, "_");
-		cgroup_str.formatstr("%s%ccondor%s", cgroup_base.c_str(), DIR_DELIM_CHAR,
-			cgroup_uniq.Value());
+		replace_str(cgroup_uniq, dir_delim, "_");
+		formatstr(cgroup_str, "%s%ccondor%s", cgroup_base.c_str(), DIR_DELIM_CHAR,
+			cgroup_uniq.c_str());
 		cgroup_str += this->CgroupSuffix();
 		
-		cgroup = cgroup_str.Value();
+		cgroup = cgroup_str.c_str();
 		ASSERT (cgroup != NULL);
 		fi.cgroup = cgroup;
 		dprintf(D_FULLDEBUG, "Requesting cgroup %s for job.\n", cgroup);
@@ -385,7 +381,7 @@ VanillaProc::StartJob()
 	{
         // Have Condor manage a chroot
        std::string requested_chroot_name;
-       JobAd->EvalString("RequestedChroot", NULL, requested_chroot_name);
+       JobAd->LookupString("RequestedChroot", requested_chroot_name);
        const char * allowed_root_dirs = param("NAMED_CHROOT");
        if (requested_chroot_name.size()) {
                dprintf(D_FULLDEBUG, "Checking for chroot: %s\n", requested_chroot_name.c_str());
@@ -399,13 +395,13 @@ VanillaProc::StartJob()
                        chroot_spec.Tokenize();
                        const char * chroot_name = chroot_spec.GetNextToken("=", false);
                        if (chroot_name == NULL) {
-                               dprintf(D_ALWAYS, "Invalid named chroot: %s\n", chroot_spec.Value());
+                               dprintf(D_ALWAYS, "Invalid named chroot: %s\n", chroot_spec.c_str());
                        }
                        const char * next_dir = chroot_spec.GetNextToken("=", false);
                        if (chroot_name == NULL) {
-                               dprintf(D_ALWAYS, "Invalid named chroot: %s\n", chroot_spec.Value());
+                               dprintf(D_ALWAYS, "Invalid named chroot: %s\n", chroot_spec.c_str());
                        }
-                       dprintf(D_FULLDEBUG, "Considering directory %s for chroot %s.\n", next_dir, chroot_spec.Value());
+                       dprintf(D_FULLDEBUG, "Considering directory %s for chroot %s.\n", next_dir, chroot_spec.c_str());
                        if (IsDirectory(next_dir) && chroot_name && (strcmp(requested_chroot_name.c_str(), chroot_name) == 0)) {
                                acceptable_chroot = true;
                                requested_chroot = next_dir;
@@ -469,16 +465,17 @@ VanillaProc::StartJob()
 
 	// On Linux kernel 2.4.19 and later, we can give each job its
 	// own FS mounts.
-	auto_free_ptr mount_under_scratch(param("MOUNT_UNDER_SCRATCH"));
-	if (mount_under_scratch) {
+	std::string mount_under_scratch;
+	param(mount_under_scratch, "MOUNT_UNDER_SCRATCH");
+	if (! mount_under_scratch.empty()) {
 		// try evaluating mount_under_scratch as a classad expression, if it is
 		// an expression it must return a string. if it's not an expression, just
 		// use it as a string (as we did before 8.3.6)
 		classad::Value value;
-		if (JobAd->EvaluateExpr(mount_under_scratch.ptr(), value)) {
+		if (JobAd->EvaluateExpr(mount_under_scratch.c_str(), value)) {
 			const char * pval = NULL;
 			if (value.IsStringValue(pval)) {
-				mount_under_scratch.set(strdup(pval));
+				mount_under_scratch = pval;
 			} else {
 				// was an expression, but not a string, so report and error and fail.
 				dprintf(D_ALWAYS | D_ERROR,
@@ -496,14 +493,14 @@ VanillaProc::StartJob()
 		// prepend /tmp, /var/tmp to whatever admin wanted. don't worry
 		// if admin already listed /tmp etc - subdirs can appear twice
 		// in this list because AddMapping() ok w/ duplicate entries
-		MyString buf("/tmp,/var/tmp,");
-		buf += mount_under_scratch.ptr();
-		mount_under_scratch.set(buf.StrDup());
+		std::string buf("/tmp,/var/tmp,");
+		buf += mount_under_scratch;
+		mount_under_scratch = buf;
 	}
 
 	// mount_under_scratch only works with rootly powers
-	if (mount_under_scratch && can_switch_ids() && has_sysadmin_cap() && (job_universe != CONDOR_UNIVERSE_LOCAL)) {
-		const char* working_dir = Starter->GetWorkingDir();
+	if (! mount_under_scratch.empty() && can_switch_ids() && has_sysadmin_cap() && (job_universe != CONDOR_UNIVERSE_LOCAL)) {
+		const char* working_dir = Starter->GetWorkingDir(0);
 
 		if (IsDirectory(working_dir)) {
 			StringList mount_list(mount_under_scratch);
@@ -519,11 +516,20 @@ VanillaProc::StartJob()
 					mount_list.deleteCurrent();
 					continue;
 				}
+
 				// Gah, I wish I could throw an exception to clean up these nested if statements.
 				if (IsDirectory(next_dir)) {
-					MyString fulldirbuf;
+					std::string fulldirbuf;
 					const char * full_dir = dirscat(working_dir, next_dir, fulldirbuf);
+
 					if (full_dir) {
+							// If the execute dir is under any component of MOUNT_UNDER_SCRATCH,
+							// bad things happen, so give up.
+						if (fulldirbuf.find(next_dir) == 0) {
+							dprintf(D_ALWAYS, "Can't bind mount %s under execute dir %s -- skipping MOUNT_UNDER_SCRATCH\n", next_dir, full_dir);
+							continue;
+						}
+
 						if (!mkdir_and_parents_if_needed( full_dir, S_IRWXU, PRIV_USER )) {
 							dprintf(D_ALWAYS, "Failed to create scratch directory %s\n", full_dir);
 							delete fs_remap;
@@ -544,19 +550,23 @@ VanillaProc::StartJob()
 					dprintf(D_ALWAYS, "Unable to add mapping %s -> %s because %s doesn't exist.\n", working_dir, next_dir, next_dir);
 				}
 			}
+		Starter->setTmpDir("/tmp");
 		} else {
 			dprintf(D_ALWAYS, "Unable to perform mappings because %s doesn't exist.\n", working_dir);
 			delete fs_remap;
 			return FALSE;
 		}
-		mount_under_scratch.clear();
 	}
 #endif
 
 #if defined(LINUX)
 	// On Linux kernel 2.6.24 and later, we can give each
-	// job its own PID namespace
-	if (param_boolean("USE_PID_NAMESPACES", false) && !htcondor::Singularity::job_enabled(*Starter->jic->machClassAd(), *JobAd)) {
+	// job its own PID namespace.
+	static bool previously_setup_for_pid_namespace = false;
+
+	if ( (previously_setup_for_pid_namespace || param_boolean("USE_PID_NAMESPACES", false))
+			&& !htcondor::Singularity::job_enabled(*Starter->jic->machClassAd(), *JobAd) ) 
+	{
 		if (!can_switch_ids()) {
 			EXCEPT("USE_PID_NAMESPACES enabled, but can't perform this "
 				"call in Linux unless running as root.");
@@ -571,22 +581,34 @@ VanillaProc::StartJob()
 
 		// When PID Namespaces are enabled, need to run the job
 		// under the condor_pid_ns_init program, so that signals
-		// propagate through to the child.  
+		// propagate through to the child.
+		// Be aware that StartJob() can be called repeatedly in the
+		// case of a self-checkpointing job, so be careful to only make
+		// modifications to the job classad once.
 
 		// First tell the program where to log output status
 		// via an environment variable
-		if (param_boolean("USE_PID_NAMESPACE_INIT", true)) {
+		if (!previously_setup_for_pid_namespace && param_boolean("USE_PID_NAMESPACE_INIT", true)) {
 			Env env;
-			MyString env_errors;
-			MyString arg_errors;
+			std::string env_errors;
+			std::string arg_errors;
 			std::string filename;
 
-			filename = Starter->GetWorkingDir();
+			filename = Starter->GetWorkingDir(0);
 			filename += "/.condor_pid_ns_status";
-		
-			env.MergeFrom(JobAd, &env_errors);
+
+			if (!env.MergeFrom(JobAd,  env_errors)) {
+				dprintf(D_ALWAYS, "Cannot merge environ from classad so cannot run condor_pid_ns_init\n");
+				delete fs_remap;
+				return 0;
+			}
 			env.SetEnv("_CONDOR_PID_NS_INIT_STATUS_FILENAME", filename);
-			env.InsertEnvIntoClassAd(JobAd, &env_errors);
+
+			if (!env.InsertEnvIntoClassAd(JobAd,  env_errors)) {
+				dprintf(D_ALWAYS, "Cannot Insert environ from classad so cannot run condor_pid_ns_init\n");
+				delete fs_remap;
+				return 0;
+			}
 
 			Starter->jic->removeFromOutputFiles(condor_basename(filename.c_str()));
 			this->m_pid_ns_status_filename = filename;
@@ -599,16 +621,27 @@ VanillaProc::StartJob()
 
 			JobAd->LookupString(ATTR_JOB_CMD, cmd);
 			args.AppendArg(cmd);
-			args.AppendArgsFromClassAd(JobAd, &arg_errors);
-			args.InsertArgsIntoClassAd(JobAd, NULL, & arg_errors);
+			if (!args.AppendArgsFromClassAd(JobAd, arg_errors)) {
+				dprintf(D_ALWAYS, "Cannot Append args from classad so cannot run condor_pid_ns_init\n");
+				delete fs_remap;
+				return 0;
+			}
+
+			if (!args.InsertArgsIntoClassAd(JobAd, NULL, arg_errors)) {
+				dprintf(D_ALWAYS, "Cannot Insert args into classad so cannot run condor_pid_ns_init\n");
+				delete fs_remap;
+				return 0;
+			}
 	
 			std::string libexec;
 			if( !param(libexec,"LIBEXEC") ) {
 				dprintf(D_ALWAYS, "Cannot find LIBEXEC so can not run condor_pid_ns_init\n");
+				delete fs_remap;
 				return 0;
 			}
 			std::string c_p_n_i = libexec + "/condor_pid_ns_init";
 			JobAd->Assign(ATTR_JOB_CMD, c_p_n_i);
+			previously_setup_for_pid_namespace = true;
 		}
 	}
 	dprintf(D_FULLDEBUG, "PID namespace option: %s\n", fi.want_pid_namespace ? "true" : "false");
@@ -628,68 +661,9 @@ VanillaProc::StartJob()
 	// Set fairshare limits.  Note that retval == 1 indicates success, 0 is failure.
 	// See Note near setup of param(BASE_CGROUP)
 	if (CONDOR_UNIVERSE_LOCAL != job_universe && cgroup && retval) {
-		std::string mem_limit;
-		param(mem_limit, "CGROUP_MEMORY_LIMIT_POLICY", "none");
-		bool mem_is_soft = mem_limit == "soft";
-		std::string cgroup_string = cgroup;
-		CgroupLimits climits(cgroup_string);
-		if (mem_is_soft || (mem_limit == "hard")) {
-			ClassAd * MachineAd = Starter->jic->machClassAd();
-			int MemMb;
-			if (MachineAd->LookupInteger(ATTR_MEMORY, MemMb)) {
-				// cgroups prevents us from setting hard limits lower
-				// than memsw limit.  If we are reusing this cgroup,
-				// we don't know what the previous values were
-				// So, set mem to 0, memsw to +inf, so that the real
-				// values can be set without interference
-
-				climits.set_memory_limit_bytes(0);
-				climits.set_memsw_limit_bytes(LONG_MAX);
-
-				uint64_t MemMb_big = MemMb;
-				m_memory_limit = MemMb_big;
-				climits.set_memory_limit_bytes(1024*1024*MemMb_big, mem_is_soft);
-
-				// Note that ATTR_VIRTUAL_MEMORY on Linux
-				// is sum of memory and swap, in Kilobytes
-
-				int VMemKb;
-				if (MachineAd->LookupInteger(ATTR_VIRTUAL_MEMORY, VMemKb)) {
-
-					uint64_t memsw_limit = ((uint64_t)1024) * VMemKb;
-					if (VMemKb > 0) {
-						// we're not allowed to set memsw limit <
-						// the hard memory limit.  If we haven't set the hard
-						// memory limit, the default may be infinity.
-						// So, if we've set soft, set hard limit to memsw - one page
-						if (mem_is_soft) {
-							uint64_t hard_limit = memsw_limit - 4096;
-							climits.set_memory_limit_bytes(hard_limit, false);
-						}
-						climits.set_memsw_limit_bytes(memsw_limit);
-					}
-				} else {
-					dprintf(D_ALWAYS, "Not setting virtual memory limit in cgroup because "
-						"Virtual Memory attribute missing in machine ad.\n");
-				}
-			} else {
-				dprintf(D_ALWAYS, "Not setting memory limit in cgroup because "
-					"Memory attribute missing in machine ad.\n");
-			}
-		} else if (mem_limit == "none") {
-			dprintf(D_FULLDEBUG, "Not enforcing memory limit.\n");
-		} else {
-			dprintf(D_ALWAYS, "Invalid value of CGROUP_MEMORY_LIMIT_POLICY: %s.  Ignoring.\n", mem_limit.c_str());
-		}
-
-		// Now, set the CPU shares
-		ClassAd * MachineAd = Starter->jic->machClassAd();
-		int numCores = 1;
-		if (MachineAd->LookupInteger(ATTR_CPUS, numCores)) {
-			climits.set_cpu_shares(numCores*100);
-		} else {
-			dprintf(D_FULLDEBUG, "Invalid value of Cpus in machine ClassAd; ignoring.\n");
-		}
+#ifdef LINUX
+		setCgroupMemoryLimits(cgroup);
+#endif
 		setupOOMEvent(cgroup);
 	}
 
@@ -713,20 +687,24 @@ VanillaProc::PublishUpdateAd( ClassAd* ad )
 {
 	dprintf( D_FULLDEBUG, "In VanillaProc::PublishUpdateAd()\n" );
 	static unsigned int max_rss = 0;
+#if HAVE_PSS
+	static unsigned int max_pss = 0;
+#endif
 
-	ProcFamilyUsage* usage;
-	ProcFamilyUsage cur_usage;
-	if (m_proc_exited) {
-		usage = &m_final_usage;
-	}
-	else {
-		if (daemonCore->Get_Family_Usage(JobPid, cur_usage) == FALSE) {
+	ProcFamilyUsage current_usage;
+	if( m_proc_exited ) {
+		current_usage = m_final_usage;
+	} else {
+		if (daemonCore->Get_Family_Usage(JobPid, current_usage) == FALSE) {
 			dprintf(D_ALWAYS, "error getting family usage in "
 					"VanillaProc::PublishUpdateAd() for pid %d\n", JobPid);
 			return false;
 		}
-		usage = &cur_usage;
 	}
+
+	ProcFamilyUsage reported_usage = m_checkpoint_usage;
+	reported_usage += current_usage;
+	ProcFamilyUsage * usage = & reported_usage;
 
         // prepare for updating "generic_stats" stats, call Tick() to update current time
     m_statistics.Tick();
@@ -749,12 +727,15 @@ VanillaProc::PublishUpdateAd( ClassAd* ad )
 
 #if HAVE_PSS
 	if( usage->total_proportional_set_size_available ) {
-		ad->Assign( ATTR_PROPORTIONAL_SET_SIZE, usage->total_proportional_set_size );
+		if (usage->total_proportional_set_size > max_pss) {
+			max_pss = usage->total_proportional_set_size;
+		}
+		ad->Assign( ATTR_PROPORTIONAL_SET_SIZE, max_pss );
 	}
 #endif
 
-	if (usage->block_read_bytes >= 0)  {
-        	m_statistics.BlockReadBytes = usage->block_read_bytes;
+	if (usage->block_read_bytes >= 0) {
+		m_statistics.BlockReadBytes = usage->block_read_bytes;
 		ad->Assign(ATTR_BLOCK_READ_KBYTES, usage->block_read_bytes / 1024l);
 	}
 	if (usage->block_write_bytes >= 0) {
@@ -763,17 +744,23 @@ VanillaProc::PublishUpdateAd( ClassAd* ad )
 	}
 
 	if (usage->block_reads >= 0) {
-        	m_statistics.BlockReads = usage->block_reads;
+		m_statistics.BlockReads = usage->block_reads;
 		ad->Assign(ATTR_BLOCK_READS, usage->block_reads);
 	}
 	if (usage->block_writes >= 0) {
-        	m_statistics.BlockWrites = usage->block_writes;
+		m_statistics.BlockWrites = usage->block_writes;
 		ad->Assign(ATTR_BLOCK_WRITES, usage->block_writes);
 	}
 
 	if (usage->io_wait >= 0.0) {
 		ad->Assign(ATTR_IO_WAIT, usage->io_wait);
 	}
+
+#ifdef LINUX
+	if (usage->m_instructions > 0) {
+		ad->Assign(ATTR_JOB_CPU_INSTRUCTIONS, usage->m_instructions);
+	}
+#endif
 
 
 		// Update our knowledge of how many processes the job has
@@ -838,13 +825,14 @@ void VanillaProc::killFamilyIfWarranted() {
 }
 
 void VanillaProc::restartCheckpointedJob() {
-	// For the same reason that we call recordFinalUsage() from the reaper
-	// in normal exit cases, we should get the final usage of the checkpointed
-	// process now, add it to the running total of checkpointed processes,
-	// and then add the running total to the current when we publish the
-	// update ad.  FIXME (#4971)
+	ProcFamilyUsage last_usage;
+	if( daemonCore->Get_Family_Usage( JobPid, last_usage ) == FALSE ) {
+		dprintf( D_ALWAYS, "error getting family usage for pid %d in "
+			"VanillaProc::restartCheckpointedJob()\n", JobPid );
+	}
+	m_checkpoint_usage += last_usage;
 
-	if( Starter->jic->uploadWorkingFiles() ) {
+	if( Starter->jic->uploadCheckpointFiles() ) {
 			notifySuccessfulPeriodicCheckpoint();
 	} else {
 			// We assume this is a transient failure and will try
@@ -857,6 +845,7 @@ void VanillaProc::restartCheckpointedJob() {
 	// would behave differently during ssh-to-job, which seems bad.
 	// killFamilyIfWarranted();
 
+	m_proc_exited = false;
 	StartJob();
 }
 
@@ -1119,7 +1108,7 @@ VanillaProc::outOfMemoryEvent(int /* fd */)
 	ClassAd updateAd;
 	PublishUpdateAd( &updateAd );
 	Starter->jic->periodicJobUpdate( &updateAd, true );
-	int usage;
+	int usage = 0;
 	updateAd.LookupInteger(ATTR_MEMORY_USAGE, usage);
 
 		//
@@ -1132,7 +1121,7 @@ VanillaProc::outOfMemoryEvent(int /* fd */)
 		// will be killed, and when it does, this job will get unfrozen
 		// and continue running.
 
-		if (usage < m_memory_limit) {
+		if (usage < (0.9 * m_memory_limit)) {
 			long long oomData = 0xdeadbeef;
 			int efd = -1;
 			ASSERT( daemonCore->Get_Pipe_FD(m_oom_efd, &efd) );
@@ -1385,7 +1374,7 @@ bool VanillaProc::Ckpt() {
 
 	if( isSoftKilling ) { return false; }
 
-	int wantCheckpointSignal = 0;
+	bool wantCheckpointSignal = false;
 	JobAd->LookupBool( ATTR_WANT_CHECKPOINT_SIGNAL, wantCheckpointSignal );
 	if( wantCheckpointSignal && ! isCheckpointing ) {
 		int periodicCheckpointSignal = findCheckpointSig( JobAd );
@@ -1404,11 +1393,13 @@ bool VanillaProc::Ckpt() {
 }
 
 int VanillaProc::outputOpenFlags() {
-	int wantCheckpoint = 0;
+	bool wantCheckpoint = false;
 	JobAd->LookupBool( ATTR_WANT_CHECKPOINT_SIGNAL, wantCheckpoint );
 	bool wantsFileTransferOnCheckpointExit = false;
 	JobAd->LookupBool( ATTR_WANT_FT_ON_CHECKPOINT, wantsFileTransferOnCheckpointExit );
-	if( wantCheckpoint || wantsFileTransferOnCheckpointExit ) {
+	bool dontAppend = true;
+	JobAd->LookupBool( ATTR_DONT_APPEND, dontAppend );
+	if( wantCheckpoint || wantsFileTransferOnCheckpointExit || (!dontAppend) ) {
 		return O_WRONLY | O_CREAT | O_APPEND | O_LARGEFILE;
 	} else {
 		return this->OsProc::outputOpenFlags();
@@ -1416,13 +1407,128 @@ int VanillaProc::outputOpenFlags() {
 }
 
 int VanillaProc::streamingOpenFlags( bool isOutput ) {
-	int wantCheckpoint = 0;
+	bool wantCheckpoint = false;
 	JobAd->LookupBool( ATTR_WANT_CHECKPOINT_SIGNAL, wantCheckpoint );
 	bool wantsFileTransferOnCheckpointExit = false;
 	JobAd->LookupBool( ATTR_WANT_FT_ON_CHECKPOINT, wantsFileTransferOnCheckpointExit );
-	if( wantCheckpoint || wantsFileTransferOnCheckpointExit ) {
+	bool dontAppend = true;
+	JobAd->LookupBool( ATTR_DONT_APPEND, dontAppend );
+	if( wantCheckpoint || wantsFileTransferOnCheckpointExit || (!dontAppend) ) {
 		return isOutput ? O_CREAT | O_APPEND | O_WRONLY : O_RDONLY;
 	} else {
 		return this->OsProc::streamingOpenFlags( isOutput );
 	}
 }
+
+#if defined(HAVE_EXT_LIBCGROUP)
+#ifdef LINUX
+void 
+VanillaProc::setCgroupMemoryLimits(const char *cgroup) {
+
+		ClassAd * MachineAd = Starter->jic->machClassAd();
+		std::string cgroup_string = cgroup;
+		CgroupLimits climits(cgroup_string);
+
+		// First, set the CPU shares
+		int numCores = 1;
+		if (MachineAd->LookupInteger(ATTR_CPUS, numCores)) {
+			climits.set_cpu_shares(numCores*100);
+		} else {
+			dprintf(D_FULLDEBUG, "Invalid value of Cpus in machine ClassAd; ignoring.\n");
+		}
+
+		// Now, set the memory limits
+		std::string mem_limit;
+		param(mem_limit, "CGROUP_MEMORY_LIMIT_POLICY", "none");
+		if (mem_limit == "none") {
+			dprintf(D_ALWAYS, "Not enforcing cgroup memory limit because CGROUP_MEMORY_LIMIT_POLICY is \"none\".\n");
+			return;
+		}
+
+		if ((mem_limit != "hard") && (mem_limit != "soft") && (mem_limit != "custom")) {
+			dprintf(D_ALWAYS, "Not enforcing cgroup memory limit because CGROUP_MEMORY_LIMIT_POLICY is an unknown value: %s.\n", mem_limit.c_str());
+			return;
+		}
+
+		// The default hard memory limit -- the amount of memory in the slot
+		std::string hard_memory_limit_expr = "My.Memory";
+
+		// The default soft memory limit -- 90% of the amount of memory in the slot
+		std::string soft_memory_limit_expr = "0.9 * My.Memory";
+
+		if (mem_limit == "soft") {
+				// If the policy is soft, make the hard limit the total memory for this startd
+				hard_memory_limit_expr = "My.TotalMemory";
+				// If the policy is soft, make the soft limit the slot size
+				soft_memory_limit_expr = "My.Memory";
+		} else if (mem_limit == "custom") {
+				param(hard_memory_limit_expr, "CGROUP_HARD_MEMORY_LIMIT_EXPR", "");
+				if (hard_memory_limit_expr.empty()) {
+					dprintf(D_ALWAYS, "Missing CGROUP_HARD_MEMORY_LIMIT_EXPR, this must be set when CGROUP_MEMORY_LIMIT_POLICY is custom\n");
+					return;
+				}
+				param(soft_memory_limit_expr, "CGROUP_SOFT_MEMORY_LIMIT_EXPR", "");
+				if (soft_memory_limit_expr.empty()) {
+					dprintf(D_ALWAYS, "Missing CGROUP_SOFT_MEMORY_LIMIT_EXPR, this must be set when CGROUP_MEMORY_LIMIT_POLICY is custom\n");
+					return;
+				}
+		}
+
+		int64_t hard_limit = 0;
+		int64_t soft_limit = 0;
+
+		ExprTree *expr = nullptr;
+		::ParseClassAdRvalExpr(hard_memory_limit_expr.c_str(), expr);
+		if (expr == nullptr) {
+			dprintf(D_ALWAYS, "Can't parse CGROUP_HARD_MEMORY_LIMIT_EXPR: %s, ignoring\n", hard_memory_limit_expr.c_str());
+			return;
+		}
+
+		classad::Value value;
+		int evalRet = EvalExprTree(expr, MachineAd, JobAd, value);
+		if ((!evalRet) || (!value.IsNumber(hard_limit))) {
+			dprintf(D_ALWAYS, "Can't evaluate CGROUP_HARD_MEMORY_LIMIT_EXPR: %s, ignoring\n", hard_memory_limit_expr.c_str());
+			delete expr;
+			return;
+		}
+
+		delete expr;
+		expr = nullptr;
+
+		::ParseClassAdRvalExpr(soft_memory_limit_expr.c_str(), expr);
+		if (expr == nullptr) {
+			dprintf(D_ALWAYS, "Can't parse CGROUP_SOFT_MEMORY_LIMIT_EXPR: %s, ignoring\n", soft_memory_limit_expr.c_str());
+			return;
+		}
+
+		evalRet = EvalExprTree(expr, MachineAd, JobAd, value);
+		if ((!evalRet) || (!value.IsNumber(soft_limit))) {
+			dprintf(D_ALWAYS, "Can't evaluate CGROUP_SOFT_MEMORY_LIMIT_EXPR: %s, ignoring\n", soft_memory_limit_expr.c_str());
+			delete expr;
+			return;
+		}
+		delete expr;
+
+		// cgroups prevents us from setting hard limits above
+		// the memsw limit.  If we are reusing this cgroup,
+		// we don't know what the previous values were
+		// So, set mem to 0, memsw to +inf, so that the real
+		// values can be set without interference
+
+		climits.set_memory_limit_bytes(0, true);
+		climits.set_memsw_limit_bytes(LONG_MAX);
+
+		// If we get an OOM, check against this value to see if it our fault, or a global OOM
+		m_memory_limit = soft_limit;
+		climits.set_memory_limit_bytes(1024 * 1024 * hard_limit, false /* == hard */);
+		climits.set_memory_limit_bytes(1024 * 1024 * soft_limit, true /* == soft */);
+
+		// if DISABLE_SWAP_FOR_JOB is true, set swap to hard memory limit
+		// otherwise, leave at infinity
+
+		if (param_boolean("DISABLE_SWAP_FOR_JOB", false)) {
+			climits.set_memsw_limit_bytes(1024 * 1024 * hard_limit);
+		}
+}
+#endif
+#endif

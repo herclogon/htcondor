@@ -92,7 +92,7 @@ my_exit( int status )
 	fflush( stderr );
 
 	if ( ! status ) {
-		clear_config();
+		clear_global_config_table();
 		// this is here to validate that we can still param() with an empty param table.
 		char *dummy = param("DUMMY"); if (dummy) free(dummy);
 	}
@@ -118,6 +118,7 @@ usage(int retval = 1)
 		"\tvalue is expanded unless -raw, -evaluate, -default or -dump is\n"
 		"\tspecified. When used with -dump, <var> is regular expression.\n"
 		"\n    where <view> is one or more of\n"
+		"\t-summary\t\tPrint all variables changed by config files\n"
 		"\t-dump\t\tPrint values of all variables that match <var>\n"
 		"\t\t\tThe value is raw unless -expanded, -default, or -evaluate\n"
 		"\t\t\tis specified. If no <vars>, Print all variables\n"
@@ -165,6 +166,7 @@ usage(int retval = 1)
 		"\t-startd\t\t\tQuery the startd\n"
 		"\t-collector\t\tQuery the collector\n"
 		"\t-negotiator\t\tQuery the negotiator\n"
+		"\t-root-config <file>\tUse <file> as the root config file\n"
 		"\n    where <help> is one of\n"
 		"\t-help\t\tPrint this screen and exit\n"
 		"\t-version\tPrint HTCondor version and exit\n"
@@ -190,7 +192,7 @@ typedef union _write_config_options {
 		unsigned int comment_env       :1;
 		unsigned int comment_5         :1;
 		unsigned int comment_6         :1;
-		unsigned int comment_7         :1;
+		unsigned int comment_version   :1;
 		unsigned int sort_name         :1;
 		unsigned int hide_obsolete     :1;
 		unsigned int hide_if_match     :1;
@@ -198,7 +200,7 @@ typedef union _write_config_options {
 } WRITE_CONFIG_OPTIONS;
 
 char* GetRemoteParam( Daemon*, char* );
-char* GetRemoteParamRaw(Daemon*, const char* name, bool & raw_supported, MyString & raw_value, MyString & file_and_line, MyString & def_value, MyString & usage_report);
+char* GetRemoteParamRaw(Daemon*, const char* name, bool & raw_supported, std::string & raw_value, std::string & file_and_line, std::string & def_value, std::string & usage_report);
 int GetRemoteParamStats(Daemon* target, ClassAd & ad);
 int   GetRemoteParamNamesMatching(Daemon*, const char* name, std::vector<std::string> & names);
 void  SetRemoteParam( Daemon*, const char*, ModeType );
@@ -246,17 +248,17 @@ void print_as_type(const char * name, int as_type)
 	}
 }
 
-const char * report_config_source(MACRO_META * pmeta, MyString & source)
+const char * report_config_source(MACRO_META * pmeta, std::string & source)
 {
 	source = config_source_by_id(pmeta->source_id);
 	if (pmeta->source_line < 0) {
 		if (pmeta->source_id == 1) {
-			source.formatstr_cat(", item %d", pmeta->param_id);
+			formatstr_cat(source,", item %d", pmeta->param_id);
 		}
 	} else {
-		source.formatstr_cat(", line %d", pmeta->source_line);
+		formatstr_cat(source,", line %d", pmeta->source_line);
 	}
-	return source.Value();
+	return source.c_str();
 }
 
 // increment the ref count of params referenced by default params
@@ -385,7 +387,7 @@ int fetch_param_table_info(int param_id, const char * & descrip, const char * & 
 	return type_and_flags;
 }
 
-const char * format_range(MyString & range, int param_id)
+const char * format_range(std::string & range, int param_id)
 {
 	const int* irng;
 	const double *drng;
@@ -426,7 +428,7 @@ void print_param_table_info(FILE* out, int param_id, int type_and_flags, const c
 		if (type_and_flags & PARAM_FLAGS_CONST) {
 			fprintf(out, " # constant : %s\n", type ? param_type_names[type] : "true");
 		} else {
-			MyString range;
+			std::string range;
 			format_range(range, param_id);
 			if (type || ! range.empty()) { fprintf(out, " # expected values : %s%s\n", param_type_names[type], range.c_str()); }
 		}
@@ -439,7 +441,7 @@ void print_param_table_info(FILE* out, int param_id, int type_and_flags, const c
 #ifdef HAS_LAMBDA
 #else
 bool report_obsolete_var(void* pv, HASHITER & it) {
-	MyString * pstr = (MyString*)pv;
+	std::string * pstr = (std::string*)pv;
 	const char * name = hash_iter_key(it);
 	if (is_known_subsys_prefix(name)) {
 		*pstr += "  ";
@@ -485,9 +487,9 @@ static const char * use_next_arg(const char * arg, const char * argv[], int & i)
 // this function returns a pointer to the value part or
 // it returns the input string if there is no = in the string.
 //
-static const char * RemoteRawValuePart(MyString & raw)
+static const char * RemoteRawValuePart(const std::string & raw)
 {
-	const char * praw = raw.Value();
+	const char * praw = raw.c_str();
 	while (*praw) {
 		if (*praw == '=') {
 			++praw;
@@ -496,7 +498,7 @@ static const char * RemoteRawValuePart(MyString & raw)
 		}
 		++praw;
 	}
-	return raw.Value();
+	return raw.c_str();
 }
 
 int
@@ -526,8 +528,10 @@ main( int argc, const char* argv[] )
 	bool    show_by_usage_unused = false;
 	bool    evaluate_daemon_vars = false;
 	bool    print_config_sources = false;
+	const char * root_config = NULL;
 	const char * write_config = NULL;
 	WRITE_CONFIG_OPTIONS write_config_flags = {0};
+	bool    dash_summary = false;
 	bool    dash_debug = false;
 	bool    dash_raw = false;
 	bool    dash_default = false;
@@ -703,7 +707,22 @@ main( int argc, const char* argv[] )
 			show_by_usage = true;
 			show_by_usage_unused = false;
 			//dash_usage = true;
+		} else if (is_arg_prefix(arg, "summary", 3)){
+			if (write_config && ! dash_summary) {
+				fprintf(stderr, "%s cannot be used with -writeconfig\n", argv[i]);
+				usage();
+			}
+			write_config_flags.all = 0;
+			write_config_flags.hide_obsolete = 1;
+			write_config_flags.hide_if_match = 1;
+			write_config_flags.comment_version = 1;
+			dash_summary = true;
+			write_config = "-";
 		} else if (is_arg_colon_prefix(arg, "writeconfig", &pcolon, 3)) {
+			if (dash_summary) {
+				fprintf(stderr, "%s cannot be used with -summary\n", argv[i]);
+				usage();
+			}
 			write_config = use_next_arg("writeconfig", argv, i);
 			write_config_flags.all = 0;
 			if (pcolon) {
@@ -745,6 +764,8 @@ main( int argc, const char* argv[] )
 				write_config_flags.comment_def_match = true;
 				write_config_flags.sort_name = false;
 			}
+		} else if (is_dash_arg_prefix(argv[i], "root-config", 4)) {
+			root_config = use_next_arg("root-config", argv, i);
 		} else if (is_arg_colon_prefix(arg, "debug", &pcolon, 2)) {
 				// dprintf to console
 			dash_debug = true;
@@ -811,8 +832,9 @@ main( int argc, const char* argv[] )
 	if (write_config || stats_with_defaults) {
 		config_options |= CONFIG_OPT_KEEP_DEFAULTS;
 	}
+	if (root_config) { config_options |= CONFIG_OPT_USE_THIS_ROOT_CONFIG | CONFIG_OPT_NO_EXIT; }
 	set_priv_initialize(); // allow uid switching if root
-	config_host(NULL, config_options);
+	config_host(NULL, config_options, root_config);
 	validate_config(false, 0); // validate, but do not abort.
 	if (print_config_sources) {
 		PrintConfigSources();
@@ -825,7 +847,7 @@ main( int argc, const char* argv[] )
 
 		extern const char * simulated_local_config;
 		simulated_local_config = reconfig_source;
-		config_host(NULL, config_options);
+		config_host(NULL, config_options, root_config);
 		if (print_config_sources) {
 			fprintf(stdout, "Reconfig with %s appended\n", reconfig_source);
 			PrintConfigSources();
@@ -865,11 +887,11 @@ main( int argc, const char* argv[] )
 		Regex re; int err = 0; const char * pszMsg = 0;
 		// check for knobs of the form SUBSYS.LOCALNAME.*
 		ASSERT(re.compile("^[A-Za-z_]*\\.[A-Za-z_0-9]*\\.", &pszMsg, &err, PCRE_CASELESS));
-		MyString obsolete_vars;
+		std::string obsolete_vars;
 		foreach_param_matching(re, HASHITER_NO_DEFAULTS,
 #ifdef HAS_LAMBDA
 			[](void* pv, HASHITER & it) -> bool {
-				MyString * pstr = (MyString*)pv;
+				std::string * pstr = (std::string *)pv;
 				const char * name = hash_iter_key(it);
 				if (is_known_subsys_prefix(name)) {
 					*pstr += "  ";
@@ -981,7 +1003,8 @@ main( int argc, const char* argv[] )
 						for (int ii = 0; ii < (int)names.size(); ++ii) {
 
 							const char * name = names[ii].c_str();
-							MyString name_used, location;
+							std::string name_used;
+							std::string location;
 							//int line_number, use_count, ref_count;
 							const MACRO_META * pmet = NULL;
 							const char * def_val = NULL;
@@ -996,17 +1019,16 @@ main( int argc, const char* argv[] )
 									continue;
 							}
 							if (expand_dumped_variables) {
-								MyString upname = name; //upname.upper_case();
+								std::string upname = name; //upper_case(upname);
 								const char * val = param(name);
-								fprintf(stdout, "%s = %s\n", upname.Value(), val ? val : "");
+								fprintf(stdout, "%s = %s\n", upname.c_str(), val ? val : "");
 							} else {
-								MyString upname = name_used;
-								if (upname.IsEmpty()) upname = name;
+								std::string upname = name_used;
+								if (upname.empty()) upname = name;
 								//upname.upper_case();
-								fprintf(stdout, "%s = %s\n", upname.Value(), rawval ? rawval : "");
+								fprintf(stdout, "%s = %s\n", upname.c_str(), rawval ? rawval : "");
 							}
 							if (verbose) {
-								MyString range;
 								const char * tags = NULL;
 								const char * descrip = NULL;
 								const char * used_for = NULL;
@@ -1042,8 +1064,8 @@ main( int argc, const char* argv[] )
 		// print the set of all config sources.
 		if ( ! verbose) {
 			fprintf(stdout, "# Contributing configuration file(s):\n");
-			if (global_config_source.Length() > 0) {
-				fprintf(stdout, "#\t%s\n", global_config_source.Value());
+			if (global_config_source.length() > 0) {
+				fprintf(stdout, "#\t%s\n", global_config_source.c_str());
 			}
 			local_config_sources.rewind();
 			while ((source = local_config_sources.next()) != NULL) {
@@ -1152,7 +1174,8 @@ main( int argc, const char* argv[] )
 	while( (tmp = params.next()) ) {
 		// empty parens so that we don't have to change the brace level of ALL of the code below.
 		{
-			MyString name_used, raw_value, file_and_line, def_value, usage_report;
+			std::string name_used;
+			std::string raw_value, file_and_line, def_value, usage_report;
 			const char * tags = NULL;
 			const char * descrip = NULL;
 			const char * used_for = NULL;
@@ -1196,7 +1219,7 @@ main( int argc, const char* argv[] )
 						for (int ii = 0; ii < (int)names.size(); ++ii) {
 							if (value) free(value);
 							value = GetRemoteParamRaw(target, names[ii].c_str(), raw_supported, raw_value, file_and_line, def_value, usage_report);
-							if (show_by_usage && ! usage_report.IsEmpty()) {
+							if (show_by_usage && ! usage_report.empty()) {
 								if (show_by_usage_unused && usage_report != "0")
 									continue;
 								if ( ! show_by_usage_unused && usage_report == "0")
@@ -1207,9 +1230,9 @@ main( int argc, const char* argv[] )
 
 							name_used = names[ii];
 							if (expand_dumped_variables || ! raw_supported) {
-								printf("%s = %s\n", name_used.Value(), value ? value : "");
+								printf("%s = %s\n", name_used.c_str(), value ? value : "");
 							} else {
-								printf("%s = %s\n", name_used.Value(), RemoteRawValuePart(raw_value));
+								printf("%s = %s\n", name_used.c_str(), RemoteRawValuePart(raw_value));
 							}
 							if ( ! raw_supported && (verbose || ! expand_dumped_variables)) {
 								printf(" # remote HTCondor version does not support -verbose\n");
@@ -1220,25 +1243,25 @@ main( int argc, const char* argv[] )
 									param_default_help_by_id(param_id, descrip, tags, used_for);
 								}
 								if (descrip) { fprintf(stdout, " # description: %s\n", descrip); }
-								if ( ! file_and_line.IsEmpty()) {
-									printf(" # at: %s\n", file_and_line.Value());
+								if ( ! file_and_line.empty()) {
+									printf(" # at: %s\n", file_and_line.c_str());
 								}
 								if (expand_dumped_variables) {
-									printf(" # raw: %s\n", raw_value.Value());
+									printf(" # raw: %s\n", raw_value.c_str());
 								} else {
 									printf(" # expanded: %s\n", value);
 								}
-								if ( ! def_value.IsEmpty()) {
-									printf(" # default: %s\n", def_value.Value());
+								if ( ! def_value.empty()) {
+									printf(" # default: %s\n", def_value.c_str());
 								}
 								if (show_param_info) {
 									print_param_table_info(stdout, param_id, type_and_flags, used_for, tags);
 								}
-								if (dash_usage && ! usage_report.IsEmpty()) {
-									printf(" # use_count: %s\n", usage_report.Value());
+								if (dash_usage && ! usage_report.empty()) {
+									printf(" # use_count: %s\n", usage_report.c_str());
 								}
 							} else if ( ! file_and_line.empty()) {
-								std::string source(file_and_line.c_str());
+								std::string source(file_and_line);
 								size_t ix = source.find(", line");
 								if (ix != std::string::npos) { 
 									sources[source.substr(0,ix)] = 1; 
@@ -1261,9 +1284,9 @@ main( int argc, const char* argv[] )
 					continue;
 				} else if (dash_raw || verbose) {
 					name_used = tmp;
-					name_used.upper_case();
+					upper_case(name_used);
 					value = GetRemoteParamRaw(target, tmp, raw_supported, raw_value, file_and_line, def_value, usage_report);
-					if ( ! verbose && ! raw_value.IsEmpty()) {
+					if ( ! verbose && ! raw_value.empty()) {
 						free(value);
 						value = strdup(RemoteRawValuePart(raw_value));
 					}
@@ -1273,7 +1296,7 @@ main( int argc, const char* argv[] )
 					}
 				} else {
 					name_used = tmp;
-					name_used.upper_case();
+					upper_case(name_used);
 					value = GetRemoteParam(target, tmp);
 				}
                 if (value && evaluate_daemon_vars) {
@@ -1309,8 +1332,8 @@ main( int argc, const char* argv[] )
 					param_id = pmet->param_id;
 					type_and_flags = param_default_help_by_id(pmet->param_id, descrip, tags, used_for);
 				}
+				raw_supported = true;  // local lookups always support raw
 				if ( ! name_used.empty()) {
-					raw_supported = true;
 					if (dash_raw) {
 						value = strdup(val ? val : "");
 					} else {
@@ -1318,19 +1341,19 @@ main( int argc, const char* argv[] )
 						raw_value = name_used;
 						//raw_value.upper_case();
 						raw_value += " = ";
-						raw_value += val;
+						raw_value += val ? val : "";
 					}
 					if (pmet) {
 						param_get_location(pmet, file_and_line);
 						if (pmet->ref_count) {
-							usage_report.formatstr("%d / %d", pmet->use_count, pmet->ref_count);
+							formatstr(usage_report, "%d / %d", pmet->use_count, pmet->ref_count);
 						} else {
-							usage_report.formatstr("%d", pmet->use_count);
+							formatstr(usage_report, "%d", pmet->use_count);
 						}
 					}
 				} else {
 					name_used = tmp;
-					name_used.upper_case();
+					upper_case(name_used);
 					value = NULL;
 				}
 			}
@@ -1350,14 +1373,14 @@ main( int argc, const char* argv[] )
 			}
 			if (verbose) {
 				if (descrip) { fprintf(stdout, " # description: %s\n", descrip); }
-				if ( ! file_and_line.IsEmpty()) {
-					printf(" # at: %s\n", file_and_line.Value());
+				if ( ! file_and_line.empty()) {
+					printf(" # at: %s\n", file_and_line.c_str());
 				}
-				if ( ! raw_value.IsEmpty()) {
-					printf(" # raw: %s\n", raw_value.Value());
+				if ( ! raw_value.empty()) {
+					printf(" # raw: %s\n", raw_value.c_str());
 				}
-				if ( ! def_value.IsEmpty()) {
-					printf(" # default: %s\n", def_value.Value());
+				if ( ! def_value.empty()) {
+					printf(" # default: %s\n", def_value.c_str());
 				}
 				if (dump_both_only_type > 0) {
 					print_as_type(tmp, dump_both_only_type);
@@ -1365,8 +1388,8 @@ main( int argc, const char* argv[] )
 				if (show_param_info) {
 					print_param_table_info(stdout, param_id, type_and_flags, used_for, tags);
 				}
-				if (dash_usage && ! usage_report.IsEmpty()) {
-					printf(" # use_count: %s\n", usage_report.Value());
+				if (dash_usage && ! usage_report.empty()) {
+					printf(" # use_count: %s\n", usage_report.c_str());
 				}
 				printf("\n");
 			}
@@ -1449,10 +1472,10 @@ GetRemoteParamRaw(
 	Daemon* target,
 	const char * param_name,
 	bool & raw_supported,
-	MyString & raw_value,
-	MyString & file_and_line,
-	MyString & def_value,
-	MyString & usage_report)
+	std::string & raw_value,
+	std::string & file_and_line,
+	std::string & def_value,
+	std::string & usage_report)
 {
 	ReliSock s;
 	s.timeout(30);
@@ -1508,8 +1531,8 @@ GetRemoteParamRaw(
 	//
 	int ix = 0;
 	while ( ! s.peek_end_of_message()) {
-		MyString dummy;
-		MyString * ps = &dummy;
+		std::string dummy;
+		std::string * ps = &dummy;
 		if (0 == ix) ps = &raw_value;
 		else if (1 == ix) ps = &file_and_line;
 		else if (2 == ix) ps = &def_value;
@@ -1519,7 +1542,7 @@ GetRemoteParamRaw(
 			fprintf(stderr, "Can't read line %d\n", ix); 
 			break; 
 		}
-		if (diagnostic) fprintf(stderr, "result[%d]: '%s'\n", ix, ps->Value());
+		if (diagnostic) fprintf(stderr, "result[%d]: '%s'\n", ix, ps->c_str());
 		++ix;
 		// if we got more than one string in the reply, then the remote daemon supports -raw
 		raw_supported = true;
@@ -1564,8 +1587,8 @@ int GetRemoteParamStats(Daemon* target, ClassAd & ad)
 	// back a set of strings containing config stats, or "Not defined" if the daemon
 	// is pre 8.1.2
 	//
-	MyString query("?stats");
-	if (diagnostic) fprintf(stderr, "sending %s\n", query.Value());
+	std::string query("?stats");
+	if (diagnostic) fprintf(stderr, "sending %s\n", query.c_str());
 	if ( ! s.code(query)) {
 		fprintf(stderr, "Can't send request for stats'\n");
 		return 0;
@@ -1647,7 +1670,7 @@ GetRemoteParamNamesMatching(Daemon* target, const char * param_pat, std::vector<
 	// back a set of strings containing parameter names, or "Not defined" if the daemon
 	// is pre 8.1.2
 	//
-	MyString query("?names");
+	std::string query("?names");
 	//if (param_pat && param_pat[0] == '*' && ! param_pat[1]) {
 	//	; // ?names without a qualifier implies a ".*" pattern
 	//} else
@@ -1656,7 +1679,7 @@ GetRemoteParamNamesMatching(Daemon* target, const char * param_pat, std::vector<
 		query += param_pat;
 	}
 
-	if (diagnostic) fprintf(stderr, "sending %s\n", query.Value());
+	if (diagnostic) fprintf(stderr, "sending %s\n", query.c_str());
 	if ( ! s.code(query)) {
 		fprintf(stderr, "Can't send request for names matching %s'\n", param_pat);
 		return 0;
@@ -1717,7 +1740,7 @@ GetRemoteParamNamesMatching(Daemon* target, const char * param_pat, std::vector<
 	if (names.size() > 1) {
 		std::sort(names.begin(), names.end(), sort_ascending_ignore_case);
 	}
-	return names.size();
+	return (int)names.size();
 }
 
 void
@@ -1900,10 +1923,10 @@ static void PrintConfigSources(void)
 		// stdout, so that the output can be cleanly piped into
 		// something like xargs...
 
-	if (global_config_source.Length() > 0) {
+	if (global_config_source.length() > 0) {
 		fprintf( stderr, "Configuration source:\n" );
 		fflush( stderr );
-		fprintf( stdout, "\t%s\n", global_config_source.Value() );
+		fprintf( stdout, "\t%s\n", global_config_source.c_str() );
 		fflush( stdout );
 	} else {
 		fprintf( stderr, "Can't find the configuration source.\n" );
@@ -2031,8 +2054,8 @@ bool write_config_callback(void* user, HASHITER & it) {
 		}
 
 		if (pargs->opt.hide_if_match && pargs->obsoleteif) {
-			MyString item(hash_iter_key(it));
-			item.upper_case();
+			std::string item(hash_iter_key(it));
+			upper_case(item);
 			item += "=";
 			const char * val = hash_iter_value(it);
 			if (val) item += hash_iter_value(it);
@@ -2053,7 +2076,7 @@ bool write_config_callback(void* user, HASHITER & it) {
 		return true;
 	}
 
-	MyString source;
+	std::string source;
 	if (pargs->opt.comment_source) {
 		report_config_source(pmeta, source);
 	}
@@ -2062,10 +2085,10 @@ bool write_config_callback(void* user, HASHITER & it) {
 		fprintf(fh, "%s%s = %s\n", comment_me, name, rawval ? rawval : "");
 		if ( ! source.empty()) { fprintf(fh, " # at: %s\n", source.c_str()); }
 	} else {
-		MyString line;
+		std::string line;
 		//the next line makes the difference between NULL and "" visible
 		//if (rawval && !rawval[0]) rawval = "\"\"";
-		line.formatstr("%s%s = %s", comment_me, name, rawval ? rawval : "");
+		formatstr(line, "%s%s = %s", comment_me, name, rawval ? rawval : "");
 		if ( ! source.empty()) { line += "\n"; line += source; }
 		// generate a unique source sort key so that we end up sorting by
 		// source file id, line, & meta-knob line in that order.
@@ -2126,10 +2149,11 @@ void PrintMetaKnob(const char * metaval, bool expand, bool verbose)
 			printf("%s\n", line);
 		}
 		if (is_use && expand) {
-			MyString cat(toks.next()), remain;
+			const char *cat_str = toks.next();
+			std::string cat(cat_str ? cat_str : ""), remain;
 			int len, ix = toks.next_token(len);
 			if (ix > 0) { remain = line + ix; }
-			PrintExpandedMetaParams(cat.Value(), remain.Value(), verbose);
+			PrintExpandedMetaParams(cat.c_str(), remain.c_str(), verbose);
 		}
 	}
 }
@@ -2189,9 +2213,9 @@ void PrintMetaParam(const char * name, bool expand, bool verbose)
 			printf("use %s:%s is\n%s\n", ptable->key, pdef->key, pdef->def->psz);
 		}
 	} else {
-		MyString name_used(use);
-		if (ptable) { name_used.formatstr("%s:%s", use, parm); }
-		name_used.upper_case();
+		std::string name_used(use);
+		if (ptable) { formatstr(name_used, "%s:%s", use, parm); }
+		upper_case(name_used);
 		printf("Not defined: use %s\n", name_used.c_str());
 	}
 }
@@ -2211,14 +2235,14 @@ void DumpRemoteParams(Daemon* target, const char * tmp)
 	if (iret <= 0)
 		return;
 
-	MyString name_used, raw_value, file_and_line, def_value, usage_report;
+	std::string name_used, raw_value, file_and_line, def_value, usage_report;
 	bool raw_supported = false;
 
 	char * value = NULL;
 	for (int ii = 0; ii < (int)names.size(); ++ii) {
 		if (value) free(value);
 		char * value = GetRemoteParamRaw(target, names[ii].c_str(), raw_supported, raw_value, file_and_line, def_value, usage_report);
-		if (show_by_usage && ! usage_report.IsEmpty()) {
+		if (show_by_usage && ! usage_report.empty()) {
 			if (show_by_usage_unused && usage_report != "0")
 				continue;
 			if ( ! show_by_usage_unused && usage_report == "0")
@@ -2229,27 +2253,27 @@ void DumpRemoteParams(Daemon* target, const char * tmp)
 
 		name_used = names[ii];
 		if (expand_dumped_variables || ! raw_supported) {
-			printf("%s = %s\n", name_used.Value(), value ? value : "");
+			printf("%s = %s\n", name_used.c_str(), value ? value : "");
 		} else {
-			printf("%s = %s\n", name_used.Value(), RemoteRawValuePart(raw_value));
+			printf("%s = %s\n", name_used.c_str(), RemoteRawValuePart(raw_value));
 		}
 		if ( ! raw_supported && (verbose || ! expand_dumped_variables)) {
 			printf(" # remote HTCondor version does not support -verbose\n");
 		}
 		if (verbose) {
-			if ( ! file_and_line.IsEmpty()) {
-				printf(" # at: %s\n", file_and_line.Value());
+			if ( ! file_and_line.empty()) {
+				printf(" # at: %s\n", file_and_line.c_str());
 			}
 			if (expand_dumped_variables) {
-				printf(" # raw: %s\n", raw_value.Value());
+				printf(" # raw: %s\n", raw_value.c_str());
 			} else {
 				printf(" # expanded: %s\n", value);
 			}
-			if ( ! def_value.IsEmpty()) {
-				printf(" # default: %s\n", def_value.Value());
+			if ( ! def_value.empty()) {
+				printf(" # default: %s\n", def_value.c_str());
 			}
-			if (dash_usage && ! usage_report.IsEmpty()) {
-				printf(" # use_count: %s\n", usage_report.Value());
+			if (dash_usage && ! usage_report.empty()) {
+				printf(" # use_count: %s\n", usage_report.c_str());
 			}
 		}
 	}
@@ -2259,7 +2283,8 @@ void DumpRemoteParams(Daemon* target, const char * tmp)
 
 void PrintParam(const char * tmp)
 {
-	MyString name_used, raw_value, file_and_line, def_value, usage_report;
+	std::string name_used;
+	std::string raw_value, file_and_line, def_value, usage_report;
 	bool raw_supported = false;
 	//fprintf(stderr, "param = %s\n", tmp);
 	if( target ) {
@@ -2279,15 +2304,15 @@ void PrintParam(const char * tmp)
 			?? DumpRemoteParams();
 		} else if (dash_raw || verbose) {
 			name_used = tmp;
-			name_used.upper_case();
+			upper_case(name_used);
 			value = GetRemoteParamRaw(target, tmp, raw_supported, raw_value, file_and_line, def_value, usage_report);
-			if ( ! verbose && ! raw_value.IsEmpty()) {
+			if ( ! verbose && ! raw_value.empty()) {
 				free(value);
 				value = strdup(RemoteRawValuePart(raw_value));
 			}
 		} else {
 			name_used = tmp;
-			name_used.upper_case();
+			upper_case(name_used);
 			value = GetRemoteParam(target, tmp);
 		}
         if (value && evaluate_daemon_vars) {
@@ -2315,17 +2340,17 @@ void PrintParam(const char * tmp)
 				raw_value = name_used;
 				//raw_value.upper_case();
 				raw_value += " = ";
-				raw_value += val;
+				raw_value += val ? val : "";
 			}
 			param_get_location(pmet, file_and_line);
 			if (pmet->ref_count) {
-				usage_report.formatstr("%d / %d", pmet->use_count, pmet->ref_count);
+				formatstr(usage_report, "%d / %d", pmet->use_count, pmet->ref_count);
 			} else {
-				usage_report.formatstr("%d", pmet->use_count);
+				formatstr(usage_report, "%d", pmet->use_count);
 			}
 		} else {
 			name_used = tmp;
-			name_used.upper_case();
+			upper_case(name_used);
 			value = NULL;
 		}
 	}
@@ -2343,20 +2368,20 @@ void PrintParam(const char * tmp)
 			printf(" # the remote HTCondor version does not support -raw or -verbose");
 		}
 		if (verbose) {
-			if ( ! file_and_line.IsEmpty()) {
-				printf(" # at: %s\n", file_and_line.Value());
+			if ( ! file_and_line.empty()) {
+				printf(" # at: %s\n", file_and_line.c_str());
 			}
-			if ( ! raw_value.IsEmpty()) {
-				printf(" # raw: %s\n", raw_value.Value());
+			if ( ! raw_value.empty()) {
+				printf(" # raw: %s\n", raw_value.c_str());
 			}
-			if ( ! def_value.IsEmpty()) {
-				printf(" # default: %s\n", def_value.Value());
+			if ( ! def_value.empty()) {
+				printf(" # default: %s\n", def_value.c_str());
 			}
 			if (dump_both_only_type > 0) {
 				print_as_type(tmp, dump_both_only_type);
 			}
-			if (dash_usage && ! usage_report.IsEmpty()) {
-				printf(" # use_count: %s\n", usage_report.Value());
+			if (dash_usage && ! usage_report.empty()) {
+				printf(" # use_count: %s\n", usage_report.c_str());
 			}
 			printf("\n");
 		}
@@ -2441,6 +2466,9 @@ static int do_write_config(const char* pathname, WRITE_CONFIG_OPTIONS opts)
 	//fprintf(fh, "\n<all done>\n");
 	if ( ! args.output.empty()) {
 		//fprintf(fh, "<not empty>\n");
+		if (opts.comment_version) {
+			fprintf(fh, "# condor_config_val %s\n", CondorVersion());
+		}
 		std::map<unsigned long long, std::string>::iterator it;
 		long last_id = -1;
 		for (it = args.output.begin(); it != args.output.end(); it++) {

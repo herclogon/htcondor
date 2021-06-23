@@ -23,6 +23,7 @@
 
 #include "condor_common.h"
 #include "condor_daemon_core.h"
+#include <map>
 
 #include "ec2job.h"
 #include "baseresource.h"
@@ -38,7 +39,7 @@ class EC2Resource : public BaseResource
 public:
 	void Reconfig();
 
-	static const char *HashName( const char * resource_name,
+	static std::string & HashName( const char * resource_name,
 								 const char * public_key_file,
 								 const char * private_key_file );
 
@@ -55,7 +56,7 @@ public:
 
 	~EC2Resource();
 
-	static HashTable <std::string, EC2Resource *> ResourcesByName;
+	static std::map <std::string, EC2Resource *> ResourcesByName;
 
 	const char *ResourceType();
 
@@ -63,11 +64,11 @@ public:
 
 	void PublishResourceAd( ClassAd *resource_ad );
 
-    bool hadAuthFailure() { return m_hadAuthFailure; }
+    bool hadAuthFailure() const { return m_hadAuthFailure; }
 
-	bool ServerTypeQueried( EC2Job *job = NULL );
-	bool ClientTokenWorks( EC2Job *job = NULL );
-	bool ShuttingDownTrusted( EC2Job *job = NULL );
+	bool ServerTypeQueried( EC2Job *job = NULL ) const;
+	bool ClientTokenWorks( EC2Job *job = NULL ) const;
+	bool ShuttingDownTrusted( EC2Job *job = NULL ) const;
 
     std::string authFailureMessage;
 

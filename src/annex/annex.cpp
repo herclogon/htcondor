@@ -187,6 +187,7 @@ createConfigTarball(	const char * configDir,
 	if( collectorHost.empty() ) {
 		formatstr( tarballError, "COLLECTOR_HOST empty or undefined" );
 		free(cwd);
+		close(fd);
 		return false;
 	}
 
@@ -212,7 +213,7 @@ createConfigTarball(	const char * configDir,
 
 	std::string contents;
 	formatstr( contents,
-		"use security : host_based\n"
+		"use security:host_based\n"
 		"LOCAL_HOSTS = $(FULL_HOSTNAME) $(IP_ADDRESS) 127.0.0.1 $(TCP_FORWARDING_HOST)\n"
 		"CONDOR_HOST = condor_pool@*/* $(LOCAL_HOSTS)\n"
 		"COLLECTOR_HOST = %s\n"
@@ -406,6 +407,9 @@ help( const char * argv0 ) {
 		"To customize the annex's HTCondor configuration:\n"
 		"\t[-config-dir </full/path/to/config.d>]\n"
 		"\n"
+		"To tag the instances (repeat -tag for each tag):\n"
+		"\t[-tag tag-name tag-value]\n"
+		"\n"
 		"To set the instances' user data:\n"
 		"\t[-aws-[default-]user-data[-file] <data|/full/path/to/file> ]\n"
 		"\n"
@@ -444,6 +448,8 @@ help( const char * argv0 ) {
 		"\n"
 		"OR, to do the one-time setup for an AWS region:\n"
 		"%s [-aws-region <region>] -setup [</full/path/to/access-key-file> </full/path/to/secret-key-file> [<CloudFormation URL>]]\n"
+		"... if you're on an EC2 instance (with a privileged IAM role):\n"
+		"%s [-aws-region <region>] -setup FROM INSTANCE [CloudFormation URL]\n"
 		"\n"
 		"OR, to check if the one-time setup has been done:\n"
 		"%s [-aws-region <region>] -check-setup\n"
@@ -454,7 +460,7 @@ help( const char * argv0 ) {
 		"OR, to reset the lease on an existing annex:\n"
 		"%s [-aws-region <region>] -annex[-name] <annex-name> -duration <lease duration in decimal hours>\n"
 		"\n"
-		, argv0, argv0, argv0, argv0, argv0 );
+		, argv0, argv0, argv0, argv0, argv0, argv0 );
 }
 
 
@@ -465,8 +471,8 @@ void prepareCommandAd( const ClassAd & commandArguments, int commandInt ) {
 	command->Assign( "RequestVersion", 1 );
 
 	// We don't trust the client the supply the command ID or annex ID.
-	command->Assign( "CommandID", (const char *)NULL );
-	command->Assign( "AnnexID", (const char *)NULL );
+	command->AssignExpr( "CommandID", "Undefined" );
+	command->AssignExpr( "AnnexID", "Undefined" );
 }
 
 int create_annex( ClassAd & commandArguments ) {
@@ -746,6 +752,7 @@ annex_main( int argc, char ** argv ) {
 	bool clUserDataWins = true;
 	std::string userData;
 	const char * userDataFileName = NULL;
+	std::vector< std::pair< std::string, std::string > > tags;
 
 	enum annex_t {
 		at_none = 0,
@@ -1004,6 +1011,24 @@ annex_main( int argc, char ** argv ) {
 			} else {
 				fprintf( stderr, "%s: -aws-s3-config-path requires an argument.\n", argv[0] );
 				return 1;
+			}
+		} else if( is_dash_arg_prefix( argv[i], "tag", 3 ) ) {
+			++i;
+			char * tagName = NULL, * tagValue = NULL;
+			if( i < argc && argv[i] != NULL ) {
+				tagName = argv[i];
+
+				++i;
+				if( i < argc && argv[i] != NULL ) {
+					tagValue = argv[i];
+				}
+			}
+			if( tagName == NULL || tagValue == NULL ) {
+				fprintf( stderr, "%s: -tag requires two arguments.\n", argv[0] );
+				return 1;
+			} else {
+				tags.push_back( std::make_pair( tagName, tagValue ) );
+				continue;
 			}
 		} else if( is_dash_arg_prefix( argv[i], "duration", 8 ) ) {
 			++i;
@@ -1281,6 +1306,26 @@ annex_main( int argc, char ** argv ) {
 
 	switch( theCommand ) {
 		case ct_create_annex:
+		case ct_update_annex: {
+			StringList tagNames;
+			std::string attrName;
+			for( unsigned i = 0; i < tags.size(); ++i ) {
+				tagNames.append(tags[0].first.c_str());
+				formatstr( attrName, "%s%s", ATTR_EC2_TAG_PREFIX, tags[0].first.c_str() );
+				commandArguments.Assign( attrName, tags[0].second.c_str() );
+			}
+
+			char * sl = tagNames.print_to_string();
+			commandArguments.Assign( ATTR_EC2_TAG_NAMES, sl );
+			free( sl );
+			} break;
+
+		default:
+			break;
+	}
+
+	switch( theCommand ) {
+		case ct_create_annex:
 			// Validate the spot fleet request config file.
 			if( annexType == at_sfr && sfrConfigFile == NULL ) {
 				sfrConfigFile = param( "ANNEX_DEFAULT_SFR_CONFIG_FILE" );
@@ -1373,10 +1418,14 @@ annex_main( int argc, char ** argv ) {
 			return condor_off( annexName, argc, argv, subCommandIndex );
 
 		case ct_condor_status:
+			// Obviously the wrong command int, but it no longer matters.
+			prepareCommandAd( commandArguments, CA_BULK_REQUEST );
 			return condor_status( annexName, sURLy.c_str(),
 				argc, argv, subCommandIndex );
 
 		case ct_status:
+			// Obviously the wrong command int, but it no longer matters.
+			prepareCommandAd( commandArguments, CA_BULK_REQUEST );
 			return status( annexName, wantClassAds, sURLy.c_str() );
 
 		case ct_setup: {
@@ -1384,14 +1433,24 @@ annex_main( int argc, char ** argv ) {
 			if( cloudFormationURL != NULL ) {
 				cfURL = cloudFormationURL;
 			} else {
+				fprintf( stdout, "Will do setup in region '%s'.\n", region );
 				formatstr( cfURL, "https://cloudformation.%s.amazonaws.com", region );
 			}
 
 			return setup( region, publicKeyFile, secretKeyFile, cfURL.c_str(), sURLy.c_str() );
 		}
 
-		case ct_check_setup:
-			return check_setup();
+		case ct_check_setup: {
+			std::string cfURL;
+			if( cloudFormationURL != NULL ) {
+				cfURL = cloudFormationURL;
+			} else {
+				fprintf( stdout, "Will check setup in region '%s'.\n", region );
+				formatstr( cfURL, "https://cloudformation.%s.amazonaws.com", region );
+			}
+
+			return check_setup( cfURL.c_str(), sURLy.c_str() );
+		}
 
 		case ct_create_annex:
 			switch( annexType ) {

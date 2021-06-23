@@ -78,7 +78,7 @@ extern char *myUserName;
 extern int main_shutdown_graceful();
 
 int
-request_pipe_handler(Service*, int) {
+request_pipe_handler(int) {
 
 	std::string* next_line;
 	while ((next_line = request_buffer.GetNextLine()) != NULL) {
@@ -126,6 +126,9 @@ doContactSchedd()
 	int failure_line_num = 0;
 	int failure_errno = 0;
 	std::set< std::string, classad::CaseIgnLTStr > filter_attrs;
+	bool rerun_immediately = false;
+	int max_file_requests = param_integer("C_GAHP_MAX_FILE_REQUESTS", 10);
+	int curr_file_requests = 0;
 
 	// Try connecting to schedd
 	DCSchedd dc_schedd ( ScheddAddr, ScheddPool );
@@ -352,6 +355,7 @@ doContactSchedd()
 
 	// JOB_STAGE_IN
 	int MAX_BATCH_SIZE=1; // This should be a config param
+	curr_file_requests = 0;
 
 	SimpleList <SchedDRequest*> stage_in_batch;
 	do {
@@ -372,7 +376,8 @@ doContactSchedd()
 					 current_command->proc_id);
 
 			stage_in_batch.Append (current_command);
-			if (stage_in_batch.Number() >= MAX_BATCH_SIZE)
+			curr_file_requests++;
+			if (stage_in_batch.Number() >= MAX_BATCH_SIZE || curr_file_requests > max_file_requests)
 				break;
 		}
 
@@ -413,16 +418,21 @@ doContactSchedd()
 				}
 			} // elihw (command_queue)
 		} // fi has STAGE_IN requests
-	} while (stage_in_batch.Number() > 0);
+	} while (stage_in_batch.Number() > 0 && curr_file_requests < max_file_requests);
+
+	if (curr_file_requests >= max_file_requests) {
+		rerun_immediately = true;
+	}
 
 	dprintf (D_FULLDEBUG, "Processing JOB_STAGE_OUT requests\n");
 	
 
 	// JOB_STAGE_OUT
 	SimpleList <SchedDRequest*> stage_out_batch;
+	curr_file_requests = 0;
 
 	command_queue.Rewind();
-	while (command_queue.Next(current_command)) {
+	while (command_queue.Next(current_command) && curr_file_requests < max_file_requests) {
 
 		if (current_command->status != SchedDRequest::SDCS_NEW)
 			continue;
@@ -432,6 +442,11 @@ doContactSchedd()
 
 
 		stage_out_batch.Append (current_command);
+		curr_file_requests++;
+	}
+
+	if (curr_file_requests >= max_file_requests) {
+		rerun_immediately = true;
 	}
 
 	if (stage_out_batch.Number() > 0) {
@@ -495,8 +510,9 @@ doContactSchedd()
 	}
 
 	// JOB_REFRESH_PROXY
+	curr_file_requests = 0;
 	command_queue.Rewind();
-	while (command_queue.Next(current_command)) {
+	while (command_queue.Next(current_command) && curr_file_requests < max_file_requests) {
 
 		if (current_command->status != SchedDRequest::SDCS_NEW)
 			continue;
@@ -504,7 +520,9 @@ doContactSchedd()
 		if (current_command->command != SchedDRequest::SDC_JOB_REFRESH_PROXY)
 			continue;
 
-		time_t expiration_time = GetDesiredDelegatedJobCredentialExpiration(current_command->classad);
+		curr_file_requests++;
+
+		time_t expiration_time = (current_command->proxy_expiration >= 0) ? current_command->proxy_expiration : GetDesiredDelegatedJobCredentialExpiration(current_command->classad);
 		time_t result_expiration_time = 0;
 
 		bool result;
@@ -550,6 +568,13 @@ doContactSchedd()
 
 	}
 
+	if ( curr_file_requests >= max_file_requests ) {
+		rerun_immediately = true;
+	}
+
+	if ( rerun_immediately ) {
+		dprintf(D_FULLDEBUG, "Maxed out file requests, will rerun immediately\n");
+	}
 
 	// Now do all the QMGMT transactions
 	error = FALSE;
@@ -557,7 +582,6 @@ doContactSchedd()
 	// Limit the time we spend connected to the schedd
 	int interaction_time = param_integer("CGAHP_SCHEDD_INTERACTION_TIME", 5);
 	time_t starttime = time(NULL);
-	bool rerun_immediately = false;
 
 	// Try connecting to the queue
 	Qmgr_connection * qmgr_connection;
@@ -615,11 +639,12 @@ doContactSchedd()
 			goto contact_schedd_disconnect;
 		}
 
-		current_command->classad->ResetExpr();
 		ExprTree *tree;
 		const char *lhstr, *rhstr;
-		while( current_command->classad->NextExpr(lhstr, tree) ) {
+		for( auto itr = current_command->classad->begin(); itr != current_command->classad->end(); itr++ ) {
 
+			lhstr = itr->first.c_str();
+			tree = itr->second;
 			rhstr = ExprTreeToString( tree );
 			if( !lhstr || !rhstr) {
 				formatstr( error_msg, "ERROR: ClassAd problem in Updating by constraint %s",
@@ -828,6 +853,11 @@ update_report_result:
 		 filter_attrs.insert( ATTR_X509_USER_PROXY_FIRST_FQAN );
 		 filter_attrs.insert( ATTR_X509_USER_PROXY_FQAN );
 	}
+	filter_attrs.insert( ATTR_TOKEN_SUBJECT );
+	filter_attrs.insert( ATTR_TOKEN_ISSUER );
+	filter_attrs.insert( ATTR_TOKEN_GROUPS );
+	filter_attrs.insert( ATTR_TOKEN_SCOPES );
+	filter_attrs.insert( ATTR_TOKEN_ID );
 
 	// SUBMIT_JOB
 	command_queue.Rewind();
@@ -905,30 +935,30 @@ update_report_result:
 		if( error == FALSE) {
 			CondorVersionInfo version_info(dc_schedd.version());
 			ArgList arglist;
-			MyString arg_error_msg;
+			std::string arg_error_msg;
 			Env env_obj;
-			MyString env_error_msg;
+			std::string env_error_msg;
 
-			if(!arglist.AppendArgsFromClassAd(current_command->classad,&arg_error_msg) ||
-		   !	arglist.InsertArgsIntoClassAd(current_command->classad,&version_info,&arg_error_msg))
+			if(!arglist.AppendArgsFromClassAd(current_command->classad, arg_error_msg) ||
+			   !arglist.InsertArgsIntoClassAd(current_command->classad,&version_info, arg_error_msg))
 			{
 				formatstr( error_msg,
 						"ERROR: ClassAd problem in converting arguments to syntax "
 						"for schedd (version=%s): %s\n",
 						dc_schedd.version() ? dc_schedd.version() : "NULL",
-						arg_error_msg.Value());
+						arg_error_msg.c_str());
 				dprintf( D_ALWAYS,"%s\n", error_msg.c_str() );
 				error = TRUE;
-			}	
+			}
 
-			if(!env_obj.MergeFrom(current_command->classad,&env_error_msg) ||
-			   !env_obj.InsertEnvIntoClassAd(current_command->classad,&env_error_msg,NULL,&version_info))
+			if(!env_obj.MergeFrom(current_command->classad, env_error_msg) ||
+			   !env_obj.InsertEnvIntoClassAd(current_command->classad, env_error_msg,NULL,&version_info))
 			{
 				formatstr( error_msg,
 						"ERROR: Failed to convert environment to target syntax"
 						" for schedd (version %s): %s\n",
 						dc_schedd.version() ? dc_schedd.version() : "NULL",
-						env_error_msg.Value());
+						env_error_msg.c_str());
 				dprintf( D_ALWAYS, "%s\n", error_msg.c_str() );
 				error = TRUE;
 			}
@@ -937,9 +967,9 @@ update_report_result:
 		if( error == FALSE ) {
 				// See the comment in the function body of ExpandInputFileList
 				// for an explanation of what is going on here.
-			MyString transfer_input_error_msg;
+			std::string transfer_input_error_msg;
 			if( !FileTransfer::ExpandInputFileList( current_command->classad, transfer_input_error_msg ) ) {
-				dprintf( D_ALWAYS, "%s\n", transfer_input_error_msg.Value() );
+				dprintf( D_ALWAYS, "%s\n", transfer_input_error_msg.c_str() );
 				error = TRUE;
 			}
 		}
@@ -969,10 +999,11 @@ update_report_result:
 			}
 
 			// Set all the classad attribute on the remote classad
-			current_command->classad->ResetExpr();
 			ExprTree *tree;
 			const char *lhstr, *rhstr;
-			while( current_command->classad->NextExpr(lhstr, tree) ) {
+			for( auto itr = current_command->classad->begin(); itr != current_command->classad->end(); itr++ ) {
+				lhstr = itr->first.c_str();
+				tree = itr->second;
 
 				if ( filter_attrs.find( lhstr ) != filter_attrs.end() ) {
 					continue;
@@ -1489,10 +1520,12 @@ handle_gahp_command(char ** argv, int argc) {
 	} else if (strcasecmp (argv[0], GAHP_COMMAND_JOB_REFRESH_PROXY)==0) {
 		int req_id = 0;
 		int cluster_id, proc_id;
+		int proxy_expire = -1;
 
-		if (!(argc == 5 &&
+		if (!((argc == 5 ||argc == 6) &&
 			get_int (argv[1], &req_id) &&
-			get_job_id (argv[3], &cluster_id, &proc_id))) {
+			get_job_id (argv[3], &cluster_id, &proc_id) &&
+			(argc == 5 || get_int(argv[5], &proxy_expire)))) {
 
 			dprintf (D_ALWAYS, "Invalid args to %s\n", argv[0]);
 			return FALSE;
@@ -1503,7 +1536,8 @@ handle_gahp_command(char ** argv, int argc) {
 				req_id,
 				cluster_id,
 				proc_id,
-				argv[4]));
+				argv[4],
+				proxy_expire));
 		return TRUE;
 	} else if (strcasecmp (argv[0], GAHP_COMMAND_INITIALIZE_FROM_FILE)==0) {
 		static bool init_done = false;
@@ -1522,6 +1556,13 @@ handle_gahp_command(char ** argv, int argc) {
 			init_done = true;
 		}
 		return TRUE;
+	} else if (!strcasecmp(argv[0], GAHP_COMMAND_UPDATE_TOKEN_FROM_FILE)) {
+		if (argc != 2) {
+			dprintf(D_ALWAYS, "Invalid args to %s\n", argv[0]);
+			return false;
+		}
+		param_insert("SCITOKENS_FILE", argv[1]);
+		return true;
 	}
 
 	dprintf (D_ALWAYS, "Invalid command %s\n", argv[0]);

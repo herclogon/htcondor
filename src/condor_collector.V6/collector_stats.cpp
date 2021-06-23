@@ -28,6 +28,7 @@
 #include "collector_stats.h"
 #include "condor_config.h"
 #include "classad/classadCache.h"
+#include "ccb_server.h"
 
 // The hash function to use
 static size_t hashFunction (const StatsHashKey &key)
@@ -35,13 +36,13 @@ static size_t hashFunction (const StatsHashKey &key)
     size_t result = 0;
 	const char *p;
 
-    for (p = key.type.Value(); p && *p;
+    for (p = key.type.c_str(); p && *p;
 	     result = (result<<5) + result + (size_t)(*(p++))) { }
 
-    for (p = key.name.Value(); p && *p;
+    for (p = key.name.c_str(); p && *p;
 	     result = (result<<5) + result + (size_t)(*(p++))) { }
 
-    for (p = key.ip_addr.Value(); p && *p;
+    for (p = key.ip_addr.c_str(); p && *p;
 	     result = (result<<5) + result + (size_t)(*(p++))) { }
 
     return result;
@@ -297,7 +298,7 @@ void stats_entry_lost_updates::Publish(ClassAd & ad, const char * pattr, int fla
 	// this sort of probe is useful for counting lost updates
 	if (flags & PubValue) {
 		ad.Assign(pattr, (long long)value.Sum);
-		ad.Assign(rattr.c_str(), (long long)recent.Sum);
+		ad.Assign(rattr, (long long)recent.Sum);
 	}
 	if (flags & PubRatio) {
 		double avg = value.Avg();
@@ -424,6 +425,7 @@ void UpdatesStats::Init()
 	bool enable = param_boolean("PUBLISH_COLLECTOR_ENGINE_PROFILING_STATS",false);
 	int prof_publevel = enable ? IF_BASICPUB : IF_VERBOSEPUB;
 	ADD_EXTERN_RUNTIME(Pool, CollectorEngine_receive_update, prof_publevel);
+#ifdef PROFILE_RECEIVE_UPDATE
 	ADD_EXTERN_RUNTIME(Pool, CollectorEngine_ru_pre_collect, prof_publevel);
 	ADD_EXTERN_RUNTIME(Pool, CollectorEngine_ru_collect, prof_publevel);
 	ADD_EXTERN_RUNTIME(Pool, CollectorEngine_ru_plugins, prof_publevel);
@@ -448,10 +450,12 @@ void UpdatesStats::Init()
 	ADD_EXTERN_RUNTIME(Pool, CollectorEngine_rucc_updatePvtAd, prof_publevel);
 	ADD_EXTERN_RUNTIME(Pool, CollectorEngine_rucc_repeatAd, prof_publevel);
 	ADD_EXTERN_RUNTIME(Pool, CollectorEngine_rucc_other, prof_publevel);
+#endif
 
 	getClassAdEx_clearProfileStats();
 	getClassAdEx_addProfileStatsToPool(&Pool, prof_publevel);
 
+	AddCCBStatsToPool(Pool, IF_BASICPUB);
 }
 
 void UpdatesStats::Clear()
@@ -646,10 +650,10 @@ CollectorDaemonStatsList::updateStats( const char *class_name,
 		hashTable->insert( key, daemon );
 
 		if (IsFulldebug(D_FULLDEBUG)) {
-			MyString	string;
+			std::string string;
 			key.getstr( string );
 			dprintf( D_FULLDEBUG,
-				 "stats: Inserting new hashent for %s\n", string.Value() );
+				 "stats: Inserting new hashent for %s\n", string.c_str() );
 		}
 	}
 
@@ -735,10 +739,10 @@ CollectorDaemonStatsList::enable( bool nable )
 
 // Get string of the hash key (for debugging)
 void
-StatsHashKey::getstr( MyString &buf )
+StatsHashKey::getstr( std::string &buf ) const
 {
-	buf.formatstr( "'%s':'%s':'%s'",
-				 type.Value(), name.Value(), ip_addr.Value()  );
+	formatstr( buf, "'%s':'%s':'%s'",
+				 type.c_str(), name.c_str(), ip_addr.c_str()  );
 }
 
 // Generate a hash key
@@ -753,7 +757,7 @@ CollectorDaemonStatsList::hashKey (StatsHashKey &key,
 
 	// The 'name'
 	char	buf[256]   = "";
-	MyString slot_buf = "";
+	std::string slot_buf = "";
 	if ( !ad->LookupString( ATTR_NAME, buf, sizeof(buf))  ) {
 
 		// No "Name" found; fall back to Machine
@@ -768,16 +772,16 @@ CollectorDaemonStatsList::hashKey (StatsHashKey &key,
 		// If there is a slot ID, append it to Machine
 		int	slot;
 		if (ad->LookupInteger( ATTR_SLOT_ID, slot)) {
-			slot_buf.formatstr(":%d", slot);
+			formatstr(slot_buf, ":%d", slot);
 		}
 	}
 	key.name = buf;
-	key.name += slot_buf.Value();
+	key.name += slot_buf.c_str();
 
 	// get the IP and port of the daemon
 	if ( ad->LookupString (ATTR_MY_ADDRESS, buf, sizeof(buf) ) ) {
-		MyString	myString( buf );
-		char* host = getHostFromAddr(myString.Value());
+		std::string wtf( buf );
+		char* host = getHostFromAddr(wtf.c_str());
 		key.ip_addr = host;
 		free(host);
 	} else {
@@ -869,7 +873,7 @@ CollectorStats::update( const char *className,
 
 // Publish statistics into our ClassAd
 int 
-CollectorStats::publishGlobal( ClassAd *ad, const char * config )
+CollectorStats::publishGlobal( ClassAd *ad, const char * config ) const
 {
 	global.Publish(*ad, config);
 	return 0;
@@ -919,10 +923,10 @@ CollectorDaemonStatsList::collectGarbage()
 		else {
 				// This record has not been updated since the last call
 				// to this function.  It is garbage.
-			MyString desc;
+			std::string desc;
 			key.getstr( desc );
 			dprintf( D_FULLDEBUG, "Removing stale collector stats for %s\n",
-					 desc.Value() );
+					 desc.c_str() );
 
 			hashTable->remove( key );
 			delete value;

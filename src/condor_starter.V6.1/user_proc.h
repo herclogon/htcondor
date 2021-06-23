@@ -103,18 +103,18 @@ public:
 
 		/** Returns the pid of this job.
 			@return The pid. */
-	int GetJobPid() { return JobPid; }
+	int GetJobPid() const { return JobPid; }
 
 		/** Check if user's job process has actually been started yet.
 			For instance, it may not have been forked yet because we're
 			waiting for data files to be transfered.
 			@return true if job has been started, false if not. */
-	bool JobStarted() { return JobPid > 0; }
+	bool JobStarted() const { return JobPid > 0; }
 
 		/** Was this job requested to exit by the starter, or did it 
 			exit on its own?
 		*/
-	bool RequestedExit( void ) { return requested_exit; };
+	bool RequestedExit( void ) const { return requested_exit; };
 
 		/** This is the login id used for execute login is dedicated pid tracking.
 		 *  If there is no dedicated login for job execution, this is NULL.
@@ -166,14 +166,14 @@ protected:
 	                 bool allow_dash,
 	                 const char* log_header,
 	                 int* out_fd,
-	                 MyString* out_name);
+	                 std::string & out_name);
 
 	int openStdFile( std_file_type type,
 	                 const char* attr,
 	                 bool allow_dash,
 	                 const char* log_header);
 
-	void SetStdFiles(int std_fds[], char const *std_fnames[]);
+	void SetStdFiles(const int std_fds[], char const *std_fnames[]);
 
 	virtual bool ThisProcRunsAlongsideMainProc();
 
@@ -190,7 +190,7 @@ private:
 		// UserProc.
 	int m_pre_defined_std_fds[3];            // -1 if not set
 	char const *m_pre_defined_std_fnames[3]; // NULL if not defined
-	MyString m_pre_defined_std_fname_buf[3];
+	std::string m_pre_defined_std_fname_buf[3];
 };
 
 #endif /* _CONDOR_USER_PROC_H */

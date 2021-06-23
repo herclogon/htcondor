@@ -31,6 +31,10 @@
 */
 class StringList {
 public:
+	StringList(const std::string & s, const std::string & delim ) :
+		StringList( s.c_str(), delim.c_str() ) { }
+	StringList(const std::string & s, const char * delim = " ," ) :
+		StringList( s.c_str(), delim ) { }
 	StringList(const char *s = NULL, const char *delim = " ," );
 	StringList(const char *s, char delim_char, bool keep_empty_fields );
 	StringList( const StringList &other );
@@ -39,9 +43,16 @@ public:
 	void initializeFromString (const char *, char delim_char);
 
 	/** Note: the contains* methods have side affects -- they
-		change "current" to point at the location of the match */
+		change "current" to point at the location of the match
+		(so do the prefix* methods) */
+	// prefix() works like contains_withwildcard() would if all of the
+	// items in the list ended with a '*'. That is, it returns true if
+	// any item in the list is a prefix of the given string.
+	bool prefix( const char * );
+	bool prefix_anycase( const char * );
+	bool prefix_withwildcard(const char *);
+	bool prefix_anycase_withwildcard(const char *);
 	bool contains( const char * );
-	bool substring( const char * );
 	bool contains_anycase( const char * );
 	bool contains_withwildcard( const char *str );
 	bool contains_anycase_withwildcard( const char * );
@@ -72,6 +83,12 @@ public:
 		char * p = (char *)malloc(cb+2);
 		memcpy(p, mem, cb); p[cb] = p[cb+1] = 0;
 		m_strings.Append(p);
+	}
+	// move items from that list to the end of this list.
+	void take_list(StringList & that) {
+		while ( ! that.m_strings.IsEmpty()) {
+			m_strings.Append(that.m_strings.PopHead());
+		}
 	}
 	
 	/** This is invalid when "current" points to NULL as stated in list.h*/
@@ -111,6 +128,7 @@ public:
 		rewind the string in order to construct this char array, and you
 		are responsible to release the memory allocated by this function
 		with free() */
+	std::string to_string(void) const;
 	char* print_to_string(void) const;
 	char* print_to_delimed_string(const char *delim = NULL) const;
 
@@ -120,10 +138,19 @@ public:
 	const List<char> &getList( void ) const { return m_strings; };
 	const char *getDelimiters(void) const { return m_delimiters; };
 
+	StringList &operator=(StringList &&rhs)  noexcept {
+		clearAll();
+		free(m_delimiters);
+		this->m_strings = std::move(rhs.m_strings);
+		this->m_delimiters = rhs.m_delimiters;
+		rhs.m_delimiters = nullptr;
+		return *this;
+	}
 protected:
     const char * contains_withwildcard( const char *string,
 										bool anycase,
 										StringList *matches=NULL) ;
+	bool prefix_wildcard_impl(const char *string, bool anycase);
 	List<char>	 m_strings;
 	char		*m_delimiters;
 

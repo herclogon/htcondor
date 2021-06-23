@@ -228,6 +228,18 @@ int JobCluster::getClusterid(JobQueueJob & job, bool expand_refs, std::string * 
 		ExprTree * tree = job.Lookup(*attr);
 		sigset.push_back(tree);
 		if (expand_refs && tree) {
+			// bare attribute references that are not resolved locally show up as external refs
+			// but they may be something like JobMachineAttrs that get added to the job later.
+			// Also When something like Requirements has MY.foo, foo shows up as external ref foo when
+			// the job does not have a foo.  So we get the fully qualified external refs and then
+			// delete those that have a "." in them which gets rid of the unambiguously external refs.
+			// (Also we can't tolerate dotted attribute names in the significant attrs list)
+			job.GetExternalReferences(tree, exattrs, true);
+			for (auto it = exattrs.begin(); it != exattrs.end();) { // c++ 20 has erase_if, but we can't use it
+				auto tmp = it++;
+				if (tmp->find_first_of('.') != std::string::npos) { exattrs.erase(tmp); }
+			}
+			// now add in the internal refs
 			job.GetInternalReferences(tree, exattrs, false);
 		}
 	}
@@ -668,7 +680,7 @@ int aggregate_jobs(JobQueueJob *job, const JOB_ID_KEY & /*jid*/, void * pv)
 {
 	aggregate_jobs_args * pargs = (aggregate_jobs_args*)pv;
 	JobCluster* pjc = pargs->pjc;
-	if (pargs->constraint && ! EvalBool(job, pargs->constraint)) {
+	if (pargs->constraint && ! EvalExprBool(job, pargs->constraint)) {
 		// if there is a constraint, and it doesn't evaluate to true, skip this job.
 		return 0;
 	}
@@ -781,7 +793,7 @@ ClassAd * JobAggregationResults::next()
 		StringTokenIterator iter(it->first, 100, "\n");
 		const char * line;
 		while ((line = iter.next())) {
-			ad.Insert(line);
+			(void) ad.Insert(line);
 		}
 		if (this->is_def_autocluster) {
 			ad.Assign(ATTR_AUTO_CLUSTER_ID,it->second);
@@ -875,7 +887,7 @@ ClassAd * JobAggregationResults::next()
 
 		// if there is a constraint, then only return the ad if it matches the constraint.
 		if (constraint) {
-			if ( ! EvalBool(&ad, constraint))
+			if ( ! EvalExprBool(&ad, constraint))
 				continue;
 		}
 

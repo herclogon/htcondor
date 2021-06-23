@@ -45,16 +45,16 @@ class CCBListener: public Service, public ClassyCountedPtr {
 	bool RegisterWithCCBServer(bool blocking=false);
 
 		// unique ID of this CCBListener in namespace of the CCB server
-	char const *getCCBID() const { return m_ccbid.Value(); }
+	char const *getCCBID() const { return m_ccbid.c_str(); }
 
-	char const *getAddress() const { return m_ccb_address.Value(); }
+	char const *getAddress() const { return m_ccb_address.c_str(); }
 
 	bool operator ==(CCBListener const &other);
 
  private:
-	MyString m_ccb_address;
-	MyString m_ccbid;
-	MyString m_reconnect_cookie;
+	std::string m_ccb_address;
+	std::string m_ccbid;
+	std::string m_reconnect_cookie;
 	Sock *m_sock;
 	bool m_waiting_for_connect;
 	bool m_waiting_for_registration;
@@ -68,7 +68,7 @@ class CCBListener: public Service, public ClassyCountedPtr {
 
 	bool SendMsgToCCB(ClassAd &msg,bool blocking);
 	bool WriteMsgToCCB(ClassAd &msg);
-	static void CCBConnectCallback(bool success,Sock *sock,CondorError *errstack,void *misc_data);
+	static void CCBConnectCallback(bool success,Sock *sock,CondorError *errstack, const std::string & /* trust_domain */, bool /* should_try_token_auth */, void *misc_data);
 	void ReconnectTime();
 	void Connected();
 	void Disconnected();
@@ -95,14 +95,14 @@ class CCBListeners {
 
 		// returns string representation of list of CCB id(s)
 		// example: "<ccb server>#<ccbid> <ccb server2>#<ccbid2> ..."
-	void GetCCBContactString(MyString &result);
+	void GetCCBContactString(std::string &result);
 
 	bool RegisterWithCCBServer(bool blocking=false);
 
  private:
 	typedef std::list< classy_counted_ptr<CCBListener> > CCBListenerList;
 	CCBListenerList m_ccb_listeners;
-	MyString m_ccb_contact;
+	std::string m_ccb_contact;
 };
 
 #endif

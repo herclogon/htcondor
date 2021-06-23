@@ -23,8 +23,7 @@
 
 #include <utility>
 
-#include "HashTable.h"
-#include "Queue.h"
+#include <queue>
 
 #include "condor_daemon_core.h"
 
@@ -58,7 +57,7 @@ class ScriptQ : public Service {
 	/** Return the number of scripts actually running (does not include
 	    scripts that are queued to run but have been deferred).
 	*/
-    int NumScriptsRunning();
+    int NumScriptsRunning() const;
 
     // reaper function for PRE & POST script completion
     int ScriptReaper( int pid, int status );
@@ -73,18 +72,18 @@ class ScriptQ : public Service {
     // number of PRE/POST scripts currently running
 	int _numScriptsRunning;
 
-	// hash table to map PRE/POST script pids to Script* objects
-	HashTable<int, Script*> *_scriptPidTable;
+	// map PRE/POST script pids to Script* objects
+	std::map<int, Script*> *_scriptPidTable;
 
 	// queue of scripts waiting to be run
-	Queue<Script*> *_waitingQueue;
+	std::queue<Script*> *_waitingQueue;
 
 	// daemonCore reaper id for PRE/POST script reaper function
 	int _scriptReaperId;
 
-	// Total count of scripts deferred because of MaxPre or MaxPost limit
-	// (note that a single script getting deferred multiple times is counted
-	// multiple times).  Also includes scripts deferred by the new
+	// Total count of scripts deferred because of MaxPre, MaxPost or MaxHold 
+	// limit (note that a single script getting deferred multiple times is
+	// counted multiple times).  Also includes scripts deferred by the new
 	// DEFER feature.
 	int _scriptDeferredCount;
 };

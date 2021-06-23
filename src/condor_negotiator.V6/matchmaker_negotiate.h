@@ -22,7 +22,7 @@
 
 #include <deque>
 
-class ResourceRequestList : public ClassyCountedPtr {
+class ResourceRequestList {
 
  public:
 	ResourceRequestList(int protocol_version);
@@ -35,16 +35,16 @@ class ResourceRequestList : public ClassyCountedPtr {
 			int &autocluster, ReliSock* const sock, int skipJobs = 1);
 
 		//
-	bool hadError() { return errcode > 0; }
+	bool hadError() const { return errcode > 0; }
 
 		//
-	int getErrorCode() { return errcode; }
+	int getErrorCode() const { return errcode; }
 
 		// 
 	void noMatchFound();
 
-	bool needsEndNegotiate();
-	bool needsEndNegotiateNow();
+	bool needsEndNegotiate() const;
+	bool needsEndNegotiateNow() const;
 
 		//
 	void clearRejectedAutoclusters() { m_clear_rejected_autoclusters = true; }
@@ -76,23 +76,5 @@ class ResourceRequestList : public ClassyCountedPtr {
 	std::deque<ClassAd *> m_ads;
 	std::set<int> m_rejected_auto_clusters;
 };
-
-#if 0
-	class RequestListManager {
-
-	 public:
-
-		 RequestListManager() { }
-		 ~RequestListManager();
-
-		 ResourceRequestList *getRequestList(const MyString& schedd_and_submitter);
-		 void clear();
-
-	 private:
-		typedef std::map< MyString,classy_counted_ptr<ResourceRequestList> > RequestListMap;
-		RequestListMap m_request_lists_map;
-
-	};
-#endif 
 
 #endif

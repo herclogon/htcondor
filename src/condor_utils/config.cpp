@@ -258,6 +258,12 @@ condor_isidchar(int c)
 
 #define ISIDCHAR(c)		( condor_isidchar(c) )
 
+// The allowed characters after a : in $(NAME:def) is IDCHAR + COLON_DEF_EXTRACHARSET
+// Prior to 8.9.7, this was the permitted list
+#define COLON_DEF_EXTRACHARSET "$ ,\\:"
+// After 8.9.7 this is the permitted list ??
+//#define COLON_DEF_EXTRACHARSET " !#$%&'*+,-@:;[\\]^`<=>?{|}~"
+
 // $$ expressions may also contain a colon
 #define ISDDCHAR(c) ( ISIDCHAR(c) || ((c)==':') )
 
@@ -1203,11 +1209,11 @@ int Parse_config_string(MACRO_SOURCE & source, int depth, const char * config, M
 	return 0;
 }
 
-void MACRO_SET::initialize() {
+void MACRO_SET::initialize(int opts) {
 	size = 0; allocation_size = 0; sorted = 0;
 	table = NULL; metat = NULL; defaults = NULL;
 
-	options = CONFIG_OPT_WANT_META | CONFIG_OPT_KEEP_DEFAULTS | CONFIG_OPT_SUBMIT_SYNTAX;
+	options = opts; //CONFIG_OPT_WANT_META | CONFIG_OPT_KEEP_DEFAULTS | CONFIG_OPT_SUBMIT_SYNTAX;
 	apool = ALLOCATION_POOL();
 	sources = std::vector<const char*>();
 	errors = new CondorError();
@@ -1444,7 +1450,7 @@ Parse_macros(
 
 	bool is_submit = (fnSubmit != NULL);
 	MACRO_SOURCE& FileSource = ms.source();
-	const char * source_file = macro_source_filename(FileSource, macro_set);
+	const char * source_file = ms.source_name(macro_set);
 	const char * source_type = is_submit ? "Submit file" : "Config source";
 
 	while (true) {
@@ -1741,6 +1747,15 @@ Parse_macros(
 				goto cleanup;
 			}
 		} else if (is_include) {
+			// if the caller disables the include keyword (late materialization), then just fail here
+			if (options & CONFIG_OPT_NO_INCLUDE_FILE) {
+				macro_set.push_error(stderr, retval, source_type,
+					"Error \"%s\", Line %d, include statement is not allowed in this context\n",
+					source_file, FileSource.line);
+				retval = -1;
+				goto cleanup;
+			}
+
 			MACRO_SOURCE InnerSource;
 			FILE* fp = NULL;
 			bool is_into    = 0 != (is_include & CONFIG_INCLUDE_OPTION_INTO);
@@ -1950,7 +1965,7 @@ FILE* Open_macro_source (
 			ArgList argList;
 			MyString args_errors;
 			if(!argList.AppendArgsV1RawOrV2Quoted(cmd, &args_errors)) {
-				formatstr(config_errmsg, "Can't append args, %s", args_errors.Value());
+				formatstr(config_errmsg, "Can't append args, %s", args_errors.c_str());
 				return NULL;
 			}
 			fp = my_popen(argList, "r", 0 | MY_POPEN_OPT_FAIL_QUIETLY);
@@ -2010,7 +2025,7 @@ FILE* Copy_macro_source_into (
 		ArgList argList;
 		MyString args_errors;
 		if(!argList.AppendArgsV1RawOrV2Quoted(cmd, &args_errors)) {
-			formatstr(errmsg, "Can't append args, %s", args_errors.Value());
+			formatstr(errmsg, "Can't append args, %s", args_errors.c_str());
 			return NULL;
 		}
 		fp = my_popen(argList, "rb", MY_POPEN_OPT_FAIL_QUIETLY);
@@ -2235,7 +2250,7 @@ void insert_macro(const char *name, const char *value, MACRO_SET & set, const MA
 				pmeta->matches_default = same_param_value(def_value, pitem->raw_value, is_path);
 			}
 		}
-		if (tvalue) free(tvalue);
+		free(tvalue);
 		return;
 	}
 
@@ -2748,12 +2763,12 @@ const char * condor_basename_plus_dirs(const char *path, int num_dirs)
 	return path;
 }
 
-// strdup a string with room to grow and an optional leading quote
-// and room for a trailing quote.
+// copy a string stripping leading an trailing double quotes or quotes of the given type
+// and optionally adding leading and trailing quotes of the given type
 char * strcpy_quoted(char* out, const char* str, int cch, char quoted) {
 	ASSERT(cch >= 0);
 
-	// ignore leading and/or trailing quotes when we dup
+	// ignore leading and/or trailing quotes when we copy
 	char quote_char = 0;
 	if (*str=='"' || (*str && *str == quoted)) { quote_char = *str; ++str; --cch; }
 	if (cch > 0 && str[cch-1] && str[cch-1] == quote_char) --cch;
@@ -2784,12 +2799,13 @@ char * strdup_quoted(const char* str, int cch, char quoted) {
 // strdup a string with room to grow and an optional leading quote
 // and room for a trailing quote, also canocalize windows path characters
 //
-char * strdup_path_quoted(const char* str, int cch, char quoted, char to_path_char) {
+char * strdup_path_quoted(const char* str, int cch, int cch_extra, char quoted, char to_path_char) {
 	if (cch < 0) cch = (int)strlen(str);
 
 	// malloc with room for quotes and a terminating 0
-	char * out = (char*)malloc(cch+3);
+	char * out = (char*)malloc(cch+3+cch_extra);
 	ASSERT(out);
+	memset(out + cch, 0, 3 + cch_extra);
 	strcpy_quoted(out, str, cch, quoted);
 	if (to_path_char) {
 		char path_char = (to_path_char == '/') ? '\\' : '/';
@@ -2809,7 +2825,7 @@ char * strdup_full_path_quoted(const char *name, int cch, MACRO_EVAL_CONTEXT & c
 		|| !ctx.cwd || !ctx.cwd[0]
 	   )
 	{
-		return strdup_path_quoted(name, cch, quoted, to_path_char);
+		return strdup_path_quoted(name, cch, 0, quoted, to_path_char);
 	}
 	else
 	{
@@ -2822,7 +2838,7 @@ char * strdup_full_path_quoted(const char *name, int cch, MACRO_EVAL_CONTEXT & c
 	#endif
 		if (has_dir_delim) { cch_cwd -= 1; }
 		if (cch < 0) { name = strlen_unquote(name, cch); }
-		char * str = strdup_path_quoted(ctx.cwd, cch_cwd + cch + 1, quoted, to_path_char);
+		char * str = strdup_path_quoted(ctx.cwd, cch_cwd, cch + 1, quoted, to_path_char);
 		if (str) {
 			char * p = str + cch_cwd;
 			if (quoted) ++p;
@@ -3005,6 +3021,7 @@ char * expand_meta_args(const char *value, std::string & argstr)
 }
 #endif
 
+
 /*
 ** Expand parameter references of the form "left$(middle)right".  This
 ** is deceptively simple, but does handle multiple and or nested references.
@@ -3013,8 +3030,7 @@ char * expand_meta_args(const char *value, std::string & argstr)
 ** Also expand references of the form "left$RANDOM_CHOICE(middle)right".
 */
 
-
-const char * lookup_macro_exact_no_default(const char *name, MACRO_SET & set, int use)
+const char * lookup_macro_exact_no_default_impl(const char *name, MACRO_SET & set, int use)
 {
 	MACRO_ITEM* pitem = find_macro_item(name, NULL, set);
 	if (pitem) {
@@ -3028,8 +3044,22 @@ const char * lookup_macro_exact_no_default(const char *name, MACRO_SET & set, in
 	return NULL;
 }
 
+std::string
+lookup_macro_exact_no_default( const std::string & name, MACRO_SET & set, int use ) {
+	const char * rv = lookup_macro_exact_no_default_impl(name.c_str(), set, use);
+	if( rv == NULL ) {
+		return std::string();
+	} else {
+		return std::string(rv);
+	}
+}
 
-const char * lookup_macro_exact_no_default(const char *name, const char *prefix, MACRO_SET & set, int use)
+bool
+exists_macro_exact_no_default( const std::string & name, MACRO_SET & set, int use ) {
+	return NULL != lookup_macro_exact_no_default_impl(name.c_str(), set, use);
+}
+
+const char * lookup_macro_exact_no_default_impl(const char *name, const char *prefix, MACRO_SET & set, int use)
 {
 	MACRO_ITEM* pitem = find_macro_item(name, prefix, set);
 	if (pitem) {
@@ -3042,6 +3072,7 @@ const char * lookup_macro_exact_no_default(const char *name, const char *prefix,
 	}
 	return NULL;
 }
+
 
 // lookup macro in all of the usual places.  The lookup order is
 //    localname.name in config file
@@ -3060,7 +3091,7 @@ const char * lookup_macro(const char * name, MACRO_SET & macro_set, MACRO_EVAL_C
 {
 	const char * lval = NULL;
 	if (ctx.localname) {
-		lval = lookup_macro_exact_no_default(name, ctx.localname, macro_set, ctx.use_mask);
+		lval = lookup_macro_exact_no_default_impl(name, ctx.localname, macro_set, ctx.use_mask);
 		if (lval) return lval;
 
 		if (macro_set.defaults && ! ctx.without_default) {
@@ -3069,7 +3100,7 @@ const char * lookup_macro(const char * name, MACRO_SET & macro_set, MACRO_EVAL_C
 		}
 	}
 	if (ctx.subsys) {
-		lval = lookup_macro_exact_no_default(name, ctx.subsys, macro_set, ctx.use_mask);
+		lval = lookup_macro_exact_no_default_impl(name, ctx.subsys, macro_set, ctx.use_mask);
 		if (lval) return lval;
 
 		if (macro_set.defaults && ! ctx.without_default) {
@@ -3082,7 +3113,7 @@ const char * lookup_macro(const char * name, MACRO_SET & macro_set, MACRO_EVAL_C
 	// Note that if 'name' has been explicitly set to nothing,
 	// lval will _not_ be NULL so we will not call
 	// find_macro_def_item().  See gittrack #1302
-	lval = lookup_macro_exact_no_default(name, macro_set, ctx.use_mask);
+	lval = lookup_macro_exact_no_default_impl(name, macro_set, ctx.use_mask);
 	if (lval) return lval;
 
 	// if not found in the config file, lookup in the param table
@@ -3194,7 +3225,7 @@ static const char * evaluate_macro_func (
 				}
 			}
 			if ( num_entries > 0 ) {
-				int rand_entry = (get_random_int() % num_entries) + 1;
+				int rand_entry = (get_random_int_insecure() % num_entries) + 1;
 				int i = 0;
 				entries.rewind();
 				while ( (i < rand_entry) && (tvalue=entries.next()) ) {
@@ -3244,7 +3275,7 @@ static const char * evaluate_macro_func (
 			long	range = step + max_value - min_value;
 			long 	num = range / step;
 			long	random_value =
-				min_value + (get_random_int() % num) * step;
+				min_value + (get_random_int_insecure() % num) * step;
 
 			// And, convert it to a string
 			const int cbuf = 20;
@@ -3342,23 +3373,23 @@ static const char * evaluate_macro_func (
 			if (len_arg) *len_arg++ = 0;
 
 			int start_pos = 0;
-			if (start_arg) {
-				const char * arg = lookup_macro(start_arg, macro_set, ctx);
-				if ( ! arg) arg = start_arg;
 
-				char * tmp3 = NULL;
-				if (strchr(arg, '$')) {
-					tmp3 = expand_macro(arg, macro_set, ctx);
-					arg = tmp3;
-				}
+			const char * arg = lookup_macro(start_arg, macro_set, ctx);
+			if ( ! arg) arg = start_arg;
 
-				long long index = -1;
-				if ( ! string_is_long_param(arg, index) || index < INT_MIN || index >= INT_MAX) {
-					EXCEPT( "$SUBSTR() macro: %s is invalid start index!", arg );
-				}
-				start_pos = (int)index;
-				if (tmp3) {free(tmp3);} tmp3 = NULL;
+			char * tmp3 = NULL;
+			if (strchr(arg, '$')) {
+				tmp3 = expand_macro(arg, macro_set, ctx);
+				arg = tmp3;
 			}
+
+			long long index = -1;
+			if ( ! string_is_long_param(arg, index) || index < INT_MIN || index >= INT_MAX) {
+				EXCEPT( "$SUBSTR() macro: %s is invalid start index!", arg );
+			}
+			start_pos = (int)index;
+			if (tmp3) {free(tmp3);} tmp3 = NULL;
+
 
 			int sub_len = INT_MAX/2;
 			if (len_arg) {
@@ -3644,7 +3675,7 @@ static const char * evaluate_macro_func (
 				if (full_path) {
 					buf = strdup_full_path_quoted(umval, cchum, ctx, quote_char, to_path_char);
 				} else if (parts || to_path_char || bare) {
-					buf = strdup_path_quoted(umval, cchum, quote_char, to_path_char);  // copy the macro value with quotes add/removed as requested.
+					buf = strdup_path_quoted(umval, cchum, 0, quote_char, to_path_char);  // copy the macro value with quotes add/removed as requested.
 				} else {
 					buf = strdup_quoted(umval, cchum, quote_char);  // copy the macro value with quotes add/removed as requested.
 				}
@@ -3934,7 +3965,7 @@ static ptrdiff_t evaluate_macro_func (
 
 			// find the bounds of the item we want, and substitute that into the output buffer
 			const char * p, *endp;
-			int rand_entry = (get_random_int() % num_entries);
+			int rand_entry = (get_random_int_insecure() % num_entries);
 			p = nth_list_item(items, ',', endp, rand_entry, true);
 			if ( ! p || endp <= p) {
 				retval = 0;
@@ -4047,7 +4078,7 @@ static ptrdiff_t evaluate_macro_func (
 			// Generate the random value
 			long range = step + max_value - min_value;
 			long num = range / step;
-			long random_value = min_value + (get_random_int() % num) * step;
+			long random_value = min_value + (get_random_int_insecure() % num) * step;
 
 			// convert it to a string and insert it into the output buffer
 			formatstr(argbuf, "%ld", random_value);
@@ -4324,13 +4355,13 @@ static ptrdiff_t evaluate_macro_func (
 				if (full_path) {
 					buf = strdup_full_path_quoted(umval, cchum, ctx, quote_char, to_path_char);
 				} else if (parts || to_path_char || bare) {
-					buf = strdup_path_quoted(umval, cchum, quote_char, to_path_char);  // copy the macro value with quotes add/removed as requested.
+					buf = strdup_path_quoted(umval, cchum, 0, quote_char, to_path_char);  // copy the macro value with quotes add/removed as requested.
 				} else {
 					buf = strdup_quoted(umval, cchum, quote_char);  // copy the macro value with quotes add/removed as requested.
 				}
 				freeit.set(buf); // make sure this gets released
 
-				int ixend = strlen(buf); // this will be the end of what we wish to return
+				int ixend = (int)strlen(buf); // this will be the end of what we wish to return
 				int ixn = (int)(condor_basename(buf) - buf); // index of start of filename, ==0 if no path sep
 				int ixx = (int)(condor_basename_extension_ptr(buf+ixn) - buf); // index of . in extension, ==ixend if no ext
 				// if this is a bare filename, we can ignore the p & d flags if n or x is set
@@ -4480,11 +4511,14 @@ tryagain:
 						if (c == '(') {
 							// skip to the close )
 							const char * ptr = strchr(value, ')');
-							if (ptr) value = ptr+1;
+							if (ptr) {
+								value = ptr+1;
+								continue;
+							}
 						} else if (is_meta_arg_body) {
 							// for meta args, allow pretty much anything after the colon
 							continue;
-						} else if (strchr("$ ,\\:", c)) {
+						} else if (strchr(COLON_DEF_EXTRACHARSET, c)) {
 							// allow some characters after the : that we don't allow in param names
 							continue;
 						}
@@ -4668,7 +4702,7 @@ public:
 	SkipKnobsBody(classad::References & knobs) : skip_knobs(knobs), skip_count(0) {}
 	virtual bool skip(int func_id, const char * body, int len) {
 		if (func_id == SPECIAL_MACRO_ID_ENV) return false;
-		if (func_id == MACRO_ID_NORMAL) {
+		if (func_id == MACRO_ID_NORMAL || (func_id >= SPECIAL_MACRO_ID_DIRNAME && func_id <= SPECIAL_MACRO_ID_FILENAME)) {
 			// skip $(dollar)
 			if (len == DOLLAR_ID_LEN && MATCH == strncasecmp(body, DOLLAR_ID, DOLLAR_ID_LEN)) {
 				++skip_count;
@@ -4702,6 +4736,7 @@ unsigned int selective_expand_macro (
 	MACRO_EVAL_CONTEXT & ctx)
 {
 	int unexpanded_knob_count = 0;
+	int iteration_count = 0;
 
 	MACRO_POSITION pos; pos.clear();
 	std::string body;
@@ -4714,7 +4749,11 @@ unsigned int selective_expand_macro (
 		special_id = next_config_macro(is_config_macro, skb, tmp, pos.dollar, pos);
 		unexpanded_knob_count += skb.skip_count;
 		if (special_id) {
-			body.clear(); body.append(value, pos.dollar, pos.right-pos.dollar);
+			body.clear(); body.append(value, pos.dollar, pos.right - pos.dollar);
+			if (++iteration_count > 10000) {
+				macro_set.push_error(stderr, -1, NULL, "iteration limit exceeded while macro expanding: %s", body.c_str());
+				return -1;
+			}
 			MACRO_POSITION pos2 = pos;
 			pos2.dollar = 0;
 			pos2.body  -= pos.dollar;
@@ -4722,9 +4761,8 @@ unsigned int selective_expand_macro (
 			if (pos2.defval) { pos2.defval -= pos.dollar; }
 			ptrdiff_t cch = evaluate_macro_func(special_id, body, pos2, macro_set, ctx, errmsg);
 			if (cch < 0) {
-				//PRAGMA_REMIND("tj: put error reporting into MACRO_EVAL_CONTEXT_EX")
-				EXCEPT("%s", errmsg.c_str());
-				break;
+				macro_set.push_error(stderr, -1, NULL, "%s", errmsg.c_str());
+				return -1;
 			}
 			if ( ! cch) {
 				value.erase(pos.dollar, pos.right-pos.dollar);
@@ -4848,7 +4886,7 @@ bool hash_iter_done(HASHITER& it) {
 	if (it.ix == 0 && it.id == 0) {
 		if ( ! it.set.defaults || ! it.set.defaults->table || ! it.set.defaults->size) {
 			it.opts |= HASHITER_NO_DEFAULTS;
-		} else if ( ! (it.opts & HASHITER_NO_DEFAULTS)) {
+		} else if (it.set.size > 0 && it.set.table && ! (it.opts & HASHITER_NO_DEFAULTS)) {
 			// decide whether the first item is in the defaults table or not.
 			const char * pix_key = it.set.table[it.ix].key;
 			const char * pid_key = it.set.defaults->table[it.id].key;
@@ -5054,11 +5092,14 @@ tryagain:
 						if (c == '(') {
 							// skip to the close )
 							char * ptr = strchr(value, ')');
-							if (ptr) value = ptr+1;
+							if (ptr) {
+								value = ptr+1;
+								continue;
+							}
 						} else if (is_meta_arg_body) {
 							// for meta args, allow pretty much anything after the colon
 							continue;
-						} else if (strchr("$ ,\\:", c)) {
+						} else if (strchr(COLON_DEF_EXTRACHARSET, c)) {
 							// allow some characters after the : that we don't allow in param names
 							continue;
 						}

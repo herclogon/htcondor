@@ -22,7 +22,6 @@
 #include "read_user_log.h"
 #include "write_user_log.h"
 #include <time.h>
-#include "MyString.h"
 #include "condor_config.h"
 #include "stat_wrapper.h"
 #include "user_log_header.h"
@@ -74,18 +73,6 @@ UserLogHeader::ExtractEvent( const ULogEvent *event )
 	if ( ! generic ) {
 		dprintf( D_ALWAYS, "Can't pointer cast generic event!\n" );
 		return ULOG_UNK_ERROR;
-	}
-	{
-		char	buf[1024];
-		memset( buf, 0, sizeof(buf) );
-		strncpy( buf, generic->info, sizeof(buf)-1 );
-		buf[COUNTOF(buf)-1] = 0; // make sure it's null terminated.
-		int size = strlen( buf );
-		while( isspace(buf[size-1]) )
-			buf[--size] = '\0';
-		::dprintf( D_FULLDEBUG,
-				   "UserLogHeader::ExtractEvent(): parsing '%s'\n",
-				   buf );
 	}
 
 	char		 id[256];
@@ -143,10 +130,10 @@ UserLogHeader::ExtractEvent( const ULogEvent *event )
 
 // sprintf() method
 void
-UserLogHeader::sprint_cat( MyString &buf ) const
+UserLogHeader::sprint_cat( std::string &buf ) const
 {
 	if ( m_valid ) {
-		buf.formatstr_cat( "id=%s"
+		formatstr_cat( buf, "id=%s"
 						 " seq=%d"
 						 " ctime=%lu"
 						 " size=" FILESIZE_T_FORMAT
@@ -155,7 +142,7 @@ UserLogHeader::sprint_cat( MyString &buf ) const
 						 " event_offset=%" PRIi64
 						 " max_rotation=%d"
 						 " creator_name=<%s>",
-						 m_id.Value(),
+						 m_id.c_str(),
 						 m_sequence,
 						 (unsigned long) m_ctime,
 						 m_size,
@@ -163,7 +150,7 @@ UserLogHeader::sprint_cat( MyString &buf ) const
 						 m_file_offset,
 						 m_event_offset,
 						 m_max_rotation,
-						 m_creator_name.Value()
+						 m_creator_name.c_str()
 						 );
 	}
 	else {
@@ -173,14 +160,14 @@ UserLogHeader::sprint_cat( MyString &buf ) const
 
 // dprint() method
 void
-UserLogHeader::dprint( int level, MyString &buf ) const
+UserLogHeader::dprint( int level, std::string &buf ) const
 {
 	if ( ! IsDebugCatAndVerbosity(level) ) {
 		return;
 	}
 
 	sprint_cat( buf );
-	::dprintf( level, "%s\n", buf.Value() );
+	::dprintf( level, "%s\n", buf.c_str() );
 }
 
 // dprint() method
@@ -195,8 +182,8 @@ UserLogHeader::dprint( int level, const char *label ) const
 		label = "";
 	}
 
-	MyString	buf;
-	buf.formatstr( "%s header:", label );
+	std::string buf;
+	formatstr( buf, "%s header:", label );
 	this->dprint( level, buf );
 }
 
@@ -273,14 +260,14 @@ WriteUserLogHeader::GenerateEvent( GenericEvent &event )
 			  " max_rotation=%d"
 			  " creator_name=<%s>",
 			  (int) getCtime(),
-			  getId().Value(),
+			  getId().c_str(),
 			  getSequence(),
 			  getSize(),
 			  getNumEvents(),
 			  getFileOffset(),
 			  getEventOffset(),
 			  getMaxRotation(),
-			  getCreatorName().Value()
+			  getCreatorName().c_str()
 			  );
 	if (len < 0 || len == sizeof(event.info)) {
 		// not enough room in the buffer

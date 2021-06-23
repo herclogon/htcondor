@@ -21,7 +21,6 @@
 #define _HIBERNATER_H_
 
 #include <vector>
-#include "MyString.h"
 
 /***************************************************************
  * Base Hibernator class
@@ -54,10 +53,10 @@ public:
 	//@{
 
 	/// Constructor
-	HibernatorBase( void ) throw ();
+	HibernatorBase( void ) noexcept;
 
 	/// Destructor
-	virtual ~HibernatorBase( void ) throw ();
+	virtual ~HibernatorBase( void ) noexcept;
 
 	/// Initializer
 	virtual bool initialize( void ) = 0;
@@ -152,8 +151,8 @@ public:
 
 	static bool maskToStates( unsigned mask, std::vector<SLEEP_STATE> &states );
 	static bool statesToString( const std::vector<SLEEP_STATE> &states,
-								MyString &string );
-	static bool maskToString( unsigned mask, MyString &str );
+								std::string &string );
+	static bool maskToString( unsigned mask, std::string &str );
 
 	static bool stringToStates( const char *s,
 								std::vector<SLEEP_STATE> &states );

@@ -44,7 +44,7 @@ if (WITH_MUNGE)
 		set( LIBMUNGE_SO "libmunge.so.2" )
 		set (MUNGE_FOUND "${MUNGE_INSTALL_LOC}/lib/libmunge.so")
 
-		condor_post_external( munge include OFF )
+		condor_post_external( munge include OFF "${MUNGE_INSTALL_LOC}/lib/libmunge.so" )
 
 	else(NOT PROPER)
 
@@ -54,7 +54,7 @@ if (WITH_MUNGE)
 	endif(NOT PROPER)
 
 	if( DLOPEN_SECURITY_LIBS )
-		set( MUNGE_FOUND "" )
+		set( MUNGE_FOUND "" CACHE STRING "Munge Found" FORCE )
 	endif()
 
 	message( STATUS "external configured (MUNGE_FOUND=${MUNGE_FOUND})" )

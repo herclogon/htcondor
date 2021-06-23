@@ -22,9 +22,6 @@
 
 
 #include "condor_classad.h"
-// #include "classad_log.h"
-
-#include "MyString.h"
 #include "HashTable.h"
 
 #include "condor_state.h"
@@ -33,11 +30,6 @@
 #include <map>
 #include <set>
 #include <string>
-
-using std::vector;
-using std::map;
-using std::set;
-using std::string;
 
 // this is the required minimum separation between two priorities for them
 // to be considered distinct values
@@ -63,54 +55,57 @@ public:
 
   void Initialize(GroupEntry* group);  // Configuration
 
-  int GetResourcesUsed(const MyString& CustomerName); // get # of used resources (unweighted by SlotWeight)
-  float GetWeightedResourcesUsed(const MyString& CustomerName);
-  float GetPriority(const MyString& CustomerName); // get priority for a customer
-  void SetPriority(const MyString& CustomerName, float Priority); // set priority for a customer
+  int   GetResourcesUsed(const std::string& CustomerName); // get # of used resources (unweighted by SlotWeight)
+  float GetWeightedResourcesUsed(const std::string& CustomerName);
+  float GetPriority(const std::string& CustomerName); // get priority for a customer
+  int   GetCeiling(const std::string& CustomerName); // get Ceiling for a customer
+  void  SetPriority(const std::string& CustomerName, float Priority); // set priority for a customer
+  void  SetCeiling(const std::string& CustomerName, int Ceiling); // set Ceiling for a customer
 
-  void SetAccumUsage(const MyString& CustomerName, float AccumUsage); // set accumulated usage for a customer
-  void SetBeginTime(const MyString& CustomerName, int BeginTime); // set begin usage time for a customer
-  void SetLastTime(const MyString& CustomerName, int LastTime); // set Last usage time for a customer
-  float GetPriorityFactor(const MyString& CustomerName); // get priority factor for a customer
+  void SetAccumUsage(const std::string& CustomerName, float AccumUsage); // set accumulated usage for a customer
+  void SetBeginTime(const std::string& CustomerName, int BeginTime); // set begin usage time for a customer
+  void SetLastTime(const std::string& CustomerName, int LastTime); // set Last usage time for a customer
+  float GetPriorityFactor(const std::string& CustomerName); // get priority factor for a customer
 
-  void SetPriorityFactor(const MyString& CustomerName, float PriorityFactor);
-  void ResetAccumulatedUsage(const MyString& CustomerName);
-  void DeleteRecord(const MyString& CustomerName); 
+  void SetPriorityFactor(const std::string& CustomerName, float PriorityFactor);
+  void ResetAccumulatedUsage(const std::string& CustomerName);
+  void DeleteRecord(const std::string& CustomerName);
   void ResetAllUsage();
 
-  void AddMatch(const MyString& CustomerName, ClassAd* ResourceAd); // Add new match
-  void RemoveMatch(const MyString& ResourceName); // remove a match
+  void AddMatch(const std::string& CustomerName, ClassAd* ResourceAd); // Add new match
+  void RemoveMatch(const std::string& ResourceName); // remove a match
 
-  float GetSlotWeight(ClassAd *candidate);
+  float GetSlotWeight(ClassAd *candidate) const;
   void UpdatePriorities(); // update all the priorities
+  void UpdateOnePriority(int T, int TimePassed, float AgingFactor, const char *key, ClassAd *ad); // Help function for above
 
   void CheckMatches(ClassAdListDoesNotDeleteAds& ResourceList);  // Remove matches that are not claimed
 
   int GetLastUpdateTime() const { return LastUpdateTime; }
 
-  double GetLimit(const MyString& limit);
-  double GetLimitMax(const MyString& limit);
+  double GetLimit(const std::string& limit);
+  double GetLimitMax(const std::string& limit);
   void ReportLimits(ClassAd *attrList);
 
   ClassAd* ReportState(bool rollup = false);
-  ClassAd* ReportState(const MyString& CustomerName);
+  ClassAd* ReportState(const std::string& CustomerName);
 
-  void CheckResources(const string& CustomerName, int& NumResources, float& NumResourcesRW);
+  void CheckResources(const std::string& CustomerName, int& NumResources, float& NumResourcesRW);
 
   void DisplayLog();
   void DisplayMatches();
 
-  ClassAd* GetClassAd(const MyString& Key);
+  ClassAd* GetClassAd(const std::string& Key);
 
   // This maps submitter names to their assigned accounting group.
   // When called with a defined group name, it maps that group name to itself.
-  GroupEntry* GetAssignedGroup(const MyString& CustomerName);
-  GroupEntry* GetAssignedGroup(const MyString& CustomerName, bool& IsGroup);
+  GroupEntry* GetAssignedGroup(const std::string& CustomerName);
+  GroupEntry* GetAssignedGroup(const std::string& CustomerName, bool& IsGroup);
 
-  bool UsingWeightedSlots();
+  bool UsingWeightedSlots() const;
 
   struct ci_less {
-      bool operator()(const string& a, const string& b) const {
+      bool operator()(const std::string& a, const std::string& b) const {
           return strcasecmp(a.c_str(), b.c_str()) < 0;
       }
   };
@@ -121,20 +116,20 @@ private:
   // Private methods Methods
   //--------------------------------------------------------
   
-  void RemoveMatch(const MyString& ResourceName, time_t T);
+  void RemoveMatch(const std::string& ResourceName, time_t T);
 
   void LoadLimits(ClassAdListDoesNotDeleteAds &resourceList);
   void ClearLimits();
   void DumpLimits();
 
-  void IncrementLimit(const MyString& limit);
-  void DecrementLimit(const MyString& limit);
+  void IncrementLimit(const std::string& limit);
+  void DecrementLimit(const std::string& limit);
 
-  void IncrementLimits(const MyString& limits);
-  void DecrementLimits(const MyString& limits);
+  void IncrementLimits(const std::string& limits);
+  void DecrementLimits(const std::string& limits);
 
   // Get group priority helper function.
-  float getGroupPriorityFactor(const MyString& CustomerName); 
+  float getGroupPriorityFactor(const std::string& CustomerName);
 
   //--------------------------------------------------------
   // Configuration variables
@@ -144,9 +139,9 @@ private:
   float NiceUserPriorityFactor;
   float RemoteUserPriorityFactor;
   float DefaultPriorityFactor;
-  MyString AccountantLocalDomain;
+  std::string AccountantLocalDomain;
   float HalfLifePeriod;     // The time in sec in which the priority is halved by aging
-  MyString LogFileName;      // Name of Log file
+  std::string LogFileName;      // Name of Log file
   int	MaxAcctLogSize;		// Max size of log file
   bool  DiscountSuspendedResources;
   bool  UseSlotWeights; 
@@ -158,46 +153,44 @@ private:
   ClassAdLog<std::string, ClassAd*> * AcctLog;
   int LastUpdateTime;
 
-  HashTable<MyString, double> concurrencyLimits;
+  HashTable<std::string, double> concurrencyLimits;
 
   GroupEntry* hgq_root_group;
-  map<string, GroupEntry*, ci_less> hgq_submitter_group_map;
+  std::map<std::string, GroupEntry*, ci_less> hgq_submitter_group_map;
 
   //--------------------------------------------------------
   // Static values
   //--------------------------------------------------------
 
-  static MyString AcctRecord;
-  static MyString CustomerRecord;
-  static MyString ResourceRecord;
+  static std::string AcctRecord;
+  static std::string CustomerRecord;
+  static std::string ResourceRecord;
 
   //--------------------------------------------------------
   // Utility functions
   //--------------------------------------------------------
 
-  static MyString GetResourceName(ClassAd* Resource);
+  static std::string GetResourceName(ClassAd* Resource);
   bool GetResourceState(ClassAd* Resource, State& state);
-  int IsClaimed(ClassAd* ResourceAd, MyString& CustomerName);
-  int CheckClaimedOrMatched(ClassAd* ResourceAd, const MyString& CustomerName);
-  static ClassAd* FindResourceAd(const MyString& ResourceName, ClassAdListDoesNotDeleteAds& ResourceList);
-  static MyString GetDomain(const MyString& CustomerName);
+  int IsClaimed(ClassAd* ResourceAd, std::string& CustomerName);
+  int CheckClaimedOrMatched(ClassAd* ResourceAd, const std::string& CustomerName);
+//  static ClassAd* FindResourceAd(const std::string& ResourceName, ClassAdListDoesNotDeleteAds& ResourceList);
+  static std::string GetDomain(const std::string& CustomerName);
 
-  bool DeleteClassAd(const MyString& Key);
+  bool DeleteClassAd(const std::string& Key);
 
-  void SetAttributeInt(const MyString& Key, const MyString& AttrName, int AttrValue);
-  void SetAttributeFloat(const MyString& Key, const MyString& AttrName, float AttrValue);
-  void SetAttributeString(const MyString& Key, const MyString& AttrName, const MyString& AttrValue);
+  void SetAttributeInt(const std::string& Key, const std::string& AttrName, int AttrValue);
+  void SetAttributeFloat(const std::string& Key, const std::string& AttrName, float AttrValue);
+  void SetAttributeString(const std::string& Key, const std::string& AttrName, const std::string& AttrValue);
 
-  bool GetAttributeInt(const MyString& Key, const MyString& AttrName, int& AttrValue);
-  bool GetAttributeFloat(const MyString& Key, const MyString& AttrName, float& AttrValue);
-  bool GetAttributeString(const MyString& Key, const MyString& AttrName, MyString& AttrValue);
+  bool GetAttributeInt(const std::string& Key, const std::string& AttrName, int& AttrValue);
+  bool GetAttributeFloat(const std::string& Key, const std::string& AttrName, float& AttrValue);
+  bool GetAttributeString(const std::string& Key, const std::string& AttrName, std::string& AttrValue);
 
-  bool LoadState(const MyString& OldLogFileName);
-
-  void ReportGroups(GroupEntry* group, ClassAd* ad, bool rollup, map<string, int>& gnmap);
+  void ReportGroups(GroupEntry* group, ClassAd* ad, bool rollup, std::map<std::string, int>& gnmap);
 };
 
 
-extern void parse_group_name(const string& gname, vector<string>& gpath);
+extern void parse_group_name(const std::string& gname, std::vector<std::string>& gpath);
 
 #endif

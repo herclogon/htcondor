@@ -70,6 +70,33 @@ class CollectorEngine : public Service
 	// walk specified hash table with the given visit procedure
 	int walkHashTable (AdTypes, int (*)(ClassAd *));
 
+	// Walk through a specific (non-generic, non-ANY) table using a lambda
+	template<typename T>
+	int walkConcreteTable(AdTypes adType, T scanFunction) {
+		if (ANY_AD == adType || GENERIC_AD == adType) {
+			dprintf(D_ALWAYS, "Generic ad requested from walkConcreteTable.\n");
+			return 0;
+		}
+
+		CollectorHashTable *table;
+		CollectorEngine::HashFunc func;
+		if (!LookupByAdType(adType, table, func)) {
+			dprintf (D_ALWAYS, "Unknown type %d\n", adType);
+			return 0;
+		}
+
+			// walk the hash table
+		ClassAd *ad;
+		table->startIterations();
+		while (table->iterate(ad)) {
+				// call scan function for each ad
+			if (!scanFunction(ad)) {break;}
+		}
+
+		return 1;
+	}
+
+
 	// register the collector's own ad pointer, and check to see if a given ad is that ad.
 	// this is used to allow us to recognise the collector ad during iteration and automatically
 	// insert fresh stats into it when it is fetched.
@@ -80,7 +107,7 @@ class CollectorEngine : public Service
 	//int publishStats( ClassAd *ad );
 
 		// returns true on success; false on failure (and sets error_desc)
-	bool setCollectorRequirements( char const *str, MyString &error_desc );
+	bool setCollectorRequirements( char const *str, std::string &error_desc );
 
   private:
 	typedef bool (*HashFunc) (AdNameHashKey &, const ClassAd *);
@@ -122,14 +149,14 @@ class CollectorEngine : public Service
 	int walkGenericTables(int (*scanFunction)(ClassAd *));
 
 	// relevant variables from the config file
-	int	clientTimeout; 
+	int	clientTimeout;
 	int	machineUpdateInterval;
 
 	void  housekeeper ();
 	int  housekeeperTimerID;
-	void cleanHashTable (CollectorHashTable &, time_t, HashFunc);
+	void cleanHashTable (CollectorHashTable &, time_t, HashFunc) const;
 	ClassAd* updateClassAd(CollectorHashTable&,const char*, const char *,
-						   ClassAd*,AdNameHashKey&, const MyString &, int &, 
+						   ClassAd*,AdNameHashKey&, const std::string &, int &,
 						   const condor_sockaddr& );
 
 	ClassAd * mergeClassAd (CollectorHashTable &hashTable,
@@ -137,12 +164,12 @@ class CollectorEngine : public Service
 							const char *label,
 							ClassAd *new_ad,
 							AdNameHashKey &hk,
-							const MyString &hashString,
+							const std::string &hashString,
 							int  &insert,
 							const condor_sockaddr& /*from*/ );
 
 	// support for dynamically created tables
-	CollectorHashTable *findOrCreateTable(MyString &str);
+	CollectorHashTable *findOrCreateTable(const std::string &str);
 
 	bool ValidateClassAd(int command,ClassAd *clientAd,Sock *sock);
 

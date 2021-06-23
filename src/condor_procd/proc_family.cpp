@@ -63,9 +63,15 @@ ProcFamily::ProcFamily(ProcFamilyMonitor* monitor,
 	m_initial_sys_cpu(0),
 	m_last_signal_was_sigstop(false)
 #endif
+#ifdef LINUX
+	, m_perf_counter(root_pid)
+#endif
 {
 #if !defined(WIN32)
 	m_proxy = NULL;
+#endif
+#ifdef LINUX
+	m_perf_counter.start();
 #endif
 }
 
@@ -422,9 +428,9 @@ ProcFamily::count_tasks_cgroup()
 	if (*handle) {
 		cgroup_get_task_end(handle);
 	}
-	if (handle) {
-		free(handle);
-	}
+
+	free(handle);
+
 	if (err) {
 		return -err;
 	}
@@ -449,48 +455,6 @@ _check_stat_uint64(const struct cgroup_stat &stats, const char* name, u_int64_t*
 		}
 	}
 	return false;
-}
-
-void
-ProcFamily::update_max_image_size_cgroup()
-{
-	if (!m_cm.isMounted(CgroupManager::MEMORY_CONTROLLER) || !m_cgroup.isValid()) {
-		return;
-	}
-
-	int err;
-	u_int64_t max_image;
-	struct cgroup_controller *memct;
-	Cgroup memcg;
-	if (m_cm.create(m_cgroup_string, memcg, CgroupManager::MEMORY_CONTROLLER, CgroupManager::MEMORY_CONTROLLER) ||
-			!memcg.isValid()) {
-		dprintf(D_PROCFAMILY,
-			"Unable to create cgroup %s (ProcFamily %u).\n",
-			m_cgroup_string.c_str(), m_root_pid);
-		return;
-	}
-	if ((memct = cgroup_get_controller(&const_cast<struct cgroup &>(memcg.getCgroup()), MEMORY_CONTROLLER_STR)) == NULL) {
-		dprintf(D_PROCFAMILY,
-			"Unable to load memory controller for cgroup %s (ProcFamily %u).\n",
-			m_cgroup_string.c_str(), m_root_pid);
-		return;
-	}
-	if ((err = cgroup_get_value_uint64(memct, "memory.memsw.max_usage_in_bytes", &max_image))) {
-		// On newer nodes, swap accounting is disabled by default.
-		// In some cases, swap accounting causes a kernel oops at the time of writing.
-		// So, we check memory.max_usage_in_bytes instead.
-		int err2 = cgroup_get_value_uint64(memct, "memory.max_usage_in_bytes", &max_image);
-		if (err2) {
-			dprintf(D_PROCFAMILY,
-				"Unable to load max memory usage for cgroup %s (ProcFamily %u): %u %s\n",
-				m_cgroup_string.c_str(), m_root_pid, err, cgroup_strerror(err));
-			return;
-		} else if (!have_warned_about_memsw) {
-			have_warned_about_memsw = true;
-			dprintf(D_ALWAYS, "Swap acounting is not available; only doing RAM accounting.\n");
-		}
-	}
-	m_max_image_size = max_image/1024;
 }
 
 int
@@ -637,7 +601,8 @@ ProcFamily::aggregate_usage_cgroup_io_wait(ProcFamilyUsage* usage) {
 		cgroup_read_value_end(&handle);
 	}
 
-	if (ret != ECGEOF) {
+	// kernels with BFQ enabled don't have io_wait_time, don't spam logs if it isn't here
+	if ((ret != ECGEOF) && (ret != ENOENT)) {
 		dprintf(D_ALWAYS, "Internal cgroup error when retrieving iowait statistics: %s\n", cgroup_strerror(ret));
 		return 1;
 	}
@@ -711,9 +676,7 @@ ProcFamily::aggregate_usage_cgroup(ProcFamilyUsage* usage)
 			found_rss = true;
 		} else if (_check_stat_uint64(stats, "total_mapped_file", &tmp)) {
 			image += tmp;
-		} else if (_check_stat_uint64(stats, "total_swap", &tmp)) {
-			image += tmp;
-		}
+		} 
 		err = cgroup_read_stats_next(&handle, &stats);
 	}
 	if (handle != NULL) {
@@ -728,15 +691,9 @@ ProcFamily::aggregate_usage_cgroup(ProcFamilyUsage* usage)
 			m_cgroup_string.c_str(), m_root_pid);
 	}
 	// The poor man's way of updating the max image size.
-	if (image > m_max_image_size) {
+	if (image/1024 > m_max_image_size) {
 		m_max_image_size = image/1024;
 	}
-	// XXX: Try again at using this at a later date.
-	// Currently, it reports the max size *including* the page cache.
-	// Doh!
-	//
-	// Try updating the max size using cgroups
-	//update_max_image_size_cgroup();
 
 	// Update CPU
 	get_cpu_usage_cgroup(usage->user_cpu_time, usage->sys_cpu_time);
@@ -835,6 +792,11 @@ ProcFamily::aggregate_usage(ProcFamilyUsage* usage)
 	usage->user_cpu_time += m_exited_user_cpu_time;
 	usage->sys_cpu_time += m_exited_sys_cpu_time;
 
+	// the perf counter itself measures for the whole tree, so we don't need to
+#ifdef LINUX
+	usage->m_instructions = m_perf_counter.getInsns();
+#endif
+
 #if defined(HAVE_EXT_LIBCGROUP)
 	aggregate_usage_cgroup(usage);
 #endif
@@ -925,6 +887,7 @@ ProcFamily::remove_exited_processes()
 			// away when we pull out a separate ProcGroup
 			// class
 			//
+#if defined(CHATTY_PROC_LOG)
 			if (m_root_pid != 0) {
 				dprintf(D_ALWAYS,
 				        "process %u (of family %u) has exited\n",
@@ -936,7 +899,7 @@ ProcFamily::remove_exited_processes()
 				        "process %u (not in monitored family) has exited\n",
 				        member->m_proc_info->pid);
 			}
-
+#endif /* defined(CHATTY_PROC_LOG) */
 			// save CPU usage from this process
 			//
 			m_exited_user_cpu_time +=

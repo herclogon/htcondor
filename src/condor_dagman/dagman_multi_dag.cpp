@@ -40,8 +40,8 @@ AppendError(MyString &errMsg, const MyString &newError)
 
 //-------------------------------------------------------------------------
 bool
-GetConfigAndAttrs( /* const */ StringList &dagFiles, bool useDagDir, 
-			MyString &configFile, StringList &attrLines, MyString &errMsg )
+GetConfigAndAttrs( /* const */ std::list<std::string> &dagFiles, bool useDagDir, 
+			MyString &configFile, std::list<std::string> &attrLines, MyString &errMsg )
 {
 	bool		result = true;
 
@@ -58,7 +58,7 @@ GetConfigAndAttrs( /* const */ StringList &dagFiles, bool useDagDir,
 			//
 		const char *	newDagFile;
 		if ( useDagDir ) {
-			MyString	tmpErrMsg;
+			std::string	tmpErrMsg;
 			if ( !dagDir.Cd2TmpDirFile( dagFile, tmpErrMsg ) ) {
 				AppendError( errMsg,
 						MyString("Unable to change to DAG directory ") +
@@ -70,7 +70,7 @@ GetConfigAndAttrs( /* const */ StringList &dagFiles, bool useDagDir,
 			newDagFile = dagFile;
 		}
 
-		StringList		configFiles;
+		std::list<std::string>		configFiles;
 
 			// Note: destructor will close file.
 		MultiLogFiles::FileReader reader;
@@ -82,9 +82,7 @@ GetConfigAndAttrs( /* const */ StringList &dagFiles, bool useDagDir,
 		MyString logicalLine;
 		while ( reader.NextLogicalLine( logicalLine ) ) {
 			if ( logicalLine != "" ) {
-					// Note: StringList constructor removes leading
-					// whitespace from lines.
-				StringList tokens( logicalLine.Value(), " \t" );
+				std::list<std::string> tokens( logicalLine.Value(), " \t" );
 				tokens.rewind();
 
 				const char *firstToken = tokens.next();
@@ -165,7 +163,7 @@ GetConfigAndAttrs( /* const */ StringList &dagFiles, bool useDagDir,
 			//
 			// Go back to our original directory.
 			//
-		MyString	tmpErrMsg;
+		std::string	tmpErrMsg;
 		if ( !dagDir.Cd2MainDir( tmpErrMsg ) ) {
 			AppendError( errMsg,
 					MyString("Unable to change to original directory ") +
@@ -196,7 +194,6 @@ MakePathAbsolute(MyString &filePath, MyString &errMsg)
 
 	return result;
 }
-#endif
 
 //-------------------------------------------------------------------------
 int
@@ -307,3 +304,4 @@ tolerant_unlink( const char *pathname )
 		}
 	}
 }
+#endif

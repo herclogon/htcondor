@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/python3
 """
 htsub command to submit high throughput jobs via BOSCO/HTCondor:
 http://jira.opensciencegrid.org/browse/CAMPUS-54
@@ -34,6 +34,7 @@ htstat
 htqueue
 htquery
 """
+
 __author__ = 'marco'
 
 import sys
@@ -41,6 +42,7 @@ import os
 import tempfile
 import logging
 import shutil
+import subprocess
 
 
 def log(message=None, level=None):
@@ -118,7 +120,7 @@ def make_submit_file(options, args):
     # Job execution options
     job_str = ""
     if options.compat11:
-        ec, out = commands.getstatusoutput('bosco_cluster.new --list grid_resource')
+        ec, out = subprocess.getstatusoutput('bosco_cluster.new --list grid_resource')
         if not ec==0:
             log("Unable to find Bosco cluster in compatibility mode: %s" % out, logging.ERROR)
         job_str = "grid_resource = %s" % out
@@ -138,14 +140,12 @@ def make_submit_file(options, args):
     return rets
 
 
-import commands
-
 def do_submit(sub_dir, sub_str):
     """
     Create the files and submit the job
     """
     if not sub_dir:
-        print "Submit dir not defined!"
+        print("Submit dir not defined!")
         exit(1)
     fname = os.path.join(sub_dir, "htjob.submit")
     #log("Condor submit file: %s" % fname, logging.DEBUG)
@@ -154,17 +154,17 @@ def do_submit(sub_dir, sub_str):
     fd.close()
     log("Submitting HTCondor job: condor_submit %s" % fname, logging.DEBUG)
     log("Submit file:\n%s" % sub_str, logging.DEBUG)
-    ec, out = commands.getstatusoutput('condor_submit %s' % fname)
+    ec, out = subprocess.getstatusoutput('condor_submit %s' % fname)
     if ec==0:
-        print "Job submitted successfully: %s" % out
+        print("Job submitted successfully: %s" % out)
     else:
-        print "Error in submitting job (%s): %s" % (ec, out)
+        print("Error in submitting job (%s): %s" % (ec, out))
 
 
 def do_cleanup(tmp_dir):
     try:
         shutil.rmtree(tmp_dir) # delete directory
-    except OSError, e:
+    except OSError as e:
         if e.errno != 2: # code 2 - no such file or directory
             raise
 

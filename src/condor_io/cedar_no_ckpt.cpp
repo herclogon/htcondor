@@ -45,6 +45,7 @@
 #include "ipv6_hostname.h"
 #include "condor_fsync.h"
 #include "dc_transfer_queue.h"
+#include "limit_directory_access.h"
 
 #ifdef WIN32
 #include <mswsock.h>	// For TransmitFile()
@@ -55,6 +56,9 @@ const unsigned int PUT_FILE_EOM_NUM = 666;
 // This special file descriptor number must not be a valid fd number.
 // It is used to make get_file() consume transferred data without writing it.
 const int GET_FILE_NULL_FD = -10;
+
+const size_t OLD_FILE_BUF_SZ = 65536;
+const size_t AES_FILE_BUF_SZ = 262144;
 
 int
 ReliSock::get_file( filesize_t *size, const char *destination,
@@ -72,9 +76,15 @@ ReliSock::get_file( filesize_t *size, const char *destination,
 		flags |= O_CREAT | O_TRUNC;
 	}
 
-	// Open the file
-	errno = 0;
-	fd = ::safe_open_wrapper_follow( destination, flags, 0600 );
+	if (allow_shadow_access(destination)) {
+		// Open the file
+		errno = 0;
+		fd = ::safe_open_wrapper_follow(destination, flags, 0600);
+	}
+	else {
+		fd = -1;
+		errno = EACCES;
+	}
 
 	// Handle open failure; it's bad....
 	if ( fd < 0 )
@@ -134,18 +144,21 @@ ReliSock::get_file( filesize_t *size, int fd,
 					bool flush_buffers, bool append, filesize_t max_bytes,
 					DCTransferQueue *xfer_q)
 {
-	char buf[65536];
 	filesize_t filesize, bytes_to_receive;
 	unsigned int eom_num;
 	filesize_t total = 0;
 	int retval = 0;
 	int saved_errno = 0;
+	bool buffered = get_encryption() && get_crypto_state()->m_keyInfo.getProtocol() == CONDOR_AESGCM;
+	size_t buf_sz = OLD_FILE_BUF_SZ;
 
 		// NOTE: the caller may pass fd=GET_FILE_NULL_FD, in which
 		// case we just read but do not write the data.
 
 	// Read the filesize from the other end of the wire
-	if ( !get(filesize) || !end_of_message() ) {
+	// If we're operating in buffered mode, also read the buffer size
+	// (each buffer-sized chunk will be sent in a seperate CEDAR message).
+	if ( !get(filesize) || !(buffered ? get(buf_sz) : 1) || !end_of_message() ) {
 		dprintf(D_ALWAYS, 
 				"Failed to receive filesize in ReliSock::get_file\n");
 		return -1;
@@ -154,6 +167,8 @@ ReliSock::get_file( filesize_t *size, int fd,
 	if ( append ) {
 		lseek( fd, 0, SEEK_END );
 	}
+
+	std::unique_ptr<char[]> buf(new char[buf_sz]);
 
 	// Log what's going on
 	dprintf( D_FULLDEBUG,
@@ -177,8 +192,16 @@ ReliSock::get_file( filesize_t *size, int fd,
 		}
 
 		int	iosize =
-			(int) MIN( (filesize_t) sizeof(buf), bytes_to_receive - total );
-		int	nbytes = get_bytes_nobuffer( buf, iosize, 0 );
+			(int) MIN( (filesize_t) buf_sz, bytes_to_receive - total );
+		int	nbytes;
+		if( buffered ) {
+			nbytes = get_bytes( buf.get(), iosize );
+			if( nbytes > 0 && !end_of_message() ) {
+				nbytes = 0;
+			}
+		} else {
+			nbytes = get_bytes_nobuffer( buf.get(), iosize, 0 );
+		}
 
 		if( xfer_q ) {
 			condor_gettimestamp(t2);
@@ -264,6 +287,14 @@ ReliSock::get_file( filesize_t *size, int fd,
 		}
 	}
 
+	// Our caller may treat get_file() as the end of a CEDAR message
+	// and call end_of_message immediately afterwards. This call will
+	// keep that from failing.
+	if (buffered && !prepare_for_nobuffering(stream_decode)) {
+		dprintf( D_ALWAYS, "get_file: prepare_for_nobuffering() failed!\n" );
+		return -1;
+	}
+
 	if ( filesize == 0 ) {
 		if ( !get(eom_num) || eom_num != PUT_FILE_EOM_NUM ) {
 			dprintf( D_ALWAYS, "get_file: Zero-length file check failed!\n" );
@@ -307,8 +338,13 @@ MSC_RESTORE_WARNING(6262) // function uses 64k of stack
 int
 ReliSock::put_empty_file( filesize_t *size )
 {
+	bool buffered = get_encryption() && get_crypto_state()->m_keyInfo.getProtocol() == CONDOR_AESGCM;
 	*size = 0;
-	if(!put(*size) || !end_of_message()) {
+	// the put(1) here is required because the other size is expecting us
+	// to send the size of messages we are going to use.  however, we're
+	// send zero bytes total so we just need to send any int at all, which
+	// then gets ignored on the other side.
+	if(!put(*size) || !(buffered ? put(1) : 1) || !end_of_message()) {
 		dprintf(D_ALWAYS,"ReliSock: put_file: failed to send dummy file size\n");
 		return -1;
 	}
@@ -323,7 +359,15 @@ ReliSock::put_file( filesize_t *size, const char *source, filesize_t offset, fil
 	int result;
 
 	// Open the file, handle failure
-	fd = safe_open_wrapper_follow(source, O_RDONLY | O_LARGEFILE | _O_BINARY | _O_SEQUENTIAL, 0);
+	if (allow_shadow_access(source)) {
+		errno = 0;
+		fd = safe_open_wrapper_follow(source, O_RDONLY | O_LARGEFILE | _O_BINARY | _O_SEQUENTIAL, 0);
+	}
+	else {
+		fd = -1;
+		errno = EACCES;
+	}
+
 	if ( fd < 0 )
 	{
 		dprintf(D_ALWAYS,
@@ -363,7 +407,8 @@ ReliSock::put_file( filesize_t *size, int fd, filesize_t offset, filesize_t max_
 {
 	filesize_t	filesize;
 	filesize_t	total = 0;
-
+	bool buffered = get_encryption() && get_crypto_state()->m_keyInfo.getProtocol() == CONDOR_AESGCM;
+	const size_t buf_sz = buffered ? AES_FILE_BUF_SZ : OLD_FILE_BUF_SZ;
 
 	StatInfo filestat( fd );
 	if ( filestat.Error() ) {
@@ -413,7 +458,9 @@ ReliSock::put_file( filesize_t *size, int fd, filesize_t offset, filesize_t max_
 	}
 
 	// Send the file size to the receiver
-	if ( !put(bytes_to_send) || !end_of_message() ) {
+	// If we're operating in buffered mode, also send the buffer size
+	// (each buffer-sized chunk will be sent in a seperate CEDAR message).
+	if ( !put(bytes_to_send) || !(buffered ? put(buf_sz) : 1) || !end_of_message() ) {
 		dprintf(D_ALWAYS, "ReliSock: put_file: Failed to send filesize.\n");
 		return -1;
 	}
@@ -475,7 +522,7 @@ ReliSock::put_file( filesize_t *size, int fd, filesize_t offset, filesize_t max_
 		}
 #endif
 
-		char buf[65536];
+		std::unique_ptr<char[]> buf(new char[buf_sz]);
 		int nbytes, nrd;
 
 		// On Unix, always send the file using put_bytes_nobuffer().
@@ -489,7 +536,7 @@ ReliSock::put_file( filesize_t *size, int fd, filesize_t offset, filesize_t max_
 			}
 
 			// Be very careful about where the cast to size_t happens; see gt#4150
-			nrd = ::read(fd, buf, (size_t)((bytes_to_send-total) < (int)sizeof(buf) ? bytes_to_send-total : sizeof(buf)));
+			nrd = ::read(fd, buf.get(), (size_t)((bytes_to_send-total) < (int)buf_sz ? bytes_to_send-total : buf_sz));
 
 			if( xfer_q ) {
 				condor_gettimestamp(t2);
@@ -499,12 +546,20 @@ ReliSock::put_file( filesize_t *size, int fd, filesize_t offset, filesize_t max_
 			if( nrd <= 0) {
 				break;
 			}
-			if ((nbytes = put_bytes_nobuffer(buf, nrd, 0)) < nrd) {
+			if( buffered ) {
+				nbytes = put_bytes(buf.get(), nrd);
+				if( nbytes > 0 && !end_of_message() ) {
+					nbytes = 0;
+				}
+			} else {
+				nbytes = put_bytes_nobuffer(buf.get(), nrd, 0);
+			}
+			if (nbytes < nrd) {
 					// put_bytes_nobuffer() does the appropriate
 					// looping for us already, the only way this could
 					// return less than we asked for is if it returned
 					// -1 on failure.
-				ASSERT( nbytes == -1 );
+				ASSERT( nbytes <= 0 );
 				dprintf( D_ALWAYS, "ReliSock::put_file: failed to put %d "
 						 "bytes (put_bytes_nobuffer() returned %d)\n",
 						 nrd, nbytes );
@@ -522,6 +577,14 @@ ReliSock::put_file( filesize_t *size, int fd, filesize_t offset, filesize_t max_
 		}
 	
 	} // end of if filesize > 0
+
+	// Our caller may treat put_file() as the end of a CEDAR message
+	// and call end_of_message immediately afterwards. This call will
+	// keep that from failing.
+	if (buffered && !prepare_for_nobuffering(stream_encode)) {
+		dprintf( D_ALWAYS, "put_file: prepare_for_nobuffering() failed!\n" );
+		return -1;
+	}
 
 	if ( bytes_to_send == 0 ) {
 		put(PUT_FILE_EOM_NUM);
@@ -801,6 +864,10 @@ ReliSock::put_x509_delegation( filesize_t *size, const char *source, time_t expi
 	return 0;
 }
 
+// These variables hold the size of the last data block handled by each
+// respective function. They are part of a hacky workaround for a GSI bug.
+size_t relisock_gsi_get_last_size = 0;
+size_t relisock_gsi_put_last_size = 0;
 
 int relisock_gsi_get(void *arg, void **bufp, size_t *sizep)
 {
@@ -843,8 +910,10 @@ int relisock_gsi_get(void *arg, void **bufp, size_t *sizep)
         *sizep = 0;
         free( *bufp );
         *bufp = NULL;
+        relisock_gsi_get_last_size = 0;
         return -1;
     }
+    relisock_gsi_get_last_size = *sizep;
     return 0;
 }
 
@@ -876,8 +945,10 @@ int relisock_gsi_put(void *arg,  void *buf, size_t size)
     //ensure data send was successful
     if ( stat == FALSE) {
         dprintf( D_ALWAYS, "relisock_gsi_put (write to socket) failure\n" );
+        relisock_gsi_put_last_size = 0;
         return -1;
     }
+    relisock_gsi_put_last_size = size;
     return 0;
 }
 
@@ -918,8 +989,11 @@ int Sock::special_connect(char const *host,int /*port*/,bool nonblocking)
 			sinful.getPort() && strcmp(sinful.getPort(),"0")==0;
 
 		bool same_host = false;
-		char const *my_ip = my_ip_string();
-		if( my_ip && sinful.getHost() && strcmp(my_ip,sinful.getHost())==0 ) {
+		// TODO: Picking IPv4 arbitrarily.
+		//   We should do a better job of detecting whether sinful
+		//   points to a local interface.
+		MyString my_ip = get_local_ipaddr(CP_IPV4).to_ip_string();
+		if( sinful.getHost() && strcmp(my_ip.c_str(),sinful.getHost())==0 ) {
 			same_host = true;
 		}
 
@@ -1040,15 +1114,32 @@ ReliSock::do_shared_port_local_connect( char const *shared_port_id, bool nonbloc
 				peer_description());
 		return 0;
 	}
+
+#if defined(DARWIN)
+	//
+	// See GT#7866.  Summary: removing the blocking acknowledgement of the
+	// socket hand-off (#7502), if the master sleeps for 100ms instead of
+	// re-entering the event loop (check-in [60471]), then -- only on
+	// MacOS X and only for the shared port daemon -- the socket on which
+	// the childalive message was sent will arrive at the master with no
+	// data to read.  If other daemons are forced to use this function,
+	// and attempt to contact the master while it's sleeping, they also fail.
+	//
+	// We have not been able to further analyze this problem, but dup()ing
+	// the (newly-created) socket here works around the problem.
+	//
+	static int liveness_hack = -1;
+	if( liveness_hack != -1 ) { ::close(liveness_hack); }
+	liveness_hack = dup( sock_to_pass.get_file_desc() );
+#endif
+
 		// restore the original connect address, which got overwritten
 		// in connect_socketpair()
 	set_connect_addr(orig_connect_addr.c_str());
 
 	char const *request_by = "";
-	// ToddT: should we be passing nonblocking arg along to PassSocket() below?
-	// Probably not, because we only get here in rare instances (aka if the shared
-	// port service is not yet registered), but not sure....
-	if( !shared_port_client.PassSocket(&sock_to_pass,shared_port_id,request_by) ) {
+	// A nonblocking call here causes a segfault, so don't do that.
+	if( !shared_port_client.PassSocket(&sock_to_pass,shared_port_id,request_by, false) ) {
 		return 0;
 	}
 
@@ -1085,9 +1176,9 @@ char const *
 Sock::get_sinful_public() const
 {
 		// In case TCP_FORWARDING_HOST changes, do not cache it.
-	MyString tcp_forwarding_host;
+	std::string tcp_forwarding_host;
 	param(tcp_forwarding_host,"TCP_FORWARDING_HOST");
-	if (!tcp_forwarding_host.IsEmpty()) {
+	if (!tcp_forwarding_host.empty()) {
 		condor_sockaddr addr;
 		
 		if (!addr.from_ip_string(tcp_forwarding_host)) {
@@ -1095,13 +1186,13 @@ Sock::get_sinful_public() const
 			if (addrs.empty()) {
 				dprintf(D_ALWAYS,
 					"failed to resolve address of TCP_FORWARDING_HOST=%s\n",
-					tcp_forwarding_host.Value());
+					tcp_forwarding_host.c_str());
 				return NULL;
 			}
 			addr = addrs.front();
 		}
 		addr.set_port(get_port());
-		_sinful_public_buf = addr.to_sinful().Value();
+		_sinful_public_buf = addr.to_sinful().c_str();
 
 		std::string alias;
 		if( param(alias,"HOST_ALIAS") ) {

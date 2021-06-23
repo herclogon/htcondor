@@ -50,16 +50,28 @@ class MapFile
 	~MapFile();
 
 	int
-	ParseCanonicalizationFile(const MyString filename, bool assume_hash=false);
+	ParseCanonicalizationFile(const MyString filename, bool assume_hash=false, bool allow_include=true);
 
 	int
-	ParseCanonicalization(MyStringSource & src, const char* srcname, bool assume_hash=false);
+	ParseCanonicalization(MyStringSource & src, const char* srcname, bool assume_hash=false, bool allow_include=true);
 
 	int
 	ParseUsermapFile(const MyString filename, bool assume_hash=true);
 
 	int
 	ParseUsermap(MyStringSource & src, const char * srcname, bool assume_hash=true);
+
+	int
+	GetCanonicalization(const std::string method, const std::string principal,
+						std::string &canonicalization)
+	{
+		MyString internal_canon;
+		auto retval = GetCanonicalization(MyString(method), MyString(principal), internal_canon);
+		if (!retval) {
+			canonicalization = internal_canon;
+		}
+		return retval;
+	}
 
 	int
 	GetCanonicalization(const MyString method,
@@ -73,6 +85,7 @@ class MapFile
 #ifdef USE_MAPFILE_V2
 	bool empty() { return methods.empty(); }
 	void reserve(int cbReserve) { apool.reserve(cbReserve); } // reserve space in the allocation pool
+	void dump(FILE* fp);
 #else
 	bool empty() { return canonical_entries.length() == 0 && user_entries.length() == 0; }
 	void reserve(int /*cbReserve*/) { } // reserve space in the allocation pool
@@ -132,8 +145,8 @@ class MapFile
 						MyString & output);
 #endif
 
-	int
-	ParseField(MyString & line, int offset, MyString & field, int * popts = NULL);
+	size_t
+	ParseField(const std::string & line, size_t offset, std::string & field, int * popts = NULL);
 };
 
 #endif

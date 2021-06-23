@@ -38,7 +38,7 @@
  ***************************************************************/
 
 HibernationManager::HibernationManager( HibernatorBase *hibernator )
-	throw ()
+	noexcept
 		: m_primary_adapter( NULL ),
 		  m_hibernator ( hibernator ),
 		  m_interval ( 0 ),
@@ -48,7 +48,7 @@ HibernationManager::HibernationManager( HibernatorBase *hibernator )
 	update ();
 }
 
-HibernationManager::~HibernationManager ( void ) throw ()
+HibernationManager::~HibernationManager ( void ) noexcept
 {
 	if ( m_hibernator ) {
 		delete m_hibernator;
@@ -130,7 +130,7 @@ HibernationManager::getSupportedStates(
 }
 
 bool
-HibernationManager::getSupportedStates( MyString &str ) const
+HibernationManager::getSupportedStates( std::string &str ) const
 {
 	str = "";
 	std::vector<HibernatorBase::SLEEP_STATE> states;
@@ -297,7 +297,7 @@ HibernationManager::publish ( ClassAd &ad )
     ad.Assign ( ATTR_HIBERNATION_LEVEL, level );
     ad.Assign ( ATTR_HIBERNATION_STATE, state );
 
-	MyString	states;
+	std::string	states;
 	getSupportedStates( states );
     ad.Assign ( ATTR_HIBERNATION_SUPPORTED_STATES, states );
 

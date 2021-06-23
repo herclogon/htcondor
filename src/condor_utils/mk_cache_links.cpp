@@ -62,8 +62,11 @@ static string MakeHashName(const char* fileName, time_t fileModifiedTime) {
 	strcat( (char*) hashSource, modifiedTimeStr.c_str() );
 
 	// Now calculate the hash
-	memcpy(hashResult, Condor_MD_MAC::computeOnce(hashSource,
-		strlen((const char*) hashSource)), HASHNAMELEN);
+	unsigned char *theHash = Condor_MD_MAC::computeOnce(hashSource,
+		strlen((const char *) hashSource));
+	memcpy(hashResult, theHash, HASHNAMELEN);
+	free(theHash);
+
 	char entryHashName[HASHNAMELEN * 2]; // 2 chars per hex byte
 	entryHashName[0] = '\0';
 	char letter[3];
@@ -71,6 +74,7 @@ static string MakeHashName(const char* fileName, time_t fileModifiedTime) {
 		sprintf(letter, "%x", hashResult[i]);
 		strcat(entryHashName, letter);
 	}
+	delete [] hashSource;
 
 	return entryHashName;
 }
@@ -104,7 +108,7 @@ static bool MakeLink(const char* srcFilePath, const string &newLink) {
 	}
 
 	// Determine the full path of the access file.
-	MyString accessFilePath;
+	std::string accessFilePath;
 	dircat(goodPath, newLink.c_str(), accessFilePath);
 	accessFilePath += ".access";
 	
@@ -159,7 +163,7 @@ static bool MakeLink(const char* srcFilePath, const string &newLink) {
 	// owned by the same owner of the file. If the link already exists, don't do 
 	// anything at this point, we'll check later to make sure it points to the
 	// correct inode.
-	MyString linkpathbuf;
+	std::string linkpathbuf;
 	const char *const targetLinkPath = dircat(goodPath, newLink.c_str(), linkpathbuf);
 
 	// Switch to root privileges, so we can test if the link exists, and create
@@ -248,7 +252,7 @@ void ProcessCachedInpFiles(ClassAd *const Ad, StringList *const InputFiles,
 
 	char *initialWorkingDir = NULL;
 	const char *path;
-	MyString remap;
+	std::string remap;
 	struct stat fileStat;
 	time_t fileModifiedTime = time(NULL);
 
@@ -314,17 +318,13 @@ void ProcessCachedInpFiles(ClassAd *const Ad, StringList *const InputFiles,
 			}
 		}
 		free( initialWorkingDir );
-		if ( remap.Length() > 0 ) {
-			MyString remapnew;
-			char *buf = NULL;
-			if (Ad->LookupString(ATTR_TRANSFER_INPUT_REMAPS, &buf) == 1) {
-				remapnew = buf;
-				free(buf);
-				buf = NULL;
+		if ( remap.length() > 0 ) {
+			std::string remapnew;
+			if (Ad->LookupString(ATTR_TRANSFER_INPUT_REMAPS, remapnew) == 1) {
 				remapnew += ";";
 			} 
 			remapnew += remap;
-			if (Ad->Assign(ATTR_TRANSFER_INPUT_REMAPS, remap.Value()) == false) {
+			if (Ad->Assign(ATTR_TRANSFER_INPUT_REMAPS, remap) == false) {
 				dprintf(D_ALWAYS, "mk_cache_links.cpp: Could not add to jobAd: "
 													"%s\n", remap.c_str());
 			}

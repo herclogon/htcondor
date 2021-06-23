@@ -102,14 +102,7 @@ DCStarter::reconnect( ClassAd* req, ClassAd* reply, ReliSock* rsock,
 {
 	setCmdStr( "reconnectJob" );
 
-	std::string line;
-
-		// Add our own attributes to the request ad we're sending
-	line = ATTR_COMMAND;
-	line += "=\"";
-	line += getCommandString( CA_RECONNECT_JOB );
-	line += '"';
-	req->Insert( line.c_str() );
+	req->Assign( ATTR_COMMAND, getCommandString( CA_RECONNECT_JOB ) );
 
 	return sendCACmd( req, reply, rsock, false, timeout, sec_session_id );
 	
@@ -242,13 +235,16 @@ StarterHoldJobMsg::readMsg( DCMessenger * /*messenger*/, Sock *sock )
 {
 		// read reply from starter
 	int success=0;
-	sock->get(success);
+	int r = sock->get(success);
+	if (!r) {
+		dprintf(D_ALWAYS, "Error reading hold message reply from starter\n");
+	}
 
 	return success!=0;
 }
 
 bool
-DCStarter::createJobOwnerSecSession(int timeout,char const *job_claim_id,char const *starter_sec_session,char const *session_info,MyString &owner_claim_id,MyString &error_msg,MyString &starter_version,MyString &starter_addr)
+DCStarter::createJobOwnerSecSession(int timeout,char const *job_claim_id,char const *starter_sec_session,char const *session_info,std::string &owner_claim_id,std::string &error_msg,std::string &starter_version,std::string &starter_addr)
 {
 	ReliSock sock;
 
@@ -300,7 +296,7 @@ DCStarter::createJobOwnerSecSession(int timeout,char const *job_claim_id,char co
 	return true;
 }
 
-bool DCStarter::startSSHD(char const *known_hosts_file,char const *private_client_key_file,char const *preferred_shells,char const *slot_name,char const *ssh_keygen_args,ReliSock &sock,int timeout,char const *sec_session_id,MyString &remote_user,MyString &error_msg,bool &retry_is_sensible)
+bool DCStarter::startSSHD(char const *known_hosts_file,char const *private_client_key_file,char const *preferred_shells,char const *slot_name,char const *ssh_keygen_args,ReliSock &sock,int timeout,char const *sec_session_id,std::string &remote_user,std::string &error_msg,bool &retry_is_sensible)
 {
 
 	retry_is_sensible = false;
@@ -359,7 +355,7 @@ bool DCStarter::startSSHD(char const *known_hosts_file,char const *private_clien
 	if( !success ) {
 		std::string remote_error_msg;
 		result.LookupString(ATTR_ERROR_STRING,remote_error_msg);
-		error_msg.formatstr("%s: %s",slot_name,remote_error_msg.c_str());
+		formatstr(error_msg, "%s: %s",slot_name,remote_error_msg.c_str());
 		retry_is_sensible = false;
 		result.LookupBool(ATTR_RETRY,retry_is_sensible);
 		return false;
@@ -389,20 +385,20 @@ bool DCStarter::startSSHD(char const *known_hosts_file,char const *private_clien
 	}
 	FILE *fp = safe_fcreate_fail_if_exists(private_client_key_file,"a",0400);
 	if( !fp ) {
-		error_msg.formatstr("Failed to create %s: %s",
+		formatstr(error_msg, "Failed to create %s: %s",
 						  private_client_key_file,strerror(errno));
 		free( decode_buf );
 		return false;
 	}
 	if( fwrite(decode_buf,length,1,fp)!=1 ) {
-		error_msg.formatstr("Failed to write to %s: %s",
+		formatstr(error_msg, "Failed to write to %s: %s",
 						  private_client_key_file,strerror(errno));
 		fclose( fp );
 		free( decode_buf );
 		return false;
 	}
 	if( fclose(fp)!=0 ) {
-		error_msg.formatstr("Failed to close %s: %s",
+		formatstr(error_msg, "Failed to close %s: %s",
 						  private_client_key_file,strerror(errno));
 		free( decode_buf );
 		return false;
@@ -421,7 +417,7 @@ bool DCStarter::startSSHD(char const *known_hosts_file,char const *private_clien
 	}
 	fp = safe_fcreate_fail_if_exists(known_hosts_file,"a",0600);
 	if( !fp ) {
-		error_msg.formatstr("Failed to create %s: %s",
+		formatstr(error_msg, "Failed to create %s: %s",
 						  known_hosts_file,strerror(errno));
 		free( decode_buf );
 		return false;
@@ -432,7 +428,7 @@ bool DCStarter::startSSHD(char const *known_hosts_file,char const *private_clien
 	fprintf(fp,"* ");
 
 	if( fwrite(decode_buf,length,1,fp)!=1 ) {
-		error_msg.formatstr("Failed to write to %s: %s",
+		formatstr(error_msg, "Failed to write to %s: %s",
 						  known_hosts_file,strerror(errno));
 		fclose( fp );
 		free( decode_buf );
@@ -440,7 +436,7 @@ bool DCStarter::startSSHD(char const *known_hosts_file,char const *private_clien
 	}
 
 	if( fclose(fp)!=0 ) {
-		error_msg.formatstr("Failed to close %s: %s",
+		formatstr(error_msg, "Failed to close %s: %s",
 						  known_hosts_file,strerror(errno));
 		free( decode_buf );
 		return false;
@@ -456,7 +452,7 @@ bool DCStarter::startSSHD(char const *known_hosts_file,char const *private_clien
 bool
 DCStarter::peek(bool transfer_stdout, ssize_t &stdout_offset, bool transfer_stderr, ssize_t &stderr_offset, const std::vector<std::string> &filenames, std::vector<ssize_t> &offsets, size_t max_bytes, bool &retry_sensible, PeekGetFD &next, std::string &error_msg, unsigned timeout, const std::string &sec_session_id, DCTransferQueue *xfer_q)
 {
-	compat_classad::ClassAd ad;
+	ClassAd ad;
 	ad.InsertAttr(ATTR_JOB_OUTPUT, transfer_stdout);
 	ad.InsertAttr("OutOffset", stdout_offset);
 	ad.InsertAttr(ATTR_JOB_ERROR, transfer_stderr);
@@ -513,7 +509,7 @@ DCStarter::peek(bool transfer_stdout, ssize_t &stdout_offset, bool transfer_stde
 		return false;
 	}
 
-	compat_classad::ClassAd response;
+	ClassAd response;
 	sock.decode();
 	if (!getClassAd(&sock, response) || !sock.end_of_message())
 	{
@@ -608,7 +604,7 @@ DCStarter::peek(bool transfer_stdout, ssize_t &stdout_offset, bool transfer_stde
 	}
 	if (file_count != remote_file_count)
 	{
-		formatstr(error_msg, "Received %ld files, but remote side thought it sent %ld files\n", file_count, remote_file_count);
+		formatstr(error_msg, "Received %zu files, but remote side thought it sent %zu files\n", file_count, remote_file_count);
 		return false;
 	}
 	if ((total_files != file_count) && !error_msg.size())

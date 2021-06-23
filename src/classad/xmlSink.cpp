@@ -208,7 +208,7 @@ Unparse(
 			break;
 		}
 		case Value::BOOLEAN_VALUE: {
-			bool b;
+			bool b = false;
 			val.IsBooleanValue( b );
 			if (b) {
 				add_tag(buffer, XMLLexer::tagID_Bool, 
@@ -251,6 +251,7 @@ Unparse(
 			add_tag(buffer, XMLLexer::tagID_RelativeTime, XMLLexer::tagType_End);
 			break;
 		}
+		case Value::SCLASSAD_VALUE:
 		case Value::CLASSAD_VALUE: {
 			ClassAd *ad = NULL;
 			vector< pair<string,ExprTree*> > attrs;

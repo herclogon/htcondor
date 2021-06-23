@@ -52,7 +52,8 @@ print "Fetched collector address with l->GetCollectorAddress(): yields  $collect
 my $localconfig = $condor_instance_local->GetCondorConfig();
 
 # where am I running
-my $currenthost = CondorTest::getFqdnHost();
+my $currenthost = `condor_status -af Machine -limit 1`;
+chomp($currenthost);
 
 if($iswindows) {
 	my @nameparts = split /\./, $currenthost;
@@ -63,6 +64,7 @@ if($iswindows) {
 }
 
 my $sheddoneappend_condor_config = '
+	SHARED_PORT_PORT = 0
 	DAEMON_LIST = MASTER,SCHEDD,STARTD
 	MASTER_NAME = master_scheddone
 	SCHEDD_NAME = master_scheddone_schd
@@ -110,7 +112,7 @@ my $abort = sub {
 
 print "Start a job which runs from remote schedd - ";
 my $forever = SimpleJob::RunCheck(
-	duration => 0,
+	duration => 3600,
 	no_wait => 1,
 	#on_abort => $abort,
 );

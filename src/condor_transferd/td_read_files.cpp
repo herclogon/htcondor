@@ -23,7 +23,6 @@
 #include "condor_td.h"
 #include "extArray.h"
 #include "condor_classad.h"
-#include "MyString.h"
 #include "condor_attributes.h"
 #include "condor_ftp.h"
 
@@ -48,10 +47,10 @@ int
 TransferD::read_files_handler(int /* cmd */, Stream *sock) 
 {
 	ReliSock *rsock = (ReliSock*)sock;
-	MyString capability;
+	std::string capability;
 	int protocol = FTP_UNKNOWN;
 	TransferRequest *treq = NULL;
-	MyString fquser;
+	std::string fquser;
 	static int transfer_reaper_id = -1;
 	ThreadArg *thread_arg;
 	int tid;
@@ -117,7 +116,7 @@ TransferD::read_files_handler(int /* cmd */, Stream *sock)
 
 		dprintf(D_ALWAYS, "Client identity '%s' tried to read some files "
 			"using capability '%s', but there was no such capability. "
-			"Access denied.\n", fquser.Value(), capability.Value());
+			"Access denied.\n", fquser.c_str(), capability.c_str());
 		return CLOSE_STREAM;
 	}
 
@@ -137,7 +136,7 @@ TransferD::read_files_handler(int /* cmd */, Stream *sock)
 
 			dprintf(D_ALWAYS, "Client identity '%s' tried to read some files "
 				"using protocol '%d', but I don't support that protocol. "
-				"Access denied.\n", fquser.Value(), protocol);
+				"Access denied.\n", fquser.c_str(), protocol);
 			return CLOSE_STREAM;
 	}
 
@@ -151,7 +150,7 @@ TransferD::read_files_handler(int /* cmd */, Stream *sock)
 
 			dprintf(D_ALWAYS, "Client identity '%s' tried to read some files "
 				"to a transfer request that wasn't expecting to be read. "
-				"Access denied.\n", fquser.Value());
+				"Access denied.\n", fquser.c_str());
 	}
 
 	/////////////////////////////////////////////////////////////////////////
@@ -269,7 +268,7 @@ TransferD::read_files_thread(void *targ, Stream *sock)
 			return EXIT_FAILURE;
 		}
 
-		ftrans.setPeerVersion(treq->get_peer_version().Value());
+		ftrans.setPeerVersion(treq->get_peer_version().c_str());
 
 		// We're "uploading" from here to the client.
 		result = ftrans.UploadFiles();
@@ -318,7 +317,7 @@ int
 TransferD::read_files_reaper(int tid, int exit_status)
 {
 	TransferRequest *treq = NULL;
-	MyString str;
+	std::string str;
 	ClassAd result;
 	int exit_code;
 	int signal;
@@ -356,7 +355,7 @@ TransferD::read_files_reaper(int tid, int exit_status)
 		result.Assign(ATTR_TREQ_SIGNALED, TRUE);
 		result.Assign(ATTR_TREQ_SIGNAL, signal);
 		result.Assign(ATTR_TREQ_UPDATE_STATUS, "NOT OK");
-		str.formatstr("Died with signal %d", signal);
+		formatstr(str, "Died with signal %d", signal);
 		result.Assign(ATTR_TREQ_UPDATE_REASON, str);
 
 	} else {
@@ -374,7 +373,7 @@ TransferD::read_files_reaper(int tid, int exit_status)
 
 			default:
 				result.Assign(ATTR_TREQ_UPDATE_STATUS, "NOT OK");
-				str.formatstr("File transfer exited with incorrect exit code %d",
+				formatstr(str, "File transfer exited with incorrect exit code %d",
 					exit_code);
 				result.Assign(ATTR_TREQ_UPDATE_REASON, str);
 				result.Assign(ATTR_TREQ_SIGNALED, FALSE);

@@ -50,7 +50,7 @@ const char STR_DEFAULT_CONDOR_SERVICE[] = "host";
 #define KERBEROS_MUTUAL  3
 #define KERBEROS_PROCEED 4
 
-HashTable<MyString, MyString> * Condor_Auth_Kerberos::RealmMap = 0;
+HashTable<std::string, std::string> * Condor_Auth_Kerberos::RealmMap = 0;
 //----------------------------------------------------------------------
 // Kerberos Implementation
 //----------------------------------------------------------------------
@@ -627,10 +627,10 @@ int Condor_Auth_Kerberos :: init_daemon()
 	sname = tmpsname;
 	free (tmpsname);
 
-	dprintf(D_SECURITY, "init_daemon: Trying to get tgt credential for service %s\n", sname.Value());
+	dprintf(D_SECURITY, "init_daemon: Trying to get tgt credential for service %s\n", sname.c_str());
 
 	priv = set_root_priv();   // Get the old privilige
-	code = (*krb5_get_init_creds_keytab_ptr)(krb_context_, creds_, krb_principal_, keytab, 0, const_cast<char*>(sname.Value()), 0);
+	code = (*krb5_get_init_creds_keytab_ptr)(krb_context_, creds_, krb_principal_, keytab, 0, const_cast<char*>(sname.c_str()), 0);
 	set_priv(priv);
 	if(code) {
 		goto error;
@@ -1280,13 +1280,13 @@ int Condor_Auth_Kerberos :: map_domain_name(const char * domain)
     // two cases, if domain is the same as the current uid domain,
     // then we are okay, other wise, see if we have a map
     if (RealmMap) {
-        MyString from(domain), to;
+        std::string from(domain), to;
         if (RealmMap->lookup(from, to) != -1) {
 			if (IsFulldebug(D_SECURITY)) {
 				dprintf (D_SECURITY, "KERBEROS: mapping realm %s to domain %s.\n", 
-					from.Value(), to.Value());
+					from.c_str(), to.c_str());
 			}
-            setRemoteDomain(to.Value());
+            setRemoteDomain(to.c_str());
             return TRUE;
         } else {
 			// if the map exists, they must be listed.  and they're NOT!
@@ -1298,8 +1298,8 @@ int Condor_Auth_Kerberos :: map_domain_name(const char * domain)
 	if (IsDebugVerbose(D_SECURITY)) {
 		dprintf (D_SECURITY, "KERBEROS: mapping realm %s to domain %s.\n", 
 			domain, domain);
-		setRemoteDomain(domain);
 	}
+	setRemoteDomain(domain);
 	return TRUE;
 
 }
@@ -1354,7 +1354,7 @@ int Condor_Auth_Kerberos :: init_realm_mapping()
 		char *f, * t;
 		while ( (f = from.next()) ) {
 			t = to.next();
-			RealmMap->insert(MyString(f), MyString(t));
+			RealmMap->insert(std::string(f), std::string(t));
 			from.deleteCurrent();
 			to.deleteCurrent();
 		}
@@ -1420,76 +1420,59 @@ int Condor_Auth_Kerberos :: init_server_info()
     //  dprintf(D_ALWAYS,"KERBEROS: Unable to stash ticket -- STASH directory is not defined!\n");
     //}
 
-    char * serverPrincipal = param(STR_KERBEROS_SERVER_PRINCIPAL);
-    krb5_principal * server;
+    int err = 0;
 
-	if (mySock_->isClient()) {
-		server = &server_;
-	} else {
-		server = &krb_principal_;
-	}
+    // if we are client side, figure out remote server_ credentials
+    if (mySock_->isClient()) {
 
-    if (serverPrincipal) {
-    	if ((*krb5_parse_name_ptr)(krb_context_,serverPrincipal,server)) {
-        	dprintf(D_SECURITY, "Failed to build server principal\n");
-			free (serverPrincipal);
-        	return 0;
-		}
-		free (serverPrincipal);
-    } else {
-		int  size;
-		char *name = 0;
-		const char *instance = 0;
-		MyString hostname;
+		std::string remoteName = get_hostname(mySock_->peer_addr());
 
-		serverPrincipal = param(STR_KERBEROS_SERVER_SERVICE);
-		if(!serverPrincipal) {
-			serverPrincipal = strdup(STR_DEFAULT_CONDOR_SERVICE);
-		}
+        char *service = param(STR_KERBEROS_SERVER_SERVICE);
+        if (!service)
+            service = strdup(STR_DEFAULT_CONDOR_SERVICE);
 
-		size = strlen(serverPrincipal);
+        err = (*krb5_sname_to_principal_ptr)(krb_context_, remoteName.c_str(), service, KRB5_NT_SRV_HST, &server_);
+        dprintf(D_SECURITY, "KERBEROS: get remote server principal for \"%s/%s\"%s\n",
+                service, remoteName.c_str(), err ? " FAILED" : "");
 
-		if ((instance = strchr( serverPrincipal, '/')) != NULL) {
-			size = instance - serverPrincipal;
-			instance += 1;
-		}
+        if (!err)
+            err = !map_kerberos_name(&server_);
 
-		name = (char *) malloc(size + 1);
-		ASSERT( name );
-		memset(name, 0, size + 1);
-		strncpy(name, serverPrincipal, size);
+    } else { // we are the server itself
 
-		if (mySock_->isClient()) {
-			if (instance == 0) {
-				hostname = get_hostname(mySock_->peer_addr());
-				instance = hostname.Value();
-			}
-		}
+        char * principal = param(STR_KERBEROS_SERVER_PRINCIPAL);
 
-		//------------------------------------------
-		// First, find out the principal mapping
-		//------------------------------------------
-		if ((*krb5_sname_to_principal_ptr)(krb_context_,instance,name,KRB5_NT_SRV_HST,server)) {
-			dprintf(D_SECURITY, "Failed to build server principal\n");
-			free(name);
-			free(serverPrincipal);
-			return 0;
-		}
-		free(name);
-		free(serverPrincipal);
-	}
+        // if server principal is set then this overrides detection
+        if (principal) {
 
-	if ( mySock_->isClient() && !map_kerberos_name( server ) ) {
-		dprintf(D_SECURITY, "Failed to map principal to user\n");
-		return 0;
-	}
+            err = (*krb5_parse_name_ptr)(krb_context_, principal, &krb_principal_);
+            dprintf(D_SECURITY, "KERBEROS: set local server principal from %s = \"%s\"%s\n",
+                    STR_KERBEROS_SERVER_PRINCIPAL, principal, err ? " FAILED" : "");
 
-	char * tmp = 0;
-    (*krb5_unparse_name_ptr)(krb_context_, *server, &tmp);
-	dprintf(D_SECURITY, "KERBEROS: Server principal is %s\n", tmp);
-	free(tmp);
+            free (principal);
 
-    return 1;
+        } else { // server side but no principal set, so get from service (note this is duplicated in init_daemon)
+
+            char *service = param(STR_KERBEROS_SERVER_SERVICE);
+            if (!service)
+                service = strdup(STR_DEFAULT_CONDOR_SERVICE);
+
+            err = (*krb5_sname_to_principal_ptr)(krb_context_, NULL, service, KRB5_NT_SRV_HST, &krb_principal_);
+            dprintf(D_SECURITY, "KERBEROS: get local server principal for \"%s\" %s\n",
+                    service, err ? " FAILED" : "");
+
+            free (service);
+        }
+    }
+
+    if (IsDebugLevel(D_SECURITY) && !err) {
+        char *tmp;
+        if (!(*krb5_unparse_name_ptr)(krb_context_, mySock_->isClient() ? krb_principal_ : server_, &tmp))
+	    dprintf(D_SECURITY, "KERBEROS: the server principal is \"%s\"\n", tmp);
+        free(tmp);
+    }
+
+    return !err;
 }
 
 
@@ -1532,22 +1515,31 @@ int Condor_Auth_Kerberos :: read_request(krb5_data * request)
 void Condor_Auth_Kerberos :: setRemoteAddress()
 {
     krb5_error_code  code;
-    krb5_address  ** remoteAddr = NULL;
-    
+
+    // the krb5_free_addresses function takes a NULL-terminate array of addrs,
+    // not just an address of a krb5_address*
+    //
+    // it (somewhat surprisingly) also calls free on the array itself, so
+    // allocate it with malloc() and not on the stack!
+    krb5_address**  remoteAddrs;
+    remoteAddrs = (krb5_address**)malloc(2*sizeof(krb5_address*));
+    remoteAddrs[0] = NULL;  // this one we will use
+    remoteAddrs[1] = NULL;  // keep this entry NULL so we can free everything later
+
     // Get remote host's address first
-    
     if ((code = (*krb5_auth_con_getaddrs_ptr)(krb_context_, 
                                       auth_context_, 
                                       NULL, 
-                                      remoteAddr))) {
+                                      &(remoteAddrs[0])))) {
         goto error;
     }
+    dprintf(D_SECURITY | D_VERBOSE, "KERBEROS: remoteAddrs[] is {%p, %p}\n", remoteAddrs[0], remoteAddrs[1]);
     
-    if (remoteAddr) {
+    if (remoteAddrs[0]) {
         struct in_addr in;
-        memcpy(&(in.s_addr), (*remoteAddr)[0].contents, sizeof(in_addr));
+        memcpy(&(in.s_addr), (remoteAddrs[0])[0].contents, sizeof(in_addr));
         setRemoteHost(inet_ntoa(in));
-        (*krb5_free_addresses_ptr)(krb_context_, remoteAddr);
+        (*krb5_free_addresses_ptr)(krb_context_, remoteAddrs);
     }
     
     dprintf(D_SECURITY, "Remote host is %s\n", getRemoteHost());

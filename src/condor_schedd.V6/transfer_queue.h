@@ -55,15 +55,15 @@ class TransferQueueRequest {
 
 	bool SendGoAhead(XFER_QUEUE_ENUM go_ahead=XFER_QUEUE_GO_AHEAD,char const *reason=NULL);
 
-	bool ReadReport(class TransferQueueManager *manager);
+	bool ReadReport(class TransferQueueManager *manager) const;
 
 	ReliSock *m_sock;
-	MyString m_queue_user;   // Name of file transfer queue user. (TRANSFER_QUEUE_USER_EXPR)
+	std::string m_queue_user;   // Name of file transfer queue user. (TRANSFER_QUEUE_USER_EXPR)
 	std::string m_up_down_queue_user; // queue user prefixed by "U" or "D" for upload/download
-	MyString m_jobid;   // For information purposes, the job associated with
+	std::string  m_jobid;   // For information purposes, the job associated with
 	                    // this file transfer.
 	double m_sandbox_size_MB;
-	MyString m_fname;   // File this client originally requested to transfer.
+	std::string  m_fname;   // File this client originally requested to transfer.
 	                    // In current implementation, it may silently move on
 	                    // to a different file without notifying us.
 	bool m_downloading; // true if client wants to download a file; o.w. upload
@@ -75,7 +75,7 @@ class TransferQueueRequest {
 	time_t m_time_born;
 	time_t m_time_go_ahead;
 
-	MyString m_description; // buffer for Description()
+	std::string m_description; // buffer for Description()
 };
 
 class TransferQueueManager: public Service {
@@ -98,16 +98,16 @@ class TransferQueueManager: public Service {
 		// This is called to register a future call to CheckTransferQueue.
 	void TransferQueueChanged();
 
-	bool GetContactInfo(char const *command_sock_addr, std::string &contact_str);
+	bool GetContactInfo(char const *command_sock_addr, std::string &contact_str) const;
 
-	int GetNumUploading() { return m_uploading; }
-	int GetNumDownloading() { return m_downloading; }
-	int GetNumWaitingToUpload() { return m_waiting_to_upload; }
-	int GetNumWaitingToDownload() { return m_waiting_to_download; }
-	int GetUploadWaitTime() { return m_upload_wait_time; }
-	int GetDownloadWaitTime() { return m_download_wait_time; }
-	int GetMaxUploading() { return m_max_uploads; }
-	int GetMaxDownloading() { return m_max_downloads; }
+	int GetNumUploading() const { return m_uploading; }
+	int GetNumDownloading() const { return m_downloading; }
+	int GetNumWaitingToUpload() const { return m_waiting_to_upload; }
+	int GetNumWaitingToDownload() const { return m_waiting_to_download; }
+	int GetUploadWaitTime() const { return m_upload_wait_time; }
+	int GetDownloadWaitTime() const { return m_download_wait_time; }
+	int GetMaxUploading() const { return m_max_uploads; }
+	int GetMaxDownloading() const { return m_max_downloads; }
 
 	void publish(ClassAd *ad);
 	void publish(ClassAd *ad, char const *publish_config);

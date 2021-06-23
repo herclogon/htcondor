@@ -158,7 +158,7 @@ DCTransferQueue::~DCTransferQueue( void )
 }
 
 bool
-DCTransferQueue::GoAheadAlways( bool downloading ) {
+DCTransferQueue::GoAheadAlways( bool downloading ) const {
 	if( downloading ) {
 		return m_unlimited_downloads;
 	}
@@ -168,7 +168,7 @@ DCTransferQueue::GoAheadAlways( bool downloading ) {
 }
 
 bool
-DCTransferQueue::RequestTransferQueueSlot(bool downloading,filesize_t sandbox_size,char const *fname,char const *jobid,char const *queue_user,int timeout,MyString &error_desc)
+DCTransferQueue::RequestTransferQueueSlot(bool downloading,filesize_t sandbox_size,char const *fname,char const *jobid,char const *queue_user,int timeout,std::string &error_desc)
 {
 	ASSERT(fname);
 	ASSERT(jobid);
@@ -270,7 +270,7 @@ DCTransferQueue::RequestTransferQueueSlot(bool downloading,filesize_t sandbox_si
 }
 
 bool
-DCTransferQueue::PollForTransferQueueSlot(int timeout,bool &pending,MyString &error_desc)
+DCTransferQueue::PollForTransferQueueSlot(int timeout,bool &pending,std::string &error_desc)
 {
 	if( GoAheadAlways( m_xfer_downloading ) ) {
 		return true;
@@ -448,7 +448,9 @@ DCTransferQueue::SendReport(time_t now,bool disconnect)
 		}
 		if( disconnect ) {
 				// Tell the server we are done.
-			m_xfer_queue_sock->put("");
+			if (!m_xfer_queue_sock->put("")) {
+				dprintf(D_ALWAYS,"Failed to send disconnect request.\n");
+			}
 			m_xfer_queue_sock->end_of_message();
 		}
 	}

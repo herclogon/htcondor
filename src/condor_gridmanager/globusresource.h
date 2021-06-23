@@ -23,6 +23,7 @@
 
 #include "condor_common.h"
 #include "condor_daemon_core.h"
+#include <map>
 
 #include "proxymanager.h"
 #include "baseresource.h"
@@ -46,7 +47,7 @@ class GlobusResource : public BaseResource
 	void Reconfig();
 	void UnregisterJob( BaseJob *job );
 
-	bool IsGt5() { return m_isGt5; }
+	bool IsGt5() const { return m_isGt5; }
 
 	bool RequestJM( GlobusJob *job, bool is_submit );
 	void JMComplete( GlobusJob *job );
@@ -54,12 +55,12 @@ class GlobusResource : public BaseResource
 	int GetJMLimit( bool for_submit )
 		{ return for_submit ? submitJMLimit : restartJMLimit; };
 
-	bool GridJobMonitorActive() { return monitorActive; }
-	int LastGridJobMonitorUpdate() { return jobStatusFileLastUpdate; }
-	bool GridMonitorFirstStartup() { return monitorFirstStartup; }
+	bool GridJobMonitorActive() const { return monitorActive; }
+	int LastGridJobMonitorUpdate() const { return jobStatusFileLastUpdate; }
+	bool GridMonitorFirstStartup() const { return monitorFirstStartup; }
 
 	static const char *CanonicalName( const char *name );
-	static const char *HashName( const char *resource_name,
+	static std::string & HashName( const char *resource_name,
 								 const char *proxy_subject );
 
 	static GlobusResource *FindOrCreateResource( const char *resource_name,
@@ -83,7 +84,7 @@ class GlobusResource : public BaseResource
 	void gridMonitorCallback( int state, int errorcode );
 
 	// This should be private, but GlobusJob references it directly for now
-	static HashTable <std::string, GlobusResource *> ResourcesByName;
+	static std::map <std::string, GlobusResource *> ResourcesByName;
 
 		// This is the gram job contact string for the grid monitor job.
 	char *monitorGramJobId;

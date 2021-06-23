@@ -24,10 +24,39 @@
 #include "condor_sinful.h"
 #include "util_lib_proto.h"
 #include "condor_open.h"
+#include "generic_stats.h"
 
 #ifdef CONDOR_HAVE_EPOLL
 #include <sys/epoll.h>
 #endif
+
+struct CCBStats {
+	stats_entry_abs<int> CCBEndpointsConnected;
+	stats_entry_abs<int> CCBEndpointsRegistered;
+	stats_entry_recent<int> CCBReconnects;
+	stats_entry_recent<int> CCBRequests;
+	stats_entry_recent<int> CCBRequestsNotFound;
+	stats_entry_recent<int> CCBRequestsSucceeded;
+	stats_entry_recent<int> CCBRequestsFailed;
+
+	void AddStatsToPool(StatisticsPool& pool, int publevel)
+	{
+		STATS_POOL_ADD(pool, "", CCBEndpointsConnected, publevel);
+		STATS_POOL_ADD(pool, "", CCBEndpointsRegistered, publevel);
+		STATS_POOL_ADD(pool, "", CCBReconnects, publevel);
+		STATS_POOL_ADD(pool, "", CCBRequests, publevel);
+		STATS_POOL_ADD(pool, "", CCBRequestsNotFound, publevel);
+		STATS_POOL_ADD(pool, "", CCBRequestsSucceeded, publevel);
+		STATS_POOL_ADD(pool, "", CCBRequestsFailed, publevel);
+	}
+};
+
+static CCBStats ccb_stats;
+
+void AddCCBStatsToPool(StatisticsPool& pool, int publevel)
+{
+	ccb_stats.AddStatsToPool(pool, publevel);
+}
 
 static size_t
 ccbid_hash(const CCBID &ccbid) {
@@ -44,10 +73,10 @@ CCBServer::CCBIDFromString(CCBID &ccbid,char const *ccbid_str)
 }
 
 static char const *
-CCBIDToString(CCBID ccbid,MyString &ccbid_str)
+CCBIDToString(CCBID ccbid,std::string &ccbid_str)
 {
-	ccbid_str.formatstr("%lu",ccbid);
-	return ccbid_str.Value();
+	formatstr(ccbid_str,"%lu",ccbid);
+	return ccbid_str.c_str();
 }
 
 static bool
@@ -62,9 +91,9 @@ CCBIDFromContactString(CCBID &ccbid,char const *ccb_contact)
 }
 
 void
-CCBServer::CCBIDToContactString(char const *my_address,CCBID ccbid,MyString &ccb_contact)
+CCBServer::CCBIDToContactString(char const *my_address,CCBID ccbid,std::string &ccb_contact)
 {
-	ccb_contact.formatstr("%s#%lu",my_address,ccbid);
+	formatstr(ccb_contact,"%s#%lu",my_address,ccbid);
 }
 
 CCBServer::CCBServer():
@@ -117,13 +146,21 @@ CCBServer::RegisterHandlers()
 	}
 	m_registered_handlers = true;
 
+		// Note that we allow several different permission levels to
+		// register; however, the DAEMON permission level is the primary
+		// in terms of determining policy.
+	std::vector<DCpermission> alternate_perms{ADVERTISE_STARTD_PERM, ADVERTISE_SCHEDD_PERM, ADVERTISE_MASTER_PERM};
 	int rc = daemonCore->Register_CommandWithPayload(
 		CCB_REGISTER,
 		"CCB_REGISTER",
 		(CommandHandlercpp)&CCBServer::HandleRegistration,
 		"CCBServer::HandleRegistration",
 		this,
-		DAEMON);
+		DAEMON,
+		D_COMMAND,
+		false,
+		STANDARD_COMMAND_PAYLOAD_TIMEOUT,
+		&alternate_perms);
 	ASSERT( rc >= 0 );
 
 	rc = daemonCore->Register_CommandWithPayload(
@@ -162,11 +199,11 @@ CCBServer::InitAndReconfig()
 
 	m_reconnect_allowed_from_any_ip = param_boolean("CCB_RECONNECT_ALLOWED_FROM_ANY_IP", false);
 
-	MyString old_reconnect_fname = m_reconnect_fname;
+	std::string old_reconnect_fname = m_reconnect_fname;
 	char *fname = param("CCB_RECONNECT_FILE");
 	if( fname ) {
 		m_reconnect_fname = fname;
-		if( m_reconnect_fname.find(".ccb_reconnect") == -1 ) {
+		if( m_reconnect_fname.find(".ccb_reconnect") == std::string::npos ) {
 			// required for preen to ignore this file
 			m_reconnect_fname += ".ccb_reconnect";
 		}
@@ -189,28 +226,28 @@ CCBServer::InitAndReconfig()
 			myHost = strdup( "localhost" );
 		}
 
-		m_reconnect_fname.formatstr("%s%c%s-%s.ccb_reconnect",
+		formatstr(m_reconnect_fname, "%s%c%s-%s.ccb_reconnect",
 			spool,
 			DIR_DELIM_CHAR,
 			myHost,
-			my_addr.getPort() ? my_addr.getPort() : "0");
-dprintf( D_ALWAYS, "m_reconnect_fname = %s\n", m_reconnect_fname.Value() );
+			my_addr.getSharedPortID() ?	my_addr.getSharedPortID() :
+				my_addr.getPort() ? my_addr.getPort() : "0" );
 
 		free( myHost );
 		free( spool );
 	}
 
 	if( old_reconnect_fname != m_reconnect_fname &&
-		!old_reconnect_fname.IsEmpty() &&
-		!m_reconnect_fname.IsEmpty() )
+		!old_reconnect_fname.empty() &&
+		!m_reconnect_fname.empty() )
 	{
 		// reconnect filename changed
 		// not worth freaking out on error here
-		IGNORE_RETURN remove( m_reconnect_fname.Value() );
-		IGNORE_RETURN rename( old_reconnect_fname.Value(), m_reconnect_fname.Value() );
+		IGNORE_RETURN remove( m_reconnect_fname.c_str() );
+		IGNORE_RETURN rename( old_reconnect_fname.c_str(), m_reconnect_fname.c_str() );
 	}
-	if( old_reconnect_fname.IsEmpty() &&
-		!m_reconnect_fname.IsEmpty() &&
+	if( old_reconnect_fname.empty() &&
+		!m_reconnect_fname.empty() &&
 		m_reconnect_info.getNumElements() == 0 )
 	{
 		// we are starting up from scratch, so load saved info
@@ -430,22 +467,22 @@ CCBServer::HandleRegistration(int cmd,Stream *stream)
 
 	SetSmallBuffers(sock);
 
-	MyString name;
+	std::string name;
 	if( msg.LookupString(ATTR_NAME,name) ) {
 			// target daemon name is purely for debugging purposes
-		name.formatstr_cat(" on %s",sock->peer_description());
-		sock->set_peer_description(name.Value());
+		formatstr_cat(name, " on %s", sock->peer_description());
+		sock->set_peer_description(name.c_str());
 	}
 
 	CCBTarget *target = new CCBTarget(sock);
 
-	MyString reconnect_cookie_str,reconnect_ccbid_str;
+	std::string reconnect_cookie_str,reconnect_ccbid_str;
 	CCBID reconnect_cookie,reconnect_ccbid;
 	bool reconnected = false;
 	if( msg.LookupString(ATTR_CLAIM_ID,reconnect_cookie_str) &&
-		CCBIDFromString(reconnect_cookie,reconnect_cookie_str.Value()) &&
+		CCBIDFromString(reconnect_cookie,reconnect_cookie_str.c_str()) &&
 		msg.LookupString( ATTR_CCBID,reconnect_ccbid_str) &&
-		CCBIDFromContactString(reconnect_ccbid,reconnect_ccbid_str.Value()) )
+		CCBIDFromContactString(reconnect_ccbid,reconnect_ccbid_str.c_str()) )
 	{
 		target->setCCBID( reconnect_ccbid );
 		reconnected = ReconnectTarget( target, reconnect_cookie );
@@ -461,7 +498,7 @@ CCBServer::HandleRegistration(int cmd,Stream *stream)
 	sock->encode();
 
 	ClassAd reply_msg;
-	MyString ccb_contact;
+	std::string ccb_contact;
 
 
 		// We send our address as part of the CCB contact string, rather
@@ -469,13 +506,13 @@ CCBServer::HandleRegistration(int cmd,Stream *stream)
 		// potential flexibility on the CCB server side to do things like
 		// assign different targets to different CCB server sub-processes,
 		// each with their own command port.
-	CCBIDToContactString( m_address.Value(), target->getCCBID(), ccb_contact );
+	CCBIDToContactString( m_address.c_str(), target->getCCBID(), ccb_contact );
 
 	CCBIDToString( reconnect_info->getReconnectCookie(),reconnect_cookie_str );
 
-	reply_msg.Assign(ATTR_CCBID,ccb_contact.Value());
+	reply_msg.Assign(ATTR_CCBID,ccb_contact);
 	reply_msg.Assign(ATTR_COMMAND,CCB_REGISTER);
-	reply_msg.Assign(ATTR_CLAIM_ID,reconnect_cookie_str.Value());
+	reply_msg.Assign(ATTR_CLAIM_ID,reconnect_cookie_str);
 
 	if( !putClassAd( sock, reply_msg ) || !sock->end_of_message() ) {
 		dprintf(D_ALWAYS,
@@ -490,7 +527,7 @@ CCBServer::HandleRegistration(int cmd,Stream *stream)
 }
 
 void
-CCBServer::SetSmallBuffers(Sock *sock)
+CCBServer::SetSmallBuffers(Sock *sock) const
 {
 		// Adjust socket buffers so we can have loads of these sockets
 		// without chewing up too much memory.  We expect to just send
@@ -519,15 +556,15 @@ CCBServer::HandleRequest(int cmd,Stream *stream)
 		return FALSE;
 	}
 
-	MyString name;
+	std::string name;
 	if( msg.LookupString(ATTR_NAME,name) ) {
 			// client name is purely for debugging purposes
-		name.formatstr_cat(" on %s",sock->peer_description());
-		sock->set_peer_description(name.Value());
+		formatstr_cat(name, " on %s", sock->peer_description());
+		sock->set_peer_description(name.c_str());
 	}
-	MyString target_ccbid_str;
-	MyString return_addr;
-	MyString connect_id; // id target daemon should present to requester
+	std::string target_ccbid_str;
+	std::string return_addr;
+	std::string connect_id; // id target daemon should present to requester
 	CCBID target_ccbid;
 
 		// NOTE: using ATTR_CLAIM_ID for connect id so that it is
@@ -540,17 +577,17 @@ CCBServer::HandleRequest(int cmd,Stream *stream)
 		!msg.LookupString(ATTR_MY_ADDRESS,return_addr) ||
 		!msg.LookupString(ATTR_CLAIM_ID,connect_id) )
 	{
-		MyString ad_str;
+		std::string ad_str;
 		sPrintAd(ad_str, msg);
 		dprintf(D_ALWAYS,
 				"CCB: invalid request from %s: %s\n",
-				sock->peer_description(), ad_str.Value() );
+				sock->peer_description(), ad_str.c_str() );
 		return FALSE;
 	}
-	if( !CCBIDFromString(target_ccbid,target_ccbid_str.Value()) ) {
+	if( !CCBIDFromString(target_ccbid,target_ccbid_str.c_str()) ) {
 		dprintf(D_ALWAYS,
 				"CCB: request from %s contains invalid CCBID %s\n",
-				sock->peer_description(), target_ccbid_str.Value() );
+				sock->peer_description(), target_ccbid_str.c_str() );
 		return FALSE;
 	}
 
@@ -560,14 +597,16 @@ CCBServer::HandleRequest(int cmd,Stream *stream)
 			"CCB: rejecting request from %s for ccbid %s because no daemon is "
 			"currently registered with that id "
 			"(perhaps it recently disconnected).\n",
-			sock->peer_description(), target_ccbid_str.Value());
+			sock->peer_description(), target_ccbid_str.c_str());
 
-		MyString error_msg;
-		error_msg.formatstr(
+		std::string error_msg;
+		formatstr( error_msg,
 			"CCB server rejecting request for ccbid %s because no daemon is "
 			"currently registered with that id "
-			"(perhaps it recently disconnected).", target_ccbid_str.Value());
-		RequestReply( sock, false, error_msg.Value(), 0, target_ccbid );
+			"(perhaps it recently disconnected).", target_ccbid_str.c_str());
+		RequestReply( sock, false, error_msg.c_str(), 0, target_ccbid );
+		ccb_stats.CCBRequests += 1;
+		ccb_stats.CCBRequestsNotFound += 1;
 		return FALSE;
 	}
 
@@ -577,8 +616,8 @@ CCBServer::HandleRequest(int cmd,Stream *stream)
 		new CCBServerRequest(
 			sock,
 			target_ccbid,
-			return_addr.Value(),
-			connect_id.Value() );
+			return_addr.c_str(),
+			connect_id.c_str() );
 	AddRequest( request, target );
 
 	dprintf(D_FULLDEBUG,
@@ -586,7 +625,7 @@ CCBServer::HandleRequest(int cmd,Stream *stream)
 			"(registered as %s)\n",
 			request->getRequestID(),
 			request->getSock()->peer_description(),
-			target_ccbid_str.Value(),
+			target_ccbid_str.c_str(),
 			target->getSock()->peer_description());
 
 	ForwardRequestToTarget( request, target );
@@ -631,24 +670,24 @@ CCBServer::HandleRequestResultsMsg( CCBTarget *target )
 	target->decPendingRequestResults();
 
 	bool success = false;
-	MyString error_msg;
-	MyString reqid_str;
+	std::string error_msg;
+	std::string reqid_str;
 	CCBID reqid;
-	MyString connect_id;
+	std::string connect_id;
 	msg.LookupBool( ATTR_RESULT, success );
 	msg.LookupString( ATTR_ERROR_STRING, error_msg );
 	msg.LookupString( ATTR_REQUEST_ID, reqid_str );
 	msg.LookupString( ATTR_CLAIM_ID, connect_id );
 
-	if( !CCBIDFromString( reqid, reqid_str.Value() ) ) {
-		MyString msg_str;
+	if( !CCBIDFromString( reqid, reqid_str.c_str() ) ) {
+		std::string msg_str;
 		sPrintAd(msg_str, msg);
 		dprintf(D_ALWAYS,
 				"CCB: received reply from target daemon %s with ccbid %lu "
 				"without a valid request id: %s\n",
 				sock->peer_description(),
 				target->getCCBID(),
-				msg_str.Value());
+				msg_str.c_str());
 		RemoveTarget( target );
 		return;
 	}
@@ -659,6 +698,11 @@ CCBServer::HandleRequestResultsMsg( CCBTarget *target )
 		// logs when we fail to write to it, delete the request now.
 		RemoveRequest( request );
 		request = NULL;
+		if (success) {
+			ccb_stats.CCBRequestsSucceeded += 1;
+		} else {
+			ccb_stats.CCBRequestsFailed += 1;
+		}
 	}
 
 	char const *request_desc = "(client which has gone away)";
@@ -672,7 +716,7 @@ CCBServer::HandleRequestResultsMsg( CCBTarget *target )
 				"request %s from %s.\n",
 				sock->peer_description(),
 				target->getCCBID(),
-				reqid_str.Value(),
+				reqid_str.c_str(),
 				request_desc);
 	}
 	else {
@@ -681,9 +725,9 @@ CCBServer::HandleRequestResultsMsg( CCBTarget *target )
 				"request %s from %s: %s\n",
 				sock->peer_description(),
 				target->getCCBID(),
-				reqid_str.Value(),
+				reqid_str.c_str(),
 				request_desc,
-				error_msg.Value());
+				error_msg.c_str());
 	}
 
 	if( !request ) {
@@ -694,27 +738,25 @@ CCBServer::HandleRequestResultsMsg( CCBTarget *target )
 		dprintf( D_FULLDEBUG,
 				 "CCB: client for request %s to target daemon %s with ccbid "
 				 "%lu disappeared before receiving error details.\n",
-				 reqid_str.Value(),
+				 reqid_str.c_str(),
 				 sock->peer_description(),
 				 target->getCCBID());
 		return;
 	}
 	if( connect_id != request->getConnectID() ) {
-		MyString msg_str;
-		sPrintAd(msg_str, msg);
 		dprintf( D_FULLDEBUG,
 				 "CCB: received wrong connect id (%s) from target daemon %s "
 				 "with ccbid %lu for "
 				 "request %s\n",
-				 connect_id.Value(),
+				 connect_id.c_str(),
 				 sock->peer_description(),
 				 target->getCCBID(),
-				 reqid_str.Value());
+				 reqid_str.c_str());
 		RemoveTarget( target );
 		return;
 	}
 
-	RequestFinished( request, success, error_msg.Value() );
+	RequestFinished( request, success, error_msg.c_str() );
 }
 
 void
@@ -751,7 +793,7 @@ CCBServer::ForwardRequestToTarget( CCBServerRequest *request, CCBTarget *target 
 	// for easier debugging
 	msg.Assign( ATTR_NAME, request->getSock()->peer_description() );
 
-	MyString reqid_str;
+	std::string reqid_str;
 	CCBIDToString( request->getRequestID(), reqid_str);
 	msg.Assign( ATTR_REQUEST_ID, reqid_str );
 
@@ -828,6 +870,11 @@ CCBServer::RequestFinished( CCBServerRequest *request, bool success, char const 
 		request->getTargetCCBID() );
 
 	RemoveRequest( request );
+	if (success) {
+		ccb_stats.CCBRequestsSucceeded += 1;
+	} else {
+		ccb_stats.CCBRequestsFailed += 1;
+	}
 }
 
 CCBServerRequest *
@@ -915,6 +962,9 @@ CCBServer::ReconnectTarget( CCBTarget *target, CCBID reconnect_cookie )
 	ASSERT( m_targets.insert(target->getCCBID(),target) == 0 );
 	EpollAdd(target);
 
+	ccb_stats.CCBEndpointsConnected += 1;
+	ccb_stats.CCBReconnects += 1;
+
 	dprintf(D_FULLDEBUG,"CCB: reconnected target daemon %s with ccbid %lu\n",
 			target->getSock()->peer_description(),
 			target->getCCBID());
@@ -954,13 +1004,15 @@ CCBServer::AddTarget( CCBTarget *target )
 
 	// generate reconnect info for this new target daemon so that it
 	// can reclaim its CCBID
-	CCBID reconnect_cookie = get_random_uint();
+	CCBID reconnect_cookie = get_csrng_uint();
 	CCBReconnectInfo *reconnect_info = new CCBReconnectInfo(
 		target->getCCBID(),
 		reconnect_cookie,
 		target->getSock()->peer_ip_str());
 	AddReconnectInfo( reconnect_info );
 	SaveReconnectInfo( reconnect_info );
+
+	ccb_stats.CCBEndpointsConnected += 1;
 
 	dprintf(D_FULLDEBUG,"CCB: registered target daemon %s with ccbid %lu\n",
 			target->getSock()->peer_description(),
@@ -977,6 +1029,7 @@ CCBServer::RemoveTarget( CCBTarget *target )
 		trequests->startIterations();
 		if( trequests->iterate(request) ) {
 			RemoveRequest( request );
+			ccb_stats.CCBRequestsFailed += 1;
 			// note that trequests may point to a deleted hash table
 			// at this point, so do not reference it anymore
 		}
@@ -990,6 +1043,8 @@ CCBServer::RemoveTarget( CCBTarget *target )
 			   target->getCCBID(), target->getSock()->peer_description());
 	}
 	EpollRemove(target);
+
+	ccb_stats.CCBEndpointsConnected -= 1;
 
 	dprintf(D_FULLDEBUG,"CCB: unregistered target daemon %s with ccbid %lu\n",
 			target->getSock()->peer_description(),
@@ -1034,6 +1089,8 @@ CCBServer::AddRequest( CCBServerRequest *request, CCBTarget *target )
 	ASSERT( rc >= 0 );
 	rc = daemonCore->Register_DataPtr(request);
 	ASSERT( rc );
+
+	ccb_stats.CCBRequests += 1;
 }
 
 int
@@ -1041,6 +1098,7 @@ CCBServer::HandleRequestDisconnect( Stream * /*stream*/ )
 {
 	CCBServerRequest *request = (CCBServerRequest *)daemonCore->GetDataPtr();
 	RemoveRequest( request );
+	ccb_stats.CCBRequestsSucceeded += 1;
 	return KEEP_STREAM;
 }
 
@@ -1202,9 +1260,11 @@ void
 CCBServer::AddReconnectInfo( CCBReconnectInfo *reconnect_info )
 {
 	if( m_reconnect_info.insert(reconnect_info->getCCBID(),reconnect_info) == 0 ) {
+		ccb_stats.CCBEndpointsRegistered += 1;
 		return;
 	}
 
+	dprintf(D_ALWAYS, "CCBServer::AddReconnectInfo(): Found stale reconnect entry!\n");
 	ASSERT( m_reconnect_info.remove(reconnect_info->getCCBID()) == 0 );
 	ASSERT( m_reconnect_info.insert(reconnect_info->getCCBID(),reconnect_info) == 0);
 }
@@ -1214,6 +1274,8 @@ CCBServer::RemoveReconnectInfo( CCBReconnectInfo *reconnect_info )
 {
 	ASSERT( m_reconnect_info.remove(reconnect_info->getCCBID()) == 0 );
 	delete reconnect_info;
+
+	ccb_stats.CCBEndpointsRegistered -= 1;
 }
 
 void
@@ -1237,21 +1299,21 @@ CCBServer::OpenReconnectFile(bool only_if_exists)
 	if( m_reconnect_fp ) {
 		return true;
 	}
-	if( m_reconnect_fname.IsEmpty() ) {
+	if( m_reconnect_fname.empty() ) {
 		return false;
 	}
 	if( !only_if_exists ) {
-		m_reconnect_fp = safe_fcreate_fail_if_exists(m_reconnect_fname.Value(),"w+",0600);
+		m_reconnect_fp = safe_fcreate_fail_if_exists(m_reconnect_fname.c_str(),"w+",0600);
 	}
 	if( !m_reconnect_fp ) {
-		m_reconnect_fp = safe_fopen_no_create(m_reconnect_fname.Value(),"r+");
+		m_reconnect_fp = safe_fopen_no_create(m_reconnect_fname.c_str(),"r+");
 	}
 	if( !m_reconnect_fp ) {
 		if( only_if_exists && errno == ENOENT ) {
 			return false;
 		}
 		EXCEPT("CCB: Failed to open %s: %s",
-			   m_reconnect_fname.Value(),strerror(errno));
+			   m_reconnect_fname.c_str(),strerror(errno));
 	}
 	return true;
 }
@@ -1278,7 +1340,7 @@ CCBServer::LoadReconnectInfo()
 			!CCBIDFromString( cookie, cookie_str) )
 		{
 			dprintf(D_ALWAYS,"CCB: ERROR: line %lu is invalid in %s.", line,
-					m_reconnect_fname.Value());
+					m_reconnect_fname.c_str());
 			continue;
 		}
 
@@ -1296,7 +1358,7 @@ CCBServer::LoadReconnectInfo()
 	m_next_ccbid += 100;
 
 	dprintf(D_ALWAYS,"CCB: loaded %d reconnect records from %s.\n",
-			m_reconnect_info.getNumElements(), m_reconnect_fname.Value());
+			m_reconnect_info.getNumElements(), m_reconnect_fname.c_str());
 }
 
 bool
@@ -1309,18 +1371,18 @@ CCBServer::SaveReconnectInfo(CCBReconnectInfo *reconnect_info)
 	int rc = fseek(m_reconnect_fp,0,SEEK_END);
 	if( rc == -1 ) {
 		dprintf(D_ALWAYS,"CCB: failed to seek to end of %s: %s\n",
-				m_reconnect_fname.Value(), strerror(errno));
+				m_reconnect_fname.c_str(), strerror(errno));
 		return false;
 	}
 
-	MyString ccbid_str,cookie_str;
+	std::string ccbid_str,cookie_str;
 	rc = fprintf(m_reconnect_fp,"%s %s %s\n",
 		reconnect_info->getPeerIP(),
 		CCBIDToString(reconnect_info->getCCBID(),ccbid_str),
 		CCBIDToString(reconnect_info->getReconnectCookie(),cookie_str));
 	if( rc == -1 ) {
 		dprintf(D_ALWAYS,"CCB: failed to write reconnect info in %s: %s\n",
-				m_reconnect_fname.Value(), strerror(errno));
+				m_reconnect_fname.c_str(), strerror(errno));
 		return false;
 	}
 	return true;
@@ -1329,18 +1391,18 @@ CCBServer::SaveReconnectInfo(CCBReconnectInfo *reconnect_info)
 void
 CCBServer::SaveAllReconnectInfo()
 {
-	if( m_reconnect_fname.IsEmpty() ) {
+	if( m_reconnect_fname.empty() ) {
 		return;
 	}
 	CloseReconnectFile();
 
 	if( m_reconnect_info.getNumElements()==0 ) {
-		IGNORE_RETURN remove( m_reconnect_fname.Value() );
+		IGNORE_RETURN remove( m_reconnect_fname.c_str() );
 		return;
 	}
 
-	MyString orig_reconnect_fname = m_reconnect_fname;
-	m_reconnect_fname.formatstr_cat(".new");
+	std::string orig_reconnect_fname = m_reconnect_fname;
+	formatstr_cat(m_reconnect_fname, ".new");
 
 	if( !OpenReconnectFile() ) {
 		m_reconnect_fname = orig_reconnect_fname;
@@ -1354,17 +1416,17 @@ CCBServer::SaveAllReconnectInfo()
 			CloseReconnectFile();
 			m_reconnect_fname = orig_reconnect_fname;
 			dprintf(D_ALWAYS,"CCB: aborting rewriting of %s\n",
-					m_reconnect_fname.Value());
+					m_reconnect_fname.c_str());
 			return;
 		}
 	}
 
 	CloseReconnectFile();
 	int rc;
-	rc = rotate_file( m_reconnect_fname.Value(),orig_reconnect_fname.Value() );
+	rc = rotate_file( m_reconnect_fname.c_str(),orig_reconnect_fname.c_str() );
 	if( rc < 0 ) {
 		dprintf(D_ALWAYS,"CCB: failed to rotate rewritten %s\n",
-				m_reconnect_fname.Value());
+				m_reconnect_fname.c_str());
 	}
 	m_reconnect_fname = orig_reconnect_fname;
 }

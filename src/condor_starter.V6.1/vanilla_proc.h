@@ -99,6 +99,11 @@ public:
 			@return true if success, false if failure
 		*/
 	virtual bool PublishUpdateAd( ClassAd* ad );
+#if defined(HAVE_EXT_LIBCGROUP)
+#ifdef LINUX
+	void setCgroupMemoryLimits(const char *cgroup);
+#endif
+#endif
 
 	virtual std::string CgroupSuffix() { return "";}
 
@@ -110,11 +115,13 @@ protected:
 	virtual int streamingOpenFlags( bool isOutput );
 
 private:
-		/// Final usage stats for this proc and all its children.
+		// Final usage stats for this proc and all its children.
 	ProcFamilyUsage m_final_usage;
+		// Sums the total usage from each previous completed PID in this run.
+	ProcFamilyUsage m_checkpoint_usage;
 
-        // standardized statistics reporting logic
-    StarterStatistics m_statistics;
+		// standardized statistics reporting logic
+	StarterStatistics m_statistics;
 
 #if !defined(WIN32)
 	int m_escalation_tid;

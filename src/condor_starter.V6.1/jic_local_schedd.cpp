@@ -33,7 +33,7 @@
 #include "jic_local_schedd.h"
 #include "condor_version.h"
 
-extern CStarter *Starter;
+extern Starter *Starter;
 
 
 JICLocalSchedd::JICLocalSchedd( const char* classad_filename,
@@ -494,8 +494,7 @@ JICLocalSchedd::getUniverse( void )
 bool
 JICLocalSchedd::initLocalUserLog( void )
 {
-	bool ret = u_log->initFromJobAd( job_ad, ATTR_ULOG_FILE,
-								 ATTR_ULOG_USE_XML, true );
+	bool ret = u_log->initFromJobAd( job_ad, false );
 	if( ! ret ) {
 		job_ad->Assign( ATTR_HOLD_REASON, "Failed to initialize user log");
 		job_ad->Assign( ATTR_HOLD_REASON_CODE, CONDOR_HOLD_CODE_UnableToInitUserLog );

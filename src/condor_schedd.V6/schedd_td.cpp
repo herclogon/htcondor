@@ -32,6 +32,19 @@
 #include "spooled_job_files.h"
 #include "condor_url.h"
 
+
+extern const std::string & attr_JobUser; // the attribute name we use for the "owner" of the job, historically ATTR_OWNER 
+extern bool user_is_the_new_owner; // set in schedd.cpp at startup
+inline const char * EffectiveUser(Sock * sock) {
+	if (!sock) return "";
+	if (user_is_the_new_owner) {
+		return sock->getFullyQualifiedUser();
+	} else {
+		return sock->getOwner();
+	}
+	return "";
+}
+
 /* In this service function, the client tells the schedd a bunch of jobs
 	it would like to perform a transfer for into/out of a sandbox. The
 	schedd will hold open the connection back to the client
@@ -44,20 +57,20 @@ Scheduler::requestSandboxLocation(int mode, Stream* s)
 {
 	ReliSock* rsock = (ReliSock*)s;
 	TransferDaemon *td = NULL;
-	MyString rand_id;
-	MyString fquser;
+	std::string rand_id;
+	std::string fquser;
 	ClassAd reqad, respad;
 	std::string jids, jids_allow, jids_deny;
 	std::vector<PROC_ID> *jobs = NULL;
 	std::vector<PROC_ID> *modify_allow_jobs = NULL;
 	std::vector<PROC_ID> *modify_deny_jobs = NULL;
 	ClassAd *tmp_ad = NULL;
-	MyString constraint_string;
+	std::string constraint_string;
 	int protocol;
-	MyString peer_version;
+	std::string peer_version;
 	bool has_constraint;
 	int direction;
-	MyString desc;
+	std::string desc;
 
 	(void)mode; // quiet the compiler
 
@@ -125,8 +138,8 @@ Scheduler::requestSandboxLocation(int mode, Stream* s)
 	rsock->end_of_message();
 
 	if (reqad.LookupBool(ATTR_TREQ_HAS_CONSTRAINT, has_constraint) == 0) {
-		dprintf(D_ALWAYS, "requestSandBoxLocation(): Client reqad from %s"
-			"must have %s as an attribute.\n", fquser.Value(), 
+		dprintf(D_ALWAYS, "requestSandBoxLocation(): Client reqad from %s "
+			"must have %s as an attribute.\n", fquser.c_str(), 
 			ATTR_TREQ_HAS_CONSTRAINT);
 
 		respad.Assign(ATTR_TREQ_INVALID_REQUEST, TRUE);
@@ -163,7 +176,7 @@ Scheduler::requestSandboxLocation(int mode, Stream* s)
 		if (reqad.LookupString(ATTR_TREQ_JOBID_LIST, jids) == 0) {
 			dprintf(D_ALWAYS, "requestSandBoxLocation(): Submitter "
 				"%s's reqad must have %s as an attribute.\n", 
-				fquser.Value(), ATTR_TREQ_JOBID_LIST);
+				fquser.c_str(), ATTR_TREQ_JOBID_LIST);
 
 			respad.Assign(ATTR_TREQ_INVALID_REQUEST, TRUE);
 			respad.Assign(ATTR_TREQ_INVALID_REASON, "Missing jobid list.");
@@ -185,7 +198,7 @@ Scheduler::requestSandboxLocation(int mode, Stream* s)
 			// can't have no constraint and no jobids, bail.
 			dprintf(D_ALWAYS, "Submitter %s sent inconsistant ad with no "
 				"constraint and also no jobids on which to perform sandbox "
-				"manipulations.\n", fquser.Value());
+				"manipulations.\n", fquser.c_str());
 
 			respad.Assign(ATTR_TREQ_INVALID_REQUEST, TRUE);
 			respad.Assign(ATTR_TREQ_INVALID_REASON, 
@@ -204,9 +217,9 @@ Scheduler::requestSandboxLocation(int mode, Stream* s)
 		// authorized to.
 		//////////////////////
 		for (size_t i = 0; i < jobs->size(); i++) {
-			MyString job_owner = "";
-			GetAttributeString((*jobs)[i].cluster, (*jobs)[i].proc, ATTR_OWNER, job_owner);
-			if (OwnerCheck2(NULL, rsock->getOwner(), job_owner.c_str())) {
+			std::string job_owner = "";
+			GetAttributeString((*jobs)[i].cluster, (*jobs)[i].proc, attr_JobUser.c_str(), job_owner);
+			if (UserCheck2(NULL, EffectiveUser(rsock), job_owner.c_str())) {
 				// only allow the user to manipulate jobs it is entitled to.
 				// structure copy...
 				modify_allow_jobs->push_back((*jobs)[i]);
@@ -217,7 +230,7 @@ Scheduler::requestSandboxLocation(int mode, Stream* s)
 					"WARNING: Submitter %s tried to request a sandbox "
 					"location for jobid %d.%d which is not owned by the "
 					"submitter. Denied modification to specified job.\n",
-					fquser.Value(), (*jobs)[i].cluster, (*jobs)[i].proc);
+					fquser.c_str(), (*jobs)[i].cluster, (*jobs)[i].proc);
 
 				// structure copy...
 				modify_deny_jobs->push_back((*jobs)[i]);
@@ -266,7 +279,7 @@ Scheduler::requestSandboxLocation(int mode, Stream* s)
 		{
 			dprintf(D_ALWAYS, "Submitter %s sent inconsistant ad with "
 				"no constraint to find any jobids\n",
-				fquser.Value());
+				fquser.c_str());
 		}
 
 		// By definition we'll only save the jobids the user may modify
@@ -276,14 +289,14 @@ Scheduler::requestSandboxLocation(int mode, Stream* s)
 		// Walk the job queue looking for jobs which match the constraint
 		// filter. Then filter that set with OwnerCheck to ensure 
 		// the client has the correct authority to modify these jobids.
-		tmp_ad = GetNextJobByConstraint(constraint_string.Value(), 1);
+		tmp_ad = GetNextJobByConstraint(constraint_string.c_str(), 1);
 		while (tmp_ad) {
 			PROC_ID job_id;
-			if ( OwnerCheck2(tmp_ad, rsock->getOwner()) )
+			if ( UserCheck2(tmp_ad, EffectiveUser(rsock)) )
 			{
 				modify_allow_jobs->push_back(job_id);
 			}
-			tmp_ad = GetNextJobByConstraint(constraint_string.Value(), 0);
+			tmp_ad = GetNextJobByConstraint(constraint_string.c_str(), 0);
 		}
 
 		// Let the client know what jobids it may actually transfer for.
@@ -307,7 +320,7 @@ Scheduler::requestSandboxLocation(int mode, Stream* s)
 	if (reqad.LookupInteger(ATTR_TREQ_FTP, protocol) == 0) {
 		dprintf(D_ALWAYS, "requestSandBoxLocation(): Submitter "
 			"%s's reqad must have %s as an attribute.\n", 
-			fquser.Value(), ATTR_TREQ_FTP);
+			fquser.c_str(), ATTR_TREQ_FTP);
 
 		respad.Assign(ATTR_TREQ_INVALID_REQUEST, TRUE);
 		respad.Assign(ATTR_TREQ_INVALID_REASON, 
@@ -328,7 +341,7 @@ Scheduler::requestSandboxLocation(int mode, Stream* s)
 	if (reqad.LookupString(ATTR_TREQ_PEER_VERSION, peer_version) == 0) {
 		dprintf(D_ALWAYS, "requestSandBoxLocation(): Submitter "
 			"%s's reqad must have %s as an attribute.\n", 
-			fquser.Value(), ATTR_TREQ_PEER_VERSION);
+			fquser.c_str(), ATTR_TREQ_PEER_VERSION);
 
 		respad.Assign(ATTR_TREQ_INVALID_REQUEST, TRUE);
 		respad.Assign(ATTR_TREQ_INVALID_REASON, 
@@ -347,7 +360,7 @@ Scheduler::requestSandboxLocation(int mode, Stream* s)
 	if (reqad.LookupInteger(ATTR_TREQ_DIRECTION, direction) == 0) {
 		dprintf(D_ALWAYS, "requestSandBoxLocation(): Submitter "
 			"%s's reqad must have %s as an attribute.\n", 
-			fquser.Value(), ATTR_TREQ_DIRECTION);
+			fquser.c_str(), ATTR_TREQ_DIRECTION);
 
 		respad.Assign(ATTR_TREQ_INVALID_REQUEST, TRUE);
 		respad.Assign(ATTR_TREQ_INVALID_REASON, 
@@ -499,7 +512,7 @@ Scheduler::requestSandboxLocation(int mode, Stream* s)
 		respad.Assign(ATTR_TREQ_WILL_BLOCK, 1);
 		if (putClassAd(rsock, respad) == 0) {
 			dprintf(D_ALWAYS, "Submittor %s closed connection. Aborting "
-				"getting sandbox info for user.\n", fquser.Value());
+				"getting sandbox info for user.\n", fquser.c_str());
 			delete treq;
 			return FALSE;
 		}
@@ -514,7 +527,7 @@ Scheduler::requestSandboxLocation(int mode, Stream* s)
 			// XXX Should I test this against the keys in the manager table
 			// to ensure there are unique ids for the transferds I have
 			// requested to invoke--a collision would be nasty here.
-			rand_id.randomlyGenerateHex(64); 
+			randomlyGenerateInsecureHex(rand_id, 64);
 
 			td = new TransferDaemon(fquser, rand_id, TD_PRE_INVOKED);
 
@@ -558,7 +571,7 @@ Scheduler::requestSandboxLocation(int mode, Stream* s)
 	respad.Assign(ATTR_TREQ_WILL_BLOCK, 0);
 	if (putClassAd(rsock, respad) == 0) {
 		dprintf(D_ALWAYS, "Submittor %s closed connection. Aborting "
-			"getting sandbox info for user.\n", fquser.Value());
+			"getting sandbox info for user.\n", fquser.c_str());
 		delete treq;
 		return FALSE;
 	}
@@ -657,11 +670,11 @@ Scheduler::treq_upload_post_push_callback(TransferRequest *treq,
 	TransferDaemon *td)
 {
 	ReliSock *rsock = NULL;
-	MyString sinful;
-	MyString capability;
+	std::string sinful;
+	std::string capability;
 	ClassAd respad;
 	std::string jids;
-	MyString reason;
+	std::string reason;
 
 	////////////////////////////////////////////////////////////////////////
 	// Respond to the client with a capability, a td sinful, the list of
@@ -861,15 +874,15 @@ Scheduler::treq_upload_update_callback(TransferRequest *treq,
 			char *old_path_buf;
 			bool changed = false;
 			const char *base = NULL;
-			MyString new_path_buf;
+			std::string new_path_buf;
 			while ( (old_path_buf=old_paths.next()) ) {
 				base = condor_basename(old_path_buf);
 				if ((strcmp(AttrsToModify[index], ATTR_TRANSFER_INPUT_FILES)==0) && IsUrl(old_path_buf)) {
 					base = old_path_buf;
 				} else if ( strcmp(base,old_path_buf)!=0 ) {
-					new_path_buf.formatstr(
+					formatstr(new_path_buf,
 						"%s%c%s",SpoolSpace.c_str(),DIR_DELIM_CHAR,base);
-					base = new_path_buf.Value();
+					base = new_path_buf.c_str();
 					changed = true;
 				}
 				new_paths.append(base);
@@ -990,11 +1003,11 @@ Scheduler::treq_download_post_push_callback(TransferRequest *treq,
 	TransferDaemon *td)
 {
 	ReliSock *rsock = NULL;
-	MyString sinful;
-	MyString capability;
+	std::string sinful;
+	std::string capability;
 	ClassAd respad;
 	std::string jids;
-	MyString reason;
+	std::string reason;
 
 	////////////////////////////////////////////////////////////////////////
 	// Respond to the client with a capability, a td sinful, the list of
@@ -1428,13 +1441,13 @@ Scheduler::spoolJobFilesReaper(int tid,int exit_status)
 			char *old_path_buf;
 			bool changed = false;
 			const char *base = NULL;
-			MyString new_path_buf;
+			std::string new_path_buf;
 			while ( (old_path_buf=old_paths.next()) ) {
 				base = condor_basename(old_path_buf);
 				if ( strcmp(base,old_path_buf)!=0 ) {
-					new_path_buf.sprintf(
+					sprintf(new_path_buf,
 						"%s%c%s",SpoolSpace.c_str(),DIR_DELIM_CHAR,base);
-					base = new_path_buf.Value();
+					base = new_path_buf.c_str();
 					changed = true;
 				}
 				new_paths.append(base);

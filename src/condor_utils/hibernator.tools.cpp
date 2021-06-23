@@ -32,7 +32,7 @@
  * UserDefinedToolsHibernator class
  ***************************************************************/
 
-UserDefinedToolsHibernator::UserDefinedToolsHibernator () throw ()
+UserDefinedToolsHibernator::UserDefinedToolsHibernator () noexcept
 	: HibernatorBase (),
 	m_keyword ( "HIBERNATE" ),
 	m_reaper_id ( -1 )
@@ -43,7 +43,7 @@ UserDefinedToolsHibernator::UserDefinedToolsHibernator () throw ()
 	configure ();
 }
 
-UserDefinedToolsHibernator::UserDefinedToolsHibernator ( const MyString &keyword ) throw () 
+UserDefinedToolsHibernator::UserDefinedToolsHibernator ( const MyString &keyword ) noexcept 
 	: HibernatorBase (),
 	m_keyword ( keyword ),
 	m_reaper_id ( -1 )
@@ -54,7 +54,7 @@ UserDefinedToolsHibernator::UserDefinedToolsHibernator ( const MyString &keyword
 	configure ();
 }
 
-UserDefinedToolsHibernator::~UserDefinedToolsHibernator () throw () 
+UserDefinedToolsHibernator::~UserDefinedToolsHibernator () noexcept 
 {
 	for ( unsigned i = 1; i <= 10; ++i ) {
 		if ( NULL != m_tool_paths[i] ) {
@@ -136,7 +136,7 @@ void UserDefinedToolsHibernator::configure ()
 			"S1" );
 		
 		/** Grab the user defined executable path */
-		m_tool_paths[i] = validateExecutablePath ( name.Value () );
+		m_tool_paths[i] = validateExecutablePath ( name.c_str () );
 		
 		if ( NULL != m_tool_paths[i] ) {
 
@@ -147,11 +147,11 @@ void UserDefinedToolsHibernator::configure ()
 				argument list */
 			name.formatstr ( 
 				"%s_USER_%s_ARGS", 
-				m_keyword.Value(),
+				m_keyword.c_str(),
 				description );
 
 			/** Grab the command's arguments */
-			arguments = param ( name.Value () );
+			arguments = param ( name.c_str () );
 
 			if ( NULL != arguments ) {
 			
@@ -167,7 +167,7 @@ void UserDefinedToolsHibernator::configure ()
 						"UserDefinedToolsHibernator::configure: failed "
 						"to parse the tool arguments defined in the "
 						"configuration file: %s\n",
-						error.Value() );
+						error.c_str() );
 
 				}
 
@@ -185,7 +185,7 @@ void UserDefinedToolsHibernator::configure ()
 				D_FULLDEBUG,
 				"UserDefinedToolsHibernator::configure: the executable "
 				"(%s) defined in the configuration file is invalid.\n",
-				m_tool_paths[i] );
+				name.c_str());
 
 		}
 	}

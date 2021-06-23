@@ -82,7 +82,7 @@ ClassAdCronJob::Initialize( void )
 {
 	// Build my interface version environment (but, I need a 'name' to do it)
 	const MyString	&mgr_name_uc = Params().GetMgrNameUc( );
-	if ( mgr_name_uc.Length() ) {
+	if ( mgr_name_uc.length() ) {
 		MyString env_name;
 
 		env_name = Params().GetMgrNameUc();
@@ -94,7 +94,7 @@ ClassAdCronJob::Initialize( void )
 		m_classad_env.SetEnv( env_name, Mgr().GetName() );
 	}
 
-	if (  Params().GetConfigValProg().Length() && mgr_name_uc.Length()  ) {
+	if (  Params().GetConfigValProg().length() && mgr_name_uc.length()  ) {
 		MyString	env_name;
 		env_name = mgr_name_uc;
 		env_name += "_CONFIG_VAL";
@@ -139,18 +139,11 @@ ClassAdCronJob::ProcessOutput( const char *line )
 			// Insert the 'LastUpdate' field
 			const char      *lu_prefix = GetPrefix( );
 			if ( lu_prefix ) {
-				MyString    Update;
-				Update.formatstr( "%sLastUpdate = %ld",
-								lu_prefix, (long) time(NULL) );
-				const char  *UpdateStr = Update.Value( );
+				std::string attrn;
+				formatstr(attrn, "%sLastUpdate", lu_prefix);
 
 				// Add it in
-				if ( ! m_output_ad->Insert( UpdateStr ) ) {
-					dprintf( D_ALWAYS,
-							 "Can't insert '%s' into '%s' ClassAd\n",
-							 UpdateStr, GetName() );
-					// TodoWrite( );
-				}
+				m_output_ad->Assign(attrn, time(NULL));
 			}
 
 			const char * ad_args = NULL;

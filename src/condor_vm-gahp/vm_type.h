@@ -25,7 +25,6 @@
 #include "condor_debug.h"
 #include "condor_classad.h"
 #include "condor_daemon_core.h"
-#include "MyString.h"
 #include "gahp_common.h"
 #include "utc_time.h"
 #include "directory.h"
@@ -40,7 +39,7 @@ enum vm_status {
 class VMType
 {
 public:
-	static bool createVMName(ClassAd *ad, MyString& vmname);
+	static bool createVMName(ClassAd *ad, std::string& vmname);
 
 	VMType(const char* prog_for_script, const char* scriptname, 
 			const char* workingpath, ClassAd *ad);
@@ -67,15 +66,15 @@ public:
 
 	virtual bool CreateConfigFile() = 0;
 
-	int getVMId(void) { return m_vm_id; }
+	int getVMId(void) const { return m_vm_id; }
 
-	int PidOfVM(void) { return m_vm_pid; }
+	int PidOfVM(void) const { return m_vm_pid; }
 
 	vm_status getVMStatus(void);
 
 	void setLastStatus(const char *result_msg);
 
-	MyString m_result_msg;
+	std::string m_result_msg;
 
 protected:
 
@@ -83,22 +82,22 @@ protected:
 	void deleteNonTransferredFiles();
 	bool parseCommonParamFromClassAd(bool is_root = false);
 	bool createConfigUsingScript(const char* configfile);
-	bool createTempFile(const char *template_string, const char *suffix, MyString &outname);
-	bool isTransferedFile(const char* file_name, MyString& fullname);
+	bool createTempFile(const char *template_string, const char *suffix, std::string &outname);
+	bool isTransferedFile(const char* file_name, std::string& fullname);
 
-	MyString m_vmtype;
-	MyString m_vm_name;
+	std::string m_vmtype;
+	std::string m_vm_name;
 	int m_vm_id;
 
 	int	m_vm_pid;	// PID of acutal vmware process for this VM
-	MyString m_vm_mac;	// MAC address of VM
-	MyString m_vm_ip;	// IP address of VM
+	std::string m_vm_mac;	// MAC address of VM
+	std::string m_vm_ip;	// IP address of VM
 
-	MyString m_workingpath;
-	MyString m_prog_for_script;	 // perl
-	MyString m_scriptname;
+	std::string m_workingpath;
+	std::string m_prog_for_script;	 // perl
+	std::string m_scriptname;
 
-	MyString m_configfile;
+	std::string m_configfile;
 	
 	// File list for TransferInput from submit machine.(full path)
 	StringList m_transfer_input_files;
@@ -110,12 +109,12 @@ protected:
 	ClassAd m_classAd;
 	int m_vm_mem;  // VM memory requested in Job classAd
 	bool m_vm_networking;
-	MyString m_vm_networking_type;
+	std::string m_vm_networking_type;
 	bool m_vm_checkpoint;
 	bool m_vm_no_output_vm;
 	bool m_vm_hardware_vt;
-	MyString m_classad_arg;
-	MyString m_arg_file;
+	std::string m_classad_arg;
+	std::string m_arg_file;
 
 	// Usually, when we suspend a VM, the memory being used by the VM 
 	// will be freed and the memory will be saved into a file.
@@ -147,9 +146,9 @@ protected:
 	float m_cpu_time;
 
 	time_t m_last_status_time;
-	MyString m_last_status_result;
+	std::string m_last_status_result;
 	int m_vcpus;
-	MyString m_vm_job_mac;
+	std::string m_vm_job_mac;
 
 	priv_state m_file_owner;
 private:

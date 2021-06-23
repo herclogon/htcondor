@@ -19,7 +19,6 @@ override_dh_auto_configure:
 	dh_auto_configure -- \
 		-DCONDOR_PACKAGE_BUILD:BOOL=ON \
 		-DPROPER:BOOL=ON \
-		-DCLIPPED:BOOL=ON \
 		-DUW_BUILD:BOOL=OFF \
 		-D_DEBUG:BOOL=TRUE \
 		-DBUILDID:STRING="Debian-$(debver)"\
@@ -37,21 +36,21 @@ override_dh_auto_configure:
 		-DHAVE_EXT_LIBXML2:BOOL=ON \
 		-DHAVE_EXT_OPENSSL:BOOL=ON \
 		-DHAVE_EXT_PCRE:BOOL=ON \
-		-DHAVE_EXT_VOMS:BOOL=OFF \
-		-DWITH_VOMS:BOOL=OFF \
 		-DWITH_LIBCGROUP:BOOL=ON \
 		-DWANT_CONTRIB:BOOL=OFF \
-		-DWITH_BOSCO:BOOL=OFF \
+		-DWITH_BOSCO:BOOL=ON \
 		-DWITH_PYTHON_BINDINGS:BOOL=ON \
+		-DWITH_SCITOKENS:BOOL=ON \
+		-DBUILD_TESTING:BOOL=ON \
+		-DWITH_BLAHP:BOOL=TRUE \
+		-DBLAHP_FOUND=/usr/libexec/blahp/BLClient \
 		-DWITH_CAMPUSFACTORY:BOOL=OFF
-		# upstream says: tests aren't reliable enough yet
-		#-DBUILD_TESTS:BOOL=OFF \
-		#-DHAVE_EXT_POSTGRESQL:BOOL=OFF \
-		#-DEXTERNAL_INCLUDES:STRING="/usr/include/postgresql"
 
 
 override_dh_auto_build: doc/build
 	dh_auto_build -- VERBOSE=1
+	# The tests don't get built eventhough was asked for them
+	(cd obj-*; make tests)
 	# post-fixing things that have to be done due to changes introduced by
 	# repackaging
 	# 1. rebuild java stuff
@@ -69,25 +68,26 @@ override_dh_shlibdeps:
 
 doc/build:
 	mkdir -p $@
-	# Need a more recent version htlatex for this
+	# TODO: Build the manual now that we are using Sphinx
 	# $(MAKE) -C doc ref.html
 	# mv doc/ref.html $@/html
-	$(MAKE) -C doc just-man-pages
+	$(MAKE) -C docs man
 	mkdir -p $@/man
-	mv doc/man/man1/* $@/man
+	mv docs/_build/man/* $@/man
 
 
 override_dh_auto_install:
 	dh_auto_install
+	# tar up the tests
+	(cd obj-*; make tests-tar-pkg)
+	find debian/tmp|sort > /tmp/files
+	find obj-*|sort > /tmp/obj
+	mv obj-*/condor_tests-*.tar.gz debian/tmp/usr/lib/condor/condor_tests-$(upstreamver).tar.gz
 	# things we do not need in Debian
-	rm debian/tmp/usr/sbin/condor_install*
-	# remove compat symlinks
-	rm debian/tmp/usr/sbin/condor_vm_vmware.pl
-	rm debian/tmp/usr/sbin/grid_monitor.sh
+	#rm debian/tmp/usr/sbin/condor_install*
 
 
 override_dh_fixperms-arch:
-	chmod -x debian/htcondor/etc/default/condor
 	chmod -x debian/htcondor/usr/lib/condor/libexec/interactive.sub
 
 
@@ -112,7 +112,7 @@ override_dh_auto_clean:
 		src/condor_tests/batch_test.pl
 	-rm src/condor_utils/param_info.c
 	# docs
-	$(MAKE) -C doc clean
+	$(MAKE) -C docs clean
 	-rm -f doc/condor-*-Manual.tar
 	-rm -rf doc/just-man-pages
 	-rm -rf doc/build
@@ -149,6 +149,7 @@ dfsg-source-tree:
 # However, it feels wrong to edit the license file
 # The openstack_gahp is not currently used
 # This will need to be addressed in the future
+# TODO: Just add the lintian exception
 	rm -rf src/openstack_gahp
 # remove embedded tarballs with 3rd-party software that is
 # currently not used in any way

@@ -127,12 +127,8 @@ void NordugridJobReconfig()
 	NordugridJob::setGahpCallTimeout( tmp_int );
 
 	// Tell all the resource objects to deal with their new config values
-	NordugridResource *next_resource;
-
-	NordugridResource::ResourcesByName.startIterations();
-
-	while ( NordugridResource::ResourcesByName.iterate( next_resource ) != 0 ) {
-		next_resource->Reconfig();
+	for (auto &elem : NordugridResource::ResourcesByName) {
+		elem.second->Reconfig();
 	}
 }
 
@@ -263,7 +259,7 @@ NordugridJob::NordugridJob( ClassAd *classad )
  error_exit:
 	gmState = GM_HOLD;
 	if ( !error_string.empty() ) {
-		jobAd->Assign( ATTR_HOLD_REASON, error_string.c_str() );
+		jobAd->Assign( ATTR_HOLD_REASON, error_string );
 	}
 	return;
 }
@@ -739,12 +735,12 @@ void NordugridJob::doEvaluateState()
 			} break;
 		case GM_FAILED: {
 			myResource->CancelSubmit( this );
-			SetRemoteJobId( NULL );
 
 			if ( condorState == REMOVED ) {
 				gmState = GM_DELETE;
 			} else {
-				gmState = GM_CLEAR_REQUEST;
+				SetRemoteJobId( NULL );
+				gmState = GM_HOLD;
 			}
 			} break;
 		case GM_DELETE: {
@@ -770,17 +766,17 @@ void NordugridJob::doEvaluateState()
 			// expressed in the job ad.
 			if ( remoteJobId != NULL
 				     && condorState != REMOVED 
-					 && wantResubmit == 0 
+					 && wantResubmit == false 
 					 && doResubmit == 0 ) {
 				gmState = GM_HOLD;
 				break;
 			}
 			// Only allow a rematch *if* we are also going to perform a resubmit
 			if ( wantResubmit || doResubmit ) {
-				jobAd->EvalBool(ATTR_REMATCH_CHECK,NULL,wantRematch);
+				jobAd->LookupBool(ATTR_REMATCH_CHECK,wantRematch);
 			}
 			if ( wantResubmit ) {
-				wantResubmit = 0;
+				wantResubmit = false;
 				dprintf(D_ALWAYS,
 						"(%d.%d) Resubmitting to Globus because %s==TRUE\n",
 						procID.cluster, procID.proc, ATTR_GLOBUS_RESUBMIT_CHECK );
@@ -811,7 +807,7 @@ void NordugridJob::doEvaluateState()
 						procID.cluster, procID.proc, ATTR_REMATCH_CHECK );
 
 				// Set ad attributes so the schedd finds a new match.
-				int dummy;
+				bool dummy;
 				if ( jobAd->LookupBool( ATTR_JOB_MATCHED, dummy ) != 0 ) {
 					jobAd->Assign( ATTR_JOB_MATCHED, false );
 					jobAd->Assign( ATTR_CURRENT_HOSTS, 0 );
@@ -931,7 +927,7 @@ void NordugridJob::SetRemoteJobId( const char *job_id )
 
 std::string *NordugridJob::buildSubmitRSL()
 {
-	int transfer_exec = TRUE;
+	bool transfer_exec = true;
 	std::string *rsl = new std::string;
 	StringList *stage_list = NULL;
 	StringList *stage_local_list = NULL;
@@ -977,25 +973,25 @@ std::string *NordugridJob::buildSubmitRSL()
 
 	{
 		ArgList args;
-		MyString arg_errors;
-		MyString rsl_args;
-		if(!args.AppendArgsFromClassAd(jobAd,&arg_errors)) {
+		std::string arg_errors;
+		std::string rsl_args;
+		if(!args.AppendArgsFromClassAd(jobAd, arg_errors)) {
 			dprintf(D_ALWAYS,"(%d.%d) Failed to read job arguments: %s\n",
-					procID.cluster, procID.proc, arg_errors.Value());
+					procID.cluster, procID.proc, arg_errors.c_str());
 			formatstr(errorString,"Failed to read job arguments: %s\n",
-					arg_errors.Value());
+					arg_errors.c_str());
 			delete rsl;
 			return NULL;
 		}
 		if(args.Count() != 0) {
 			if(args.InputWasV1()) {
 					// In V1 syntax, the user's input _is_ RSL
-				if(!args.GetArgsStringV1Raw(&rsl_args,&arg_errors)) {
+				if(!args.GetArgsStringV1Raw(rsl_args, arg_errors)) {
 					dprintf(D_ALWAYS,
 							"(%d.%d) Failed to get job arguments: %s\n",
-							procID.cluster,procID.proc,arg_errors.Value());
+							procID.cluster,procID.proc,arg_errors.c_str());
 					formatstr(errorString,"Failed to get job arguments: %s\n",
-							arg_errors.Value());
+							arg_errors.c_str());
 					delete rsl;
 					return NULL;
 				}
@@ -1117,7 +1113,7 @@ StringList *NordugridJob::buildStageInList()
 	char *filename = NULL;
 	std::string buf;
 	std::string iwd;
-	int transfer = TRUE;
+	bool transfer = true;
 
 	if ( jobAd->LookupString( ATTR_JOB_IWD, iwd ) ) {
 		if ( iwd.length() > 1 && iwd[iwd.length() - 1] != '/' ) {
@@ -1136,7 +1132,7 @@ StringList *NordugridJob::buildStageInList()
 		}
 	}
 
-	transfer = TRUE;
+	transfer = true;
 	jobAd->LookupBool( ATTR_TRANSFER_INPUT, transfer );
 	if ( transfer && jobAd->LookupString( ATTR_JOB_INPUT, buf ) == 1) {
 		// only add to list if not NULL_FILE (i.e. /dev/null)
@@ -1168,7 +1164,7 @@ StringList *NordugridJob::buildStageOutList( bool old_stdout )
 {
 	StringList *stage_list = NULL;
 	std::string buf;
-	bool transfer = TRUE;
+	bool transfer = true;
 	std::string remote_stdout_name;
 	std::string remote_stderr_name;
 
@@ -1187,7 +1183,7 @@ StringList *NordugridJob::buildStageOutList( bool old_stdout )
 		}
 	}
 
-	transfer = TRUE;
+	transfer = true;
 	jobAd->LookupBool( ATTR_TRANSFER_ERROR, transfer );
 	if ( transfer && jobAd->LookupString( ATTR_JOB_ERROR, buf ) == 1) {
 		// only add to list if not NULL_FILE (i.e. /dev/null)
@@ -1206,7 +1202,7 @@ StringList *NordugridJob::buildStageOutLocalList( StringList *stage_list,
 {
 	StringList *stage_local_list;
 	char *remaps = NULL;
-	MyString local_name;
+	std::string local_name;
 	char *remote_name;
 	std::string stdout_name = "";
 	std::string stderr_name = "";
@@ -1245,11 +1241,11 @@ StringList *NordugridJob::buildStageOutLocalList( StringList *stage_list,
 			local_name = condor_basename( remote_name );
 		}
 
-		if ( (local_name.Length() && local_name[0] == '/')
-			 || IsUrl( local_name.Value() ) ) {
+		if ( (local_name.length() && local_name[0] == '/')
+			 || IsUrl( local_name.c_str() ) ) {
 			buff = local_name;
 		} else {
-			formatstr( buff, "%s%s", iwd.c_str(), local_name.Value() );
+			formatstr( buff, "%s%s", iwd.c_str(), local_name.c_str() );
 		}
 		stage_local_list->append( buff.c_str() );
 	}

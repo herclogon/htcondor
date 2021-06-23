@@ -20,7 +20,6 @@
 #ifndef TRANSFER_REQUEST_H
 #define TRANSFER_REQUEST_H
 
-#include "MyString.h"
 #include "file_transfer.h"
 #include "proc.h"
 #include "condor_classad.h"
@@ -112,9 +111,8 @@ class TransferRequest
 		// What is the version string of the peer I'm talking to?
 		// This could be the empty string if there is no version.
 		// this will make a copy when you assign it to something.
-		void set_peer_version(MyString &pv);
-		void set_peer_version(char *pv);
-		MyString get_peer_version(void);
+		void set_peer_version(const std::string &pv);
+		std::string get_peer_version(void);
 
 		// what version is the info packet
 		void set_protocol_version(int);
@@ -131,9 +129,8 @@ class TransferRequest
 		bool get_used_constraint(void);
 
 		// Should this request be handled Passively, Actively, or Active Shadow
-		void set_transfer_service(TreqMode mode);
-		void set_transfer_service(MyString &str);
-		void set_transfer_service(const char *str);
+		//void set_transfer_service(TreqMode mode);
+		void set_transfer_service(const std::string &str);
 		TreqMode get_transfer_service(void);
 
 		// How many transfers am I going to process? Each transfer is on
@@ -167,39 +164,39 @@ class TransferRequest
 		void set_client_sock(ReliSock *rsock);
 		ReliSock* get_client_sock(void);
 
-		void set_capability(MyString &capability);
-		MyString get_capability(void);
+		void set_capability(const std::string &capability);
+		const std::string& get_capability(void);
 
 		/////////////////////////////////////////////////////////////////////
 		// Various kinds of status this request can be in 
 		/////////////////////////////////////////////////////////////////////
 
 		void set_rejected(bool val);
-		bool get_rejected(void);
+		bool get_rejected(void) const;
 
-		void set_rejected_reason(MyString &reason);
-		MyString get_rejected_reason(void);
+		void set_rejected_reason(const std::string &reason);
+		const std::string& get_rejected_reason(void);
 
 		/////////////////////////////////////////////////////////////////////
 		// Callback at various processing points of this request so the 
 		// schedd can do work.
 		/////////////////////////////////////////////////////////////////////
-		void set_pre_push_callback(MyString desc, 
+		void set_pre_push_callback(std::string desc, 
 			TreqPrePushCallback callback, Service *base);
 		TreqAction call_pre_push_callback(TransferRequest *treq, 
 			TransferDaemon *td);
 
-		void set_post_push_callback(MyString desc,
+		void set_post_push_callback(std::string desc,
 			TreqPostPushCallback callback, Service *base);
 		TreqAction call_post_push_callback(TransferRequest *treq, 
 			TransferDaemon *td);
 
-		void set_update_callback(MyString desc, 
+		void set_update_callback(std::string desc, 
 			TreqUpdateCallback callback, Service *base);
 		TreqAction call_update_callback(TransferRequest *treq, 
 			TransferDaemon *td, ClassAd *update);
 
-		void set_reaper_callback(MyString desc, 
+		void set_reaper_callback(std::string desc, 
 			TreqReaperCallback callback, Service *base);
 		TreqAction call_reaper_callback(TransferRequest *treq);
 
@@ -232,37 +229,37 @@ class TransferRequest
 		ReliSock *m_client_sock;
 
 		// Allow the stashing of a capability a td gave for this request here.
-		MyString m_cap;
+		std::string m_cap;
 
 		// If the transferd rejects this request, this is for the schedd
 		// to record that fact.
 		bool m_rejected;
-		MyString m_rejected_reason;
+		std::string m_rejected_reason;
 
 		// the various callbacks
-		MyString m_pre_push_func_desc;
+		std::string m_pre_push_func_desc;
 		TreqPrePushCallback m_pre_push_func;
 		Service *m_pre_push_func_this;
 
-		MyString m_post_push_func_desc;
+		std::string m_post_push_func_desc;
 		TreqPostPushCallback m_post_push_func;
 		Service *m_post_push_func_this;
 
-		MyString m_update_func_desc;
+		std::string m_update_func_desc;
 		TreqUpdateCallback m_update_func;
 		Service *m_update_func_this;
 
-		MyString m_reaper_func_desc;
+		std::string m_reaper_func_desc;
 		TreqReaperCallback m_reaper_func;
 		Service *m_reaper_func_this;
 };
 
 /* converts a protcol ASCII line to an enum which represents and encapsulation
 	method for the protocol. */
-EncapMethod encap_method(MyString &line);
+EncapMethod encap_method(const std::string &line);
 
 /* converts an ASCII representation of a transfer request mode into the enum */
-TreqMode transfer_mode(MyString mode);
+TreqMode transfer_mode(std::string mode);
 TreqMode transfer_mode(const char *mode);
 
 

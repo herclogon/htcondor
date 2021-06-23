@@ -29,9 +29,10 @@
 #include "condor_attributes.h"
 #include "exit.h"
 #include "condor_uid.h"
+#include "basename.h"
 
 
-extern CStarter *Starter;
+extern Starter *Starter;
 
 
 /* ScriptProc class implementation */
@@ -66,14 +67,14 @@ ScriptProc::StartJob()
 		return 0;
 	}
 
-	MyString attr;
+	std::string attr;
 
 	attr = name;
 	attr += ATTR_JOB_CMD;
 	char* tmp = NULL;
-	if( ! JobAd->LookupString( attr.Value(), &tmp ) ) {
+	if( ! JobAd->LookupString( attr, &tmp ) ) {
 		dprintf( D_ALWAYS, "%s not found in JobAd.  Aborting StartJob.\n", 
-				 attr.Value() );
+				 attr.c_str() );
 		return 0;
 	}
 
@@ -84,9 +85,15 @@ ScriptProc::StartJob()
 		// TODO: make it smart in cases we're not the gridshell and/or
 		// didn't transfer files so that we don't prepend the wrong
 		// path to the binary, and don't try to chmod it.
-	MyString exe_path = Starter->GetWorkingDir();
-	exe_path += DIR_DELIM_CHAR;
-	exe_path += tmp;
+	std::string exe_path = "";
+	if( tmp != NULL && !fullpath( tmp ) ) {
+		exe_path += Starter->GetWorkingDir(0);
+		exe_path += DIR_DELIM_CHAR;
+	}
+
+	if (tmp) {
+		exe_path += tmp;
+	}
 	free( tmp ); 
 	tmp = NULL;
 
@@ -95,11 +102,11 @@ ScriptProc::StartJob()
 			// probably transfered it for us and left it with bad
 			// permissions...
 		priv_state old_priv = set_user_priv();
-		int retval = chmod( exe_path.Value(), 0755 );
+		int retval = chmod( exe_path.c_str(), 0755 );
 		set_priv( old_priv );
 		if( retval < 0 ) {
 			dprintf( D_ALWAYS, "Failed to chmod %s: %s (errno %d)\n", 
-					 exe_path.Value(), strerror(errno), errno );
+					 exe_path.c_str(), strerror(errno), errno );
 			return 0;
 		}
 	} 
@@ -111,15 +118,15 @@ ScriptProc::StartJob()
 
 	char *args1 = NULL;
 	char *args2 = NULL;
-	MyString args1_attr;
-	MyString args2_attr;
+	std::string args1_attr;
+	std::string args2_attr;
 	args1_attr = name;
 	args1_attr += ATTR_JOB_ARGUMENTS1;
 	args2_attr = name;
 	args2_attr += ATTR_JOB_ARGUMENTS2;
 
-	JobAd->LookupString(args1_attr.Value(), &args1);
-	JobAd->LookupString(args2_attr.Value(), &args2);
+	JobAd->LookupString(args1_attr, &args1);
+	JobAd->LookupString(args2_attr, &args2);
 
 	ArgList args;
 
@@ -131,22 +138,22 @@ ScriptProc::StartJob()
 		// First, put "condor_<name>script" at the front of Args,
 		// since that will become argv[0] of what we exec(), either
 		// the wrapper or the actual job.
-	MyString arg0;
+	std::string arg0;
 	arg0 = "condor_";
 	arg0 += name;
 	arg0 += "script";
-	args.AppendArg(arg0.Value());
+	args.AppendArg(arg0);
 
-	MyString args_error;
+	std::string args_error;
 	if(args2 && *args2) {
-		args.AppendArgsV2Raw(args2,&args_error);
+		args.AppendArgsV2Raw(args2,args_error);
 	}
 	else if(args1 && *args1) {
-		args.AppendArgsV1Raw(args1,&args_error);
+		args.AppendArgsV1Raw(args1,args_error);
 	}
 	else {
 		dprintf( D_FULLDEBUG, "neither %s nor %s could be found in JobAd\n",
-				 args1_attr.Value(), args2_attr.Value());
+				 args1_attr.c_str(), args2_attr.c_str());
 	}
 
 	free( args1 );
@@ -158,36 +165,36 @@ ScriptProc::StartJob()
 
 	char *env1 = NULL;
 	char *env2 = NULL;
-	MyString env1_attr;
-	MyString env2_attr;
+	std::string env1_attr;
+	std::string env2_attr;
 	env1_attr = name;
 	env1_attr += ATTR_JOB_ENVIRONMENT1;
 	env2_attr = name;
 	env2_attr += ATTR_JOB_ENVIRONMENT2;
-	JobAd->LookupString( env1_attr.Value(), &env1 );
-	JobAd->LookupString( env2_attr.Value(), &env2 );
+	JobAd->LookupString( env1_attr, &env1 );
+	JobAd->LookupString( env2_attr, &env2 );
 			// TODO do we want to use the regular ATTR_JOB_ENVIRONMENT
 			// if there's nothing specific for this script?
 
 		// Now, instantiate an Env object so we can manipulate the
 		// environment as needed.
 	Env job_env;
-	MyString env_errors;
+	std::string env_errors;
 	if( env2 && *env2 ) { 
-		if( ! job_env.MergeFromV2Raw(env2,&env_errors) ) {
+		if( ! job_env.MergeFromV2Raw(env2, env_errors) ) {
 			dprintf( D_ALWAYS, "Invalid %s found in JobAd (%s).  "
 					 "Aborting ScriptProc::StartJob.\n",
-					 env2_attr.Value(),env_errors.Value() );  
+					 env2_attr.c_str(),env_errors.c_str() );
 			free( env1 );
 			free( env2 );
 			return 0;
 		}
 	}
 	else if( env1 && *env1 ) { 
-		if( ! job_env.MergeFromV1Raw(env1,&env_errors) ) {
+		if( ! job_env.MergeFromV1Raw(env1, env_errors) ) {
 			dprintf( D_ALWAYS, "Invalid %s found in JobAd (%s).  "
 					 "Aborting ScriptProc::StartJob.\n",
-					 env1_attr.Value(),env_errors.Value() );  
+					 env1_attr.c_str(),env_errors.c_str() );
 			free( env1 );
 			free( env2 );
 			return 0;
@@ -205,9 +212,9 @@ ScriptProc::StartJob()
 
 		// Grab the full environment back out of the Env object 
 	if(IsFulldebug(D_FULLDEBUG)) {
-		MyString env_str;
-		job_env.getDelimitedStringForDisplay(&env_str);
-		dprintf(D_FULLDEBUG, "%sEnv = %s\n", name, env_str.Value() );
+		std::string env_str;
+		job_env.getDelimitedStringForDisplay( env_str);
+		dprintf(D_FULLDEBUG, "%sEnv = %s\n", name, env_str.c_str() );
 	}
 
 
@@ -235,11 +242,11 @@ ScriptProc::StartJob()
 		// in the below dprintfs, we want to skip past argv[0], which
 		// is sometimes condor_exec, in the Args string. 
 
-	MyString args_string;
-	args.GetArgsStringForDisplay(&args_string,1);
+	std::string args_string;
+	args.GetArgsStringForDisplay(args_string,1);
 	dprintf( D_ALWAYS, "About to exec %s script: %s %s\n", 
-			 name, exe_path.Value(), 
-			 args_string.Value() );
+			 name, exe_path.c_str(), 
+			 args_string.c_str() );
 		
 	// If there is a requested coresize for this job, enforce it.
 	// It is truncated because you can't put an unsigned integer
@@ -255,7 +262,7 @@ ScriptProc::StartJob()
 		core_size_ptr = &core_size;
 	}
 
-	JobPid = daemonCore->Create_Process(exe_path.Value(), 
+	JobPid = daemonCore->Create_Process(exe_path.c_str(), 
 	                                    args,
 	                                    PRIV_USER_FINAL,
 	                                    1,
@@ -284,20 +291,20 @@ ScriptProc::StartJob()
 		JobPid = -1;
 
 		if( create_process_error ) {
-			MyString err_msg = "Failed to execute '";
-			err_msg += exe_path.Value();
+			std::string err_msg = "Failed to execute '";
+			err_msg += exe_path;
 			err_msg += "'";
-			if(!args_string.IsEmpty()) {
+			if(!args_string.empty()) {
 				err_msg += " with arguments ";
-				err_msg += args_string.Value();
+				err_msg += args_string;
 			}
 			err_msg += ": ";
 			err_msg += create_process_error;
-			Starter->jic->notifyStarterError( err_msg.Value(), true, CONDOR_HOLD_CODE_FailedToCreateProcess, create_process_errno );
+			Starter->jic->notifyStarterError( err_msg.c_str(), true, CONDOR_HOLD_CODE_FailedToCreateProcess, create_process_errno );
 		}
 
 		EXCEPT( "Create_Process(%s,%s, ...) failed",
-				exe_path.Value(), args_string.Value() );
+				exe_path.c_str(), args_string.c_str() );
 		return 0;
 	}
 

@@ -399,7 +399,7 @@ void updateStatisticsLog( const TimeSensitiveQueue<T> & queue, bool forceUpdate 
 
 	time_t now = time( NULL );
 	struct tm * ns = localtime( & now );
-	char nowString[] = "YYYY-MM-DD HH:MM:SS";
+	char nowString[72] = "YYYY-MM-DD HH:MM:SS";
 	snprintf( nowString, sizeof( nowString ), "%4d-%02d-%02d %02d:%02d:%02d",
 			  ns->tm_year + 1900, ns->tm_mon + 1, ns->tm_mday,
 			  ns->tm_hour, ns->tm_min, ns->tm_sec );
@@ -426,7 +426,7 @@ void updateStatisticsLog( const TimeSensitiveQueue<T> & queue, bool forceUpdate 
 
 template< class T >
 bool sendPostField( const std::string & postString, CURL * curl, const std::string & url, const std::string & verb, char * curlErrorBuffer, unsigned long & responseCode, const TimeSensitiveQueue< T > & queue ) {
-dprintf( D_ALWAYS, "sendPostField(): body length %lu, url %s, verb %s.\n", postString.length(), url.c_str(), verb.c_str() );
+dprintf( D_ALWAYS, "sendPostField(): body length %zu, url %s, verb %s.\n", postString.length(), url.c_str(), verb.c_str() );
 	++curlCalledCount;
 
 	dprintf( D_FULLDEBUG, "Sending commands to URL '%s'.\n", url.c_str() );

@@ -40,18 +40,18 @@ _checkInvalidParam( const char* name, bool except ) {
 		free(tmp);
 	}
 }
-void GetConfigExecuteDir( int slot_id, MyString *execute_dir, MyString *partition_id )
+void GetConfigExecuteDir( int slot_id, std::string &execute_dir, std::string &partition_id )
 {
-	MyString execute_param;
+	std::string execute_param;
 	char *execute_value = NULL;
-	execute_param.formatstr("SLOT%d_EXECUTE",slot_id);
-	execute_value = param( execute_param.Value() );
+	formatstr(execute_param,"SLOT%d_EXECUTE",slot_id);
+	execute_value = param( execute_param.c_str() );
 	if( !execute_value ) {
 		execute_value = param( "EXECUTE" );
 	}
 	if( !execute_value ) {
 		EXCEPT("EXECUTE (or %s) is not defined in the configuration.",
-			   execute_param.Value());
+			   execute_param.c_str());
 	}
 
 #if defined(WIN32)
@@ -64,25 +64,25 @@ void GetConfigExecuteDir( int slot_id, MyString *execute_dir, MyString *partitio
 	}
 #endif
 
-	*execute_dir = execute_value;
-	dprintf(D_FULLDEBUG, "Got execute_dir = %s\n",execute_dir->Value());
+	execute_dir = execute_value;
+	dprintf(D_FULLDEBUG, "Got execute_dir = %s\n",execute_dir.c_str());
 	free( execute_value );
 
 		// Get a unique identifier for the partition containing the execute dir
 	char *partition_value = NULL;
-	bool partition_rc = sysapi_partition_id( execute_dir->Value(), &partition_value );
+	bool partition_rc = sysapi_partition_id( execute_dir.c_str(), &partition_value );
 	if( !partition_rc ) {
 		struct stat statbuf;
-		if( stat(execute_dir->Value(), &statbuf)!=0 ) {
+		if( stat(execute_dir.c_str(), &statbuf)!=0 ) {
 			int stat_errno = errno;
 			EXCEPT("Error accessing execute directory %s specified in the configuration setting %s: (errno=%d) %s",
-				   execute_dir->Value(), execute_param.Value(), stat_errno, strerror(stat_errno) );
+				   execute_dir.c_str(), execute_param.c_str(), stat_errno, strerror(stat_errno) );
 		}
 		EXCEPT("Failed to get partition id for %s=%s",
-			   execute_param.Value(), execute_dir->Value());
+			   execute_param.c_str(), execute_dir.c_str());
 	}
 	ASSERT( partition_value );
-	*partition_id = partition_value;
+	partition_id = partition_value;
 	free(partition_value);
 }
 
@@ -91,6 +91,7 @@ CpuAttributes** buildCpuAttrs( MachAttributes *m_attr, int max_types, StringList
 	int num;
 	CpuAttributes* cap;
 	CpuAttributes** cap_array;
+	std::string logbuf; logbuf.reserve(200);  // buffer use for reporting resource totals
 
 		// Available system resources.
 	AvailAttributes avail( m_attr );
@@ -109,14 +110,14 @@ CpuAttributes** buildCpuAttrs( MachAttributes *m_attr, int max_types, StringList
 					cap_array[num] = cap;
 					num++;
 				} else {
-						// We ran out of system resources.
-					dprintf( D_ALWAYS,
-							 "ERROR: Can't allocate %s slot of type %d\n",
-							 num_string(j+1), i );
-					dprintf( D_ALWAYS | D_NOHEADER, "\tRequesting: " );
-					cap->show_totals( D_ALWAYS );
-					dprintf( D_ALWAYS | D_NOHEADER, "\tAvailable:  " );
-					avail.show_totals( D_ALWAYS, cap );
+					// We ran out of system resources.
+					logbuf =    "\tRequesting: ";
+					cap->cat_totals(logbuf);
+					logbuf += "\n\tAvailable:  ";
+					avail.cat_totals(logbuf, cap->executePartitionID());
+					dprintf( D_ALWAYS | D_FAILURE,
+							 "ERROR: Can't allocate %s slot of type %d\n%s\n",
+							 num_string(j+1), i, logbuf.c_str() );
 					delete cap;	// This isn't in our array yet.
 					if( except ) {
 						EXCEPT( "Ran out of system resources" );
@@ -148,20 +149,25 @@ CpuAttributes** buildCpuAttrs( MachAttributes *m_attr, int max_types, StringList
 		cap = cap_array[i];
 		unsigned long bit = 1 << cap->type();
 		if (report_auto & bit) {
-			dprintf(d_level, "Allocating auto shares for ");
-			cap->show_totals(d_level);
+			if (IsDebugLevel(d_level)) {
+				logbuf.clear();
+				cap->cat_totals(logbuf);
+				dprintf(d_level, "Allocating auto shares for slot type %d: %s\n", cap->type(), logbuf.c_str());
+			}
 			report_auto &= ~bit;
 		}
 		if( !avail.computeAutoShares(cap, remain_cap, remain_cnt) ) {
 
-				// We ran out of system resources.
-			dprintf( D_ALWAYS,
-					 "ERROR: Can't allocate slot id %d during auto "
-					 "allocation of resources\n", i+1 );
-			dprintf(D_ALWAYS | D_NOHEADER, "\tRequesting ");
-			cap->show_totals(d_level);
-			dprintf( D_ALWAYS | D_NOHEADER, "\tAvailable:  " );
-			avail.show_totals( D_ALWAYS, cap );
+			// We ran out of system resources.
+			logbuf =    "\tRequesting: ";
+			cap->cat_totals(logbuf);
+			logbuf += "\n\tAvailable:  ";
+			avail.cat_totals(logbuf, cap->executePartitionID());
+
+			dprintf(D_ALWAYS | D_FAILURE,
+					"ERROR: Can't allocate slot id %d (slot type %d) during auto allocation of resources\n%s\n",
+					i+1, cap->type(), logbuf.c_str() );
+
 			delete cap;	// This isn't in our array yet.
 			if( except ) {
 				EXCEPT( "Ran out of system resources in auto allocation" );
@@ -174,7 +180,12 @@ CpuAttributes** buildCpuAttrs( MachAttributes *m_attr, int max_types, StringList
 				return NULL;
 			}
 		}
-		cap->show_totals(d_level);
+
+		if (IsDebugLevel(d_level)) {
+			logbuf.clear();
+			cap->cat_totals(logbuf);
+			dprintf(d_level, "  slot type %d: %s\n", cap->type(), logbuf.c_str());
+		}
 	}
 
 	for (int i=0; i<num; i++) {
@@ -187,7 +198,7 @@ void initTypes( int max_types, StringList **type_strings, int except )
 {
 	int i;
 	char* tmp;
-	MyString buf;
+	std::string buf;
 
 	_checkInvalidParam("SLOT_TYPE_0", except);
 		// CRUFT
@@ -203,13 +214,21 @@ void initTypes( int max_types, StringList **type_strings, int except )
 		if( type_strings[i] ) {
 			continue;
 		}
-		buf.formatstr("SLOT_TYPE_%d", i);
-		tmp = param(buf.Value());
+		formatstr(buf, "SLOT_TYPE_%d", i);
+		tmp = param(buf.c_str());
 		if (!tmp) {
 				continue;
 		}
+		//dprintf(D_ALWAYS, "reading SLOT_TYPE_%d=%s\n", i, tmp);
 		type_strings[i] = new StringList();
-		type_strings[i]->initializeFromString( tmp );
+		if (strchr(tmp, '\n')) {
+			type_strings[i]->initializeFromString(tmp, '\n');
+		} else {
+			type_strings[i]->initializeFromString(tmp);
+		}
+		//for (const char * str = type_strings[i]->first(); str != NULL; str = type_strings[i]->next()) {
+		//	dprintf(D_ALWAYS, "\t[%s]\n", str);
+		//}
 		free( tmp );
 	}
 }
@@ -218,8 +237,7 @@ void initTypes( int max_types, StringList **type_strings, int except )
 int countTypes( int max_types, int num_cpus, int** array_ptr, bool except )
 {
 	int i, num=0, num_set=0;
-    MyString param_name;
-    MyString cruft_name;
+	std::string param_name;
 	int* my_type_nums = new int[max_types];
 
 	if( ! array_ptr ) {
@@ -232,8 +250,8 @@ int countTypes( int max_types, int num_cpus, int** array_ptr, bool except )
 	_checkInvalidParam("NUM_VIRTUAL_MACHINES_TYPE_0", except);
 
 	for( i=1; i<max_types; i++ ) {
-		param_name.formatstr("NUM_SLOTS_TYPE_%d", i);
-		my_type_nums[i] = param_integer(param_name.Value(), 0);
+		formatstr(param_name, "NUM_SLOTS_TYPE_%d", i);
+		my_type_nums[i] = param_integer(param_name.c_str(), 0);
 		if (my_type_nums[i]) {
 			num_set = 1;
 			num += my_type_nums[i];
@@ -328,18 +346,20 @@ const int UNSET_SHARE = -9998;
 
 CpuAttributes* buildSlot( MachAttributes *m_attr, int slot_id, StringList* list, int type, bool except )
 {
-    typedef CpuAttributes::slotres_map_t slotres_map_t;
+	typedef CpuAttributes::slotres_map_t slotres_map_t;
+	typedef CpuAttributes::slotres_constraint_map_t slotres_constraint_map_t;
 	double cpus = UNSET_SHARE;
 	int ram = UNSET_SHARE; // this is in MB so an int is enough
 	double disk_fraction = UNSET_SHARE;
 	double swap_fraction = UNSET_SHARE;
 	slotres_map_t slotres;
+	slotres_constraint_map_t slotres_req;
 	special_share_t default_share_special = SPECIAL_SHARE_AUTO;
 	double default_share = AUTO_SHARE;
 	bool allow_fractional_cpu = false;
 
-	MyString execute_dir, partition_id;
-	GetConfigExecuteDir( slot_id, &execute_dir, &partition_id );
+	std::string execute_dir, partition_id;
+	GetConfigExecuteDir( slot_id, execute_dir, partition_id );
 
 	if ( list == NULL) {
 	  // give everything the default share and return
@@ -351,7 +371,7 @@ CpuAttributes* buildSlot( MachAttributes *m_attr, int slot_id, StringList* list,
           slotres[j->first] = default_share;
       }
 
-	  return new CpuAttributes( m_attr, type, cpus, ram, AUTO_SHARE, AUTO_SHARE, slotres, execute_dir, partition_id );
+	  return new CpuAttributes( m_attr, type, cpus, ram, AUTO_SHARE, AUTO_SHARE, slotres, slotres_req, execute_dir, partition_id );
 	}
 		// For this parsing code, deal with the following example
 		// string list:
@@ -398,7 +418,8 @@ CpuAttributes* buildSlot( MachAttributes *m_attr, int slot_id, StringList* list,
 			// Get the value for this attribute.  It'll either be a
 			// percentage, or it'll be a distinct value (in which
 			// case, parse_share_value() will return negative.
-        string val = attr_expr.substr(1+eqpos);
+		std::string val = attr_expr.substr(1+eqpos); trim(val);
+		std::string constr;
 		if (val.empty()) {
 			dprintf(D_ALWAYS, "Can't parse attribute \"%s\" in description of slot type %d\n",
 					attr_expr.c_str(), type);
@@ -407,6 +428,13 @@ CpuAttributes* buildSlot( MachAttributes *m_attr, int slot_id, StringList* list,
 			} else {
 				return NULL;
 			}
+		}
+		string::size_type colonpos = val.find(':');
+		if (string::npos != colonpos) {
+			constr = val.substr(colonpos + 1);
+			trim(constr);
+			val = val.substr(0, colonpos);
+			trim(val);
 		}
 		special_share_t share_special = SPECIAL_SHARE_NONE;
 		double share = parse_share_value(val.c_str(), type, except, share_special);
@@ -417,6 +445,9 @@ CpuAttributes* buildSlot( MachAttributes *m_attr, int slot_id, StringList* list,
 		slotres_map_t::const_iterator f(m_attr->machres().find(attr));
 		if (f != m_attr->machres().end()) {
 			slotres[f->first] = compute_local_resource(f->second, share);
+			if ( ! constr.empty()) {
+				slotres_req[f->first] = constr;
+			}
 			continue;
 		}
 
@@ -519,6 +550,6 @@ CpuAttributes* buildSlot( MachAttributes *m_attr, int slot_id, StringList* list,
 	}
 
 		// Now create the object.
-	return new CpuAttributes( m_attr, type, cpus, ram, swap_fraction, disk_fraction, slotres, execute_dir, partition_id );
+	return new CpuAttributes( m_attr, type, cpus, ram, swap_fraction, disk_fraction, slotres, slotres_req, execute_dir, partition_id );
 }
 

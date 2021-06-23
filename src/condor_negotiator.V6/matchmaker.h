@@ -28,6 +28,7 @@
 #include "dc_collector.h"
 #include "condor_ver_info.h"
 #include "matchmaker_negotiate.h"
+#include "GroupEntry.h"
 
 #include <vector>
 #include <string>
@@ -39,60 +40,8 @@ typedef struct MapEntry {
 	int sequenceNum;
 	ClassAd *oldAd;
 } MapEntry;
-/* ODBC object extern */
-//extern ODBC *DBObj;
-
-struct GroupEntry {
-    typedef vector<int>::size_type size_type;
-
-	GroupEntry();
-	~GroupEntry();
-
-    // these are set from configuration
-	string name;
-    double config_quota;
-	bool static_quota;
-	bool accept_surplus;
-    bool autoregroup;
-
-    // current usage information coming into this negotiation cycle
-    double usage;
-    ClassAdListDoesNotDeleteAds* submitterAds;
-    double priority;
-
-    // slot quota as computed by HGQ
-    double quota;
-    // slots requested: jobs submitted against this group
-    double requested;
-    // slots requested, not mutated
-    double currently_requested;
-    // slots allocated to this group by HGQ
-    double allocated;
-    // sum of slot quotas in this subtree
-    double subtree_quota;
-    // all slots requested by this group and its subtree
-    double subtree_requested;
-
-	// sum of usage of this node and all children
-	double subtree_usage;
-    // true if this group got served by most recent round robin
-    bool rr;
-    // timestamp of most recent allocation from round robin
-    double rr_time;
-    double subtree_rr_time;
-
-    // tree structure
-    GroupEntry* parent;
-    vector<GroupEntry*> children;
-    map<string, size_type, Accountant::ci_less> chmap;
-
-    // attributes for configurable sorting
-    ClassAd* sort_ad;
-    double sort_key;
-};
 
 /* Disable floating-point equality warnings */
-
 GCC_DIAG_OFF(float-equal)
 
 class Matchmaker : public Service
@@ -108,7 +57,6 @@ class Matchmaker : public Service
 		// reinitialization method (reconfig)
 		int reinitialize ();	
 
-            //typedef HashTable<MyString, MyString> ClaimIdHash;
         typedef std::map<std::string, std::set<std::string> > ClaimIdHash;
 
 		// command handlers
@@ -118,6 +66,7 @@ class Matchmaker : public Service
 		int DELETE_USER_commandHandler(int, Stream*);
 		int SET_PRIORITYFACTOR_commandHandler(int, Stream*);
 		int SET_PRIORITY_commandHandler(int, Stream*);
+		int SET_CEILING_commandHandler(int, Stream*);
 		int SET_ACCUMUSAGE_commandHandler(int, Stream*);
 		int SET_BEGINTIME_commandHandler(int, Stream*);
 		int SET_LASTTIME_commandHandler(int, Stream*);
@@ -138,7 +87,7 @@ class Matchmaker : public Service
 		static float EvalNegotiatorMatchRank(char const *expr_name,ExprTree *expr,
 		                              ClassAd &request,ClassAd *resource);
 
-		bool getGroupInfoFromUserId(const char* user, string& groupName, float& groupQuota, float& groupUsage);
+		bool getGroupInfoFromUserId(const char* user, std::string& groupName, float& groupQuota, float& groupUsage);
 
 		void forwardAccountingData(std::set<std::string> &names);
 		void forwardGroupAccounting(CollectorList *cl, GroupEntry *ge);
@@ -164,7 +113,9 @@ class Matchmaker : public Service
 		// auxillary functions
 		bool obtainAdsFromCollector (ClassAdList &allAds, ClassAdListDoesNotDeleteAds &startdAds, ClassAdListDoesNotDeleteAds &submitterAds, std::set<std::string> &submitterNames, ClaimIdHash &claimIds );	
 		char * compute_significant_attrs(ClassAdListDoesNotDeleteAds & startdAds);
-		bool consolidate_globaljobprio_submitter_ads(ClassAdListDoesNotDeleteAds & submitterAds);
+		bool consolidate_globaljobprio_submitter_ads(ClassAdListDoesNotDeleteAds & submitterAds) const;
+
+		void SetupMatchSecurity(ClassAdListDoesNotDeleteAds &submitterAds);
 
 		/**
 		 * Start the network communication necessary for a negotiation cycle.
@@ -215,7 +166,7 @@ class Matchmaker : public Service
 		**/
 		int negotiate(char const* groupName, char const *submitterName, const ClassAd *submitterAd,
 		   double priority,
-           double submitterLimit, double submitterLimitUnclaimed,
+           double submitterLimit, double submitterLimitUnclaimed, int submitterCeiling,
 		   ClassAdListDoesNotDeleteAds &startdAds, ClaimIdHash &claimIds, 
 		   bool ignore_schedd_limit, time_t deadline,
            int& numMatched, double &pieLeft);
@@ -238,6 +189,11 @@ class Matchmaker : public Service
 						const char* submitterName, const char* scheddAddr);
 		void calculateNormalizationFactor (ClassAdListDoesNotDeleteAds &submitterAds, double &max, double &normalFactor,
 										   double &maxAbs, double &normalAbsFactor);
+
+			// Take a submitter ad from the collector and apply any changes necessary.
+			// For example, we can change the submitter name based on the authenticated
+			// identity in the collector.
+		bool TransformSubmitterAd(classad::ClassAd &ad);
 
 		// Check to see if any concurrency limit is violated with the given set of limits.
 		// *Note* limits will be changed to lower-case.
@@ -262,7 +218,7 @@ class Matchmaker : public Service
 			@param submitterPrio User priority
 			@param submitterPrioFactor Result is this submitter's prio factor
 		**/
-		void calculateSubmitterLimit(char const *submitterName,
+		void calculateSubmitterLimit(const std::string &submitterName,
 		                          char const *groupAccountingName,
 		                          float groupQuota,
 					  float groupusage,
@@ -310,7 +266,6 @@ class Matchmaker : public Service
 		void OptimizeJobAdForMatchmaking(ClassAd *ad);
 
 		void MakeClaimIdHash(ClassAdList &startdPvtAdList, ClaimIdHash &claimIds);
-		char const *getClaimId (const char *, const char *, ClaimIdHash &, MyString &);
 		void addRemoteUserPrios( ClassAd* ad );
 		void addRemoteUserPrios( ClassAdListDoesNotDeleteAds &cal );
 		void insertNegotiatorMatchExprs(ClassAd *ad);
@@ -324,7 +279,7 @@ class Matchmaker : public Service
 		std::map<std::string, ClassAd *> m_slotNameToAdMap;
 
 		bool pslotMultiMatch(ClassAd *job, ClassAd *machine, const char* submitterName,
-			bool only_startd_rank, string &dslot_claims, PreemptState &candidatePreemptState);
+			bool only_startd_rank, std::string &dslot_claims, PreemptState &candidatePreemptState);
 
 		/** trimStartdAds will throw out startd ads have no business being 
 			visible to the matchmaking engine, but were fetched from the 
@@ -337,7 +292,7 @@ class Matchmaker : public Service
 		**/
 		int trimStartdAds(ClassAdListDoesNotDeleteAds &startdAds);
 		// Note: these are called by trimStartdAds as required
-		int trimStartdAds_PreemptionLogic(ClassAdListDoesNotDeleteAds &startdAds);
+		int trimStartdAds_PreemptionLogic(ClassAdListDoesNotDeleteAds &startdAds) const;
 		int trimStartdAds_ShutdownLogic(ClassAdListDoesNotDeleteAds &startdAds);
 
 		bool SubmitterLimitPermits(ClassAd* request, ClassAd* candidate, double used, double allowed, double pieLeft);
@@ -383,6 +338,7 @@ class Matchmaker : public Service
                                          // constraint before calculating quotas
                                          // formerly DynQuotaMachConstraint Added for CDF.
 
+		std::string m_SubmitterConstraintStr;
 		std::string m_JobConstraintStr;
 
 		bool m_staticRanks;
@@ -390,14 +346,13 @@ class Matchmaker : public Service
 		StringList NegotiatorMatchExprNames;
 		StringList NegotiatorMatchExprValues;
 
-		map<string, int> ScheddsTimeInCycle;
+		std::map<std::string, int> ScheddsTimeInCycle;
 
 		CollectorList* Collectors;
 
-		typedef HashTable<MyString, MapEntry*> AdHash;
+		typedef HashTable<std::string, MapEntry*> AdHash;
 		AdHash *stashedAds;			
 
-		typedef HashTable<MyString, float> groupQuotasHashType;
 		groupQuotasHashType *groupQuotasHash;
 
 		// rank condition on matches
@@ -430,6 +385,7 @@ class Matchmaker : public Service
 		int rejPreemptForPolicy; //   - PREEMPTION_REQUIREMENTS == False?
 		int rejPreemptForRank;	//   - startd RANKs new job lower?
 		int rejForSubmitterLimit;   //   - not enough group quota?
+		int rejForSubmitterCeiling;   //   - not enough submitter ceiling ?
 	std::set<std::string> rejectedConcurrencyLimits;
 	std::string lastRejectedConcurrencyString;
 		bool m_dryrun;
@@ -453,7 +409,7 @@ class Matchmaker : public Service
 			double			PostJobRankValue;
 			double			PreemptRankValue;
 			PreemptState	PreemptStateValue;
-			MyString			DslotClaims;
+			std::string			DslotClaims;
 			ClassAd *ad;
 		};
 
@@ -492,7 +448,7 @@ class Matchmaker : public Service
 		{
 		public:
 
-			ClassAd* pop_candidate(string &dslot_claims);
+			ClassAd* pop_candidate(std::string &dslot_claims);
 				// Return the previously-pop'd candidate back into the list.
 				// Note that this assumes there is empty space in the front of the list
 				// Also assume list was already sorted.
@@ -511,23 +467,25 @@ class Matchmaker : public Service
 					int & rejPreemptForPrio,
 					int & rejPreemptForPolicy,
 					int & rejPreemptForRank,
-					int & rejForSubmitterLimit);
+					int & rejForSubmitterLimit,
+					int & rejForSubmitterCeiling) const;
 			void set_diagnostics(int rejForNetwork,
 					int rejForNetworkShare,
 					int rejForConcurrencyLimit,
 					int rejPreemptForPrio,
 					int rejPreemptForPolicy,
 					int rejPreemptForRank,
-					int rejForSubmitterLimit);
+					int rejForSubmitterLimit,
+					int rejForSubmitterCeiling);
 			void add_candidate(ClassAd* candidate,
 					double candidateRankValue,
 					double candidatePreJobRankValue,
 					double candidatePostJobRankValue,
 					double candidatePreemptRankValue,
 					PreemptState candidatePreemptState,
-					const string &candidateDslotClaims);
+					const std::string &candidateDslotClaims);
 			void sort();
-			int length() { return adListLen - adListHead; }
+			int length() const { return adListLen - adListHead; }
 
 			MatchListType(int maxlen);
 			~MatchListType();
@@ -538,7 +496,7 @@ class Matchmaker : public Service
 		private:
 			
 			// AdListEntry* peek_candidate();
-			static int sort_compare(const void*, const void*);
+			static bool sort_compare(const AdListEntry &Elem1, const AdListEntry &Elem2);
 			AdListEntry* AdListArray;			
 			int adListMaxLen;	// max length of AdListArray
 			int adListLen;		// current length of AdListArray
@@ -552,6 +510,7 @@ class Matchmaker : public Service
 			int m_rejPreemptForPolicy; //   - PREEMPTION_REQUIREMENTS == False?
 			int m_rejPreemptForRank;    //   - startd RANKs new job lower?
 			int m_rejForSubmitterLimit;     //  - not enough group quota?
+			int m_rejForSubmitterCeiling;     //  - not enough submitter ceiling?
 			float m_submitterLimit;
 			
 			
@@ -565,30 +524,9 @@ class Matchmaker : public Service
 
         // set at startup/restart/reinit
         GroupEntry* hgq_root_group;
-        string hgq_root_name;
-        vector<GroupEntry*> hgq_groups;
-        map<string, GroupEntry*> group_entry_map;
+		std::vector<GroupEntry*> hgq_groups;
         bool accept_surplus;
         bool autoregroup;
-        bool allow_quota_oversub;
-
-        void hgq_construct_tree();
-        void hgq_assign_quotas(GroupEntry* group, double quota);
-        double hgq_fairshare(GroupEntry* group);
-        double hgq_allocate_surplus(GroupEntry* group, double surplus);
-        double hgq_recover_remainders(GroupEntry* group);
-        double hgq_round_robin(GroupEntry* group, double surplus);
-
-        struct ord_by_rr_time {
-            vector<GroupEntry*>* data;
-            bool operator()(unsigned long const& ja, unsigned long const& jb) const {
-                GroupEntry* a = (*data)[ja];
-                GroupEntry* b = (*data)[jb];
-                if (a->subtree_rr_time != b->subtree_rr_time) return a->subtree_rr_time < b->subtree_rr_time;
-                if (a->subtree_quota != b->subtree_quota) return a->subtree_quota > b->subtree_quota;
-                return a->subtree_requested > b->subtree_requested;
-            }
-        };
 
         // true if resource ads with consumption policies are present
         // for the current negotiation cycle
@@ -604,8 +542,6 @@ class Matchmaker : public Service
 
 		void StartNewNegotiationCycleStat();
 		void publishNegotiationCycleStats( ClassAd *ad );
-
-		double calculate_subtree_usage(GroupEntry *group);
 };
 GCC_DIAG_ON(float-equal)
 

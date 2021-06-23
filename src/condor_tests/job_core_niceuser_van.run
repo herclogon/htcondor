@@ -25,65 +25,48 @@ use strict;
 use warnings;
 
 my $testname = "job_core_niceuser_van";
-my $debuglevel = 2;
 
-# where am I running
-my $currenthost = CondorTest::getFqdnHost();
-my $pid = $$;
-
-print scalar localtime() . "\n";
-
-my $firstappend_condor_config = '
+#testreq: personal
+my $config = <<CONDOR_TESTREQ_CONFIG;
     DAEMON_LIST = MASTER,SCHEDD,COLLECTOR,NEGOTIATOR,STARTD
     NUM_CPUS = 1
     NEGOTIATOR_INTERVAL = 5
-';
+CONDOR_TESTREQ_CONFIG
+#endtestreq
 
-my $configfile = CondorTest::CreateLocalConfig($firstappend_condor_config,"jobcoreniceuservan");
-print "local config file:$configfile\n";
+my $debuglevel = 2;
+my $pid = $$;
 
-CondorTest::StartCondorWithParams(
-    condor_name => "jobcoreniceuservan",
-    fresh_local => "TRUE",
-    condorlocalsrc => "$configfile",
-);
+# ---  TESTING STRATEGY ----
+#  submit a cluster with at least 2 procs to a single slot pool
+#  proc0 has nice_user=true, proc1 does not
+#  verify that proc1 runs before proc0 by having the jobs
+#  append a message to a common file, and then reading the file
+#  on completion of the cluster
+#
 
-# where am I running
-$currenthost = CondorTest::getFqdnHost();
-
-
-my @sdata =
-(
-"1",
-"8",
-"3",
-"10",
-"5",
-"2"
-);
+TLOG "Test $testname started pid=$pid\n";
 
 my @vdata =
 (
-"1",
-"2",
+"rude",
+"rude",
+"nice-user",
+"nice-user"
 );
 
 my @skiplines = ();
-my $datafile = "job_core_niceuser_van$pid.data";
-
-
-my $doonlyonce = "";
-my $count = 2;
-
+my $datafile = "$testname$pid.data";
+my $count = 4;
 
 my $ExitSuccess = sub 
 {
 	my %info = @_;
 
-	print "Job Completed.....\n";
+	my $jid = $info{ 'cluster' } . "." . $info{ 'job' };
 	$count = $count - 1;
+	TLOG("Job $jid Completed..... remaining jobs: $count\n");
 
-	print "Count now $count\n";
 	if( $count != 0 )
 	{
 		return(0);
@@ -99,27 +82,15 @@ my $ExitSuccess = sub
 
 CreateEmptyFile("$datafile");
 
-my $multiqueue = "
-	nice_user = false
-	arguments = 1 $datafile
-	queue
-";
-
-my $submitextras = '
-	nice_user = true
-';
-
-
 SimpleJob::RunCheck(
     runthis=>"x_do_niceuser.pl",
-	duration=>"2 $datafile",
+	duration=>'$(accounting_group) ' . $datafile,
 	should_transfer_files=>"YES",
 	when_to_transfer_output=>"ON_EXIT",
 	transfer_input_files=>"$datafile",
 	transfer_output_files=>"$datafile",
-    on_success=>$ExitSuccess,
-	append_submit_commands=>"$submitextras",
-	multi_queue=>$multiqueue,
+	on_success=>$ExitSuccess,
+	queue_sz=>"accounting_group in (nice-user, rude, rude, nice-user)"
 );
 
 CondorTest::EndTest();

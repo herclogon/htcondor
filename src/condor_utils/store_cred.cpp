@@ -34,272 +34,121 @@
 #include "condor_base64.h"
 #include "zkm_base64.h"
 #include "my_popen.h"
+#include "directory.h"
 
-static int code_store_cred(Stream *socket, char* &user, char* &pw, int &mode);
+#include <chrono>
+#include <algorithm>
+#include <iterator>
+#include <unordered_set>
 
-#ifndef WIN32
-	// **** UNIX CODE *****
+const int MODE_MASK = 3;
+const int CRED_TYPE_MASK = 0x2C;
 
-void SecureZeroMemory(void *p, size_t n)
+static const char *mode_name[] = {
+	ADD_CREDENTIAL,
+	DELETE_CREDENTIAL,
+	QUERY_CREDENTIAL,
+	CONFIG_CREDENTIAL,
+};
+
+static const char *err_strings[] = {
+	"Operation failed",       // FAILURE
+	"Operation succeeded",    // SUCCESS
+	"A credential is stored, but it is invalid", // FAILURE_BAD_PASSWORD
+	"Operation failed because the target daemon is not running as SYSTEM", // FAILURE_NO_IMPERSONATE
+	"Operation aborted because communiction was not secure", // FAILURE_NOT_SECURE
+	"No credential is stored", // FAILURE_NOT_FOUND
+	"A credential is stored, but it has not yet been processed", // SUCCESS_PENDING
+	"Operation failed because it is not allowed", // FAILURE_NOT_ALLOWED
+	"Operation aborted due to missing or bad arguments", // FAILURE_BAD_ARGS
+	"Arguments are missing, client and server my be mismatched", // FAILURE_PROTOCOL_MISMATCH
+	"The credmon did not process credentials within the timeout period", // FAILURE_CREDMON_TIMEOUT
+	"Operation failed because of a configuration error", // FAILURE_CONFIG_ERROR
+	"Failure parsing credential as JSON", // FAILURE_JSON_PARSE
+	"Credential was found but it did not match requested scopes or audience", // FAILURE_CRED_MISMATCH
+};
+
+// check to see if store_cred return value is a failure, and return a string for the failure code if so
+bool store_cred_failed(long long ret, int mode, const char ** errstring /*=NULL*/)
 {
-	// TODO: make this Secure
-	memset(p, 0, n);
-}
-
-
-int
-OAUTH_STORE_CRED(const char *user, const char *pw, const int len, int mode, int &cred_modified)
-{
-	// store a SciToken produced by the credential producer.
-	//
-	// this is a stop-gap measure to transition from the "old" (cern/desy)
-	// framework into the "new" (scitokens) framework.  once the modules
-	// exist and are configurable, the token should be stored using that
-	// method, not via the credential producer.
-
-	dprintf(D_ALWAYS, "OAUTH store cred user %s len %i mode %i\n", user, len, mode);
-
-	// only set to true if it actually happens
-	cred_modified = false;
-
-	auto_free_ptr cred_dir( param("SEC_CREDENTIAL_DIRECTORY") );
-	if(!cred_dir) {
-		dprintf(D_ALWAYS, "ERROR: got STORE_CRED but SEC_CREDENTIAL_DIRECTORY not defined!\n");
-		return FAILURE;
+	if ((mode & MODE_MASK) != GENERIC_DELETE) {
+		if (ret > 100) { // return value may be a time_t for query
+			return false;
+		}
 	}
-
-	// get username
-	char username[256];
-	const char *at = strchr(user, '@');
-	strncpy(username, user, (at-user));
-	username[at-user] = 0;
-
-	// remove mark on update for "mark and sweep"
-	credmon_clear_mark(username);
-
-	// create dir for user's creds
-	MyString user_cred_dir;
-	user_cred_dir.formatstr("%s%c%s", cred_dir.ptr(), DIR_DELIM_CHAR, username);
-	mkdir(user_cred_dir.Value(), 0700);
-
-	// create filenames
-	char tmpfilename[PATH_MAX];
-	char filename[PATH_MAX];
-	sprintf(tmpfilename, "%s%cscitokens.top.tmp", user_cred_dir.Value(), DIR_DELIM_CHAR);
-	sprintf(filename, "%s%cscitokens.top", user_cred_dir.Value(), DIR_DELIM_CHAR);
-	dprintf(D_ALWAYS, "Writing user cred data to %s\n", tmpfilename);
-
-	// contents of pw are base64 encoded.  decode now just before they go
-	// into the file.
-	int rawlen = -1;
-	unsigned char* rawbuf = NULL;
-	zkm_base64_decode(pw, &rawbuf, &rawlen);
-
-	if (rawlen <= 0) {
-		dprintf(D_ALWAYS, "Failed to decode credential!\n");
-		free(rawbuf);
+	if (ret == SUCCESS || ret == SUCCESS_PENDING) {
 		return false;
 	}
-
-	// create user cred dir
-	priv_state priv = set_root_priv();
-	mkdir(user_cred_dir.Value(), 0700);
-	set_priv(priv);
-
-	// write temp file
-	int rc = write_secure_file(tmpfilename, rawbuf, rawlen, true);
-
-	// caller of condor_base64_decode is responsible for freeing buffer
-	free(rawbuf);
-
-	if (rc != SUCCESS) {
-		dprintf(D_ALWAYS, "Failed to write secure temp file %s\n", tmpfilename);
-		return FAILURE;
+	if (errstring && ret >= 0 && ret < (int)COUNTOF(err_strings)) {
+		*errstring = err_strings[ret];
 	}
-
-	// now move into place
-	dprintf(D_ALWAYS, "Renaming %s to %s\n", tmpfilename, filename);
-	priv = set_root_priv();
-	rc = rename(tmpfilename, filename);
-	set_priv(priv);
-
-	if (rc == -1) {
-		dprintf(D_ALWAYS, "Failed to rename %s to %s\n", tmpfilename, filename);
-
-		// should we rm tmpfilename ?
-		return FAILURE;
-	}
-
-	// credential succesfully stored
-	cred_modified = true;
-	return SUCCESS;
+	return true;
 }
 
-int
-UNIX_STORE_CRED(const char *user, const char *pw, const int len, int mode, int &cred_modified)
+
+// check username, which may or may not end in @domain to see if the user name
+// is the magic username that indicates pool password
+static bool username_is_pool_password(const char *user, int * domain_pos = NULL)
 {
-	dprintf(D_ALWAYS, "Unix store cred user %s len %i mode %i\n", user, len, mode);
-
-	// only set to true if it actually happens
-	cred_modified = false;
-
-	auto_free_ptr cred_dir( param("SEC_CREDENTIAL_DIRECTORY") );
-	if(!cred_dir) {
-		dprintf(D_ALWAYS, "ERROR: got STORE_CRED but SEC_CREDENTIAL_DIRECTORY not defined!\n");
-		return FAILURE;
-	}
-
-	// get username
-	char username[256];
+	const int pool_name_len = sizeof(POOL_PASSWORD_USERNAME) - 1;
 	const char *at = strchr(user, '@');
-	strncpy(username, user, (at-user));
-	username[at-user] = 0;
-
-	// remove mark on update for "mark and sweep"
-	credmon_clear_mark(username);
-
-	// check to see if .cc already exists
-	char ccfilename[PATH_MAX];
-	sprintf(ccfilename, "%s%c%s.cc", cred_dir.ptr(), DIR_DELIM_CHAR, username);
-	struct stat cred_stat_buf;
-	int rc = stat(ccfilename, &cred_stat_buf);
-
-	// if the credential already exists, we should update it if
-	// it's more than X seconds old.  if X is zero, we always
-	// update it.  if X is negative, we never update it.
-	int fresh_time = param_integer("SEC_CREDENTIAL_REFRESH_INTERVAL", -1);
-
-	// if it already exists and we don't update, call it a "success".
-	if (rc==0 && fresh_time < 0) {
-		dprintf(D_FULLDEBUG, "CREDMON: credentials for user %s already exist in %s, and interval is %i\n",
-			username, ccfilename, fresh_time );
-
-		return SUCCESS;
+	int len;
+	if (at) {
+		len = (int)(at - user);
+		if (domain_pos) { *domain_pos = len; }
+	} else {
+		len = (int)strlen(user);
+		if (domain_pos) { *domain_pos = -1; }
 	}
-
-	// return success if the credential exists and has been recently
-	// updated.  note that if fresh_time is zero, we'll never return
-	// success here, meaning we will always update the credential.
-	time_t now = time(NULL);
-	if ((rc==0) && (now - cred_stat_buf.st_mtime < fresh_time)) {
-		// was updated in the last X seconds, so call it a "success".
-		dprintf(D_FULLDEBUG, "CREDMON: credentials for user %s already exist in %s, and interval is %i\n",
-			username, ccfilename, fresh_time );
-
-		return SUCCESS;
-	}
-
-	// create filenames
-	char tmpfilename[PATH_MAX];
-	char filename[PATH_MAX];
-	sprintf(tmpfilename, "%s%c%s.cred.tmp", cred_dir.ptr(), DIR_DELIM_CHAR, username);
-	sprintf(filename, "%s%c%s.cred", cred_dir.ptr(), DIR_DELIM_CHAR, username);
-	dprintf(D_ALWAYS, "Writing credential data to %s\n", tmpfilename);
-
-	// contents of pw are base64 encoded.  decode now just before they go
-	// into the file.
-	int rawlen = -1;
-	unsigned char* rawbuf = NULL;
-	zkm_base64_decode(pw, &rawbuf, &rawlen);
-
-	if (rawlen <= 0) {
-		dprintf(D_ALWAYS, "Failed to decode credential!\n");
-		free(rawbuf);
-		return false;
-	}
-
-	// write temp file
-	rc = write_secure_file(tmpfilename, rawbuf, rawlen, true);
-
-	// caller of condor_base64_decode is responsible for freeing buffer
-	free(rawbuf);
-
-	if (rc != SUCCESS) {
-		dprintf(D_ALWAYS, "Failed to write secure temp file %s\n", tmpfilename);
-		return FAILURE;
-	}
-
-	// now move into place
-	dprintf(D_ALWAYS, "Renaming %s to %s\n", tmpfilename, filename);
-	priv_state priv = set_root_priv();
-	rc = rename(tmpfilename, filename);
-	set_priv(priv);
-
-	if (rc == -1) {
-		dprintf(D_ALWAYS, "Failed to rename %s to %s\n", tmpfilename, filename);
-
-		// should we rm tmpfilename ?
-		return FAILURE;
-	}
-
-	// credential succesfully stored
-	cred_modified = true;
-	return SUCCESS;
+	return (len == pool_name_len) && (MATCH == memcmp(user, POOL_PASSWORD_USERNAME, len));
 }
 
 
-char*
-UNIX_GET_CRED(const char *user, const char *domain)
+// returns true if there is a credmon and we managed to kick it
+static bool wake_the_credmon(int mode)
 {
-	dprintf(D_ALWAYS, "Unix get cred user %s domain %s\n", user, domain);
-
-	auto_free_ptr cred_dir( param("SEC_CREDENTIAL_DIRECTORY") );
-	if(!cred_dir) {
-		dprintf(D_ALWAYS, "ERROR: got GET_CRED but SEC_CREDENTIAL_DIRECTORY not defined!\n");
-		return NULL;
+	int cred_type = mode & CRED_TYPE_MASK;
+	if (cred_type == STORE_CRED_USER_KRB) {
+		return credmon_kick(credmon_type_KRB);
+	} else if (cred_type == STORE_CRED_USER_OAUTH) {
+		return credmon_kick(credmon_type_OAUTH);
 	}
-
-	// create filenames
-	MyString filename;
-	filename.formatstr("%s%c%s.cred", cred_dir.ptr(), DIR_DELIM_CHAR, user);
-	dprintf(D_ALWAYS, "CERN: reading data from %s\n", filename.c_str());
-
-	// read the file (fourth argument "true" means as_root)
-	unsigned char *buf = 0;
-	size_t len = 0;
-	bool rc = read_secure_file(filename.c_str(), (void**)(&buf), &len, true);
-
-	if(rc) {
-		// immediately convert to base64
-		char* textpw = condor_base64_encode(buf, len);
-		free(buf);
-		return textpw;
-	}
-
-	return NULL;
+	return false;
 }
 
 
-char* getStoredCredential(const char *username, const char *domain)
+namespace {
+
+class IssuerKeyNameCache
 {
-	// TODO: add support for multiple domains
+private:
+	std::string m_name_list;
+	time_t m_last_refresh;
 
-	if ( !username || !domain ) {
-		return NULL;
+public:
+	IssuerKeyNameCache() : m_last_refresh(0) {}
+
+	void Clear() {
+		m_name_list.clear();
+		m_last_refresh = 0;
 	}
 
-	if (strcmp(username, POOL_PASSWORD_USERNAME) != 0) {
-		dprintf(D_ALWAYS, "GOT UNIX GET CRED\n");
-		return UNIX_GET_CRED(username, domain);
-	} 
-
-	// See if the security manager has overridden the pool password.
-	const std::string &secman_pass = SecMan::getPoolPassword();
-	if (secman_pass.size()) {
-		return strdup(secman_pass.c_str());
+	const std::string & Peek(time_t * last_ref=NULL) {
+		if (last_ref) *last_ref = m_last_refresh;
+		return m_name_list;
 	}
 
-	// EVERYTHING BELOW HERE IS FOR POOL PASSWORD ONLY
+	const std::string & NameList(CondorError *err);
+};
 
-	auto_free_ptr filename( param("SEC_PASSWORD_FILE") );
-	if (!filename) {
-		dprintf(D_ALWAYS,
-		        "error fetching pool password; "
-		            "SEC_PASSWORD_FILE not defined\n");
-		return NULL;
-	}
+IssuerKeyNameCache g_issuer_name_cache;
 
-	char  *buffer;
+}
+
+char *
+read_password_from_filename(const char *filename, CondorError *err)
+{
+	char  *buffer = nullptr;
 	size_t len;
 	bool rc = read_secure_file(filename, (void**)(&buffer), &len, true);
 	if(rc) {
@@ -319,61 +168,721 @@ char* getStoredCredential(const char *username, const char *domain)
 
 		// undo the trivial scramble
 		char *pw = (char *)malloc(len + 1);
-		simple_scramble(pw, buffer, len);
+		simple_scramble(pw, buffer, (int)len);
 		pw[len] = '\0';
 		free(buffer);
 		return pw;
 	}
 
-	dprintf(D_ALWAYS, "getStoredCredential(): read_secure_file(%s) failed!\n", filename.ptr());
+	if (err) err->pushf("CRED", 1, "Failed to read file %s securely.", filename);
+	dprintf(D_ALWAYS, "read_password_from_filename(): read_secure_file(%s) failed!\n", filename);
+	return nullptr;
+}
+
+
+
+#ifndef WIN32
+	// **** UNIX CODE *****
+
+void SecureZeroMemory(void *p, size_t n)
+{
+	// TODO: make this Secure
+	memset(p, 0, n);
+}
+
+#endif
+
+int
+cred_matches(const std::string & credfile, const ClassAd * requestAd)
+{
+	// read the file back to make sure the scopes & audience match
+	// the request
+	size_t clen = 0;
+	void *credp = NULL;
+	if (!read_secure_file(credfile.c_str(), &credp, &clen, true, SECURE_FILE_VERIFY_ACCESS)) {
+		// read_secure_file already logged the failure if it failed
+		return FAILURE_JSON_PARSE;
+	}
+	// unfortunately the buffer is not null terminated so need to make a copy
+	std::string credbuf;
+	credbuf.assign((char *) credp, clen);
+	free(credp);
+	classad::ClassAdJsonParser jsonp;
+	ClassAd credad;
+	if (!jsonp.ParseClassAd(credbuf.c_str(), credad)) {
+		dprintf(D_ALWAYS, "Error, could not parse cred from %s as JSON\n", credfile.c_str());
+		return FAILURE_JSON_PARSE;
+	}
+
+	std::string scopes;
+	std::string audience;
+	if (requestAd) {
+		requestAd->LookupString("Scopes", scopes);
+		requestAd->LookupString("Audience", audience);
+	}
+
+	std::string oldscopes;
+	std::string oldaudience;
+	credad.LookupString("scopes", oldscopes);
+	credad.LookupString("audience", oldaudience);
+	if ((scopes != oldscopes) || (audience != oldaudience)) {
+		return FAILURE_CRED_MISMATCH;
+	}
+
+	return SUCCESS;
+}
+
+long long
+PWD_STORE_CRED(const char *username, const unsigned char * rawbuf, const int rawlen, int mode, std::string & ccfile)
+{
+	dprintf(D_ALWAYS, "PWD store cred user %s len %i mode %i\n", username, rawlen, mode);
+
+	ccfile.clear();
+
+	int rc;
+	std::string pw;
+	if ((mode & MODE_MASK) == GENERIC_ADD) {
+		pw.assign((const char *)rawbuf, rawlen);
+		// check for null characters in password, we don't support those
+		if (pw.length() != strlen(pw.c_str())) {
+			dprintf(D_ALWAYS, "Failed to add password for user %s, password contained NULL characters\n", username);
+			return FAILURE_BAD_PASSWORD;
+		}
+		rc = store_cred_password(username, pw.c_str(), mode);
+		if (rc == SUCCESS) {
+			// on success we return the current time
+			rc = time(NULL);
+		}
+	} else {
+		rc = store_cred_password(username, NULL, mode);
+		if (rc == SUCCESS && (mode & MODE_MASK) == GENERIC_QUERY) {
+			// on success we return the current time
+			rc = time(NULL);
+		}
+	}
+
+	return rc;
+}
+
+// this checks for a specific set of valid characters - ones that could be used
+// in boath an OAuth service name and a valid file name.  perhaps this is too
+// restrictive, but rather than enumerate all bad characters and potential miss
+// some, let's just declare what we are okay with.
+//
+// we restrict service names to alphanumeric plus the following:
+//     - + = _ .
+//
+// everything else is disallowed.
+
+bool okay_for_oauth_filename(std::string s) {
+	for (char c: s) {
+		if (
+			!isalpha(c) &&
+			!isdigit(c) &&
+			!(c == '-') &&
+			!(c == '+') &&
+			!(c == '=') &&
+			!(c == '_') &&
+			!(c == '.') ) {
+
+			// NOT any of the above... bad character.
+			dprintf(D_SECURITY | D_VERBOSE, "ERROR: encountered bad char '%c' in string \"%s\"\n", c, s.c_str());
+			return false;
+		}
+	}
+	return true;
+}
+
+long long
+OAUTH_STORE_CRED(const char *username, const unsigned char *cred, const int credlen, int mode, const ClassAd * ad, ClassAd & return_ad, std::string & ccfile)
+{
+	// store an OAuth token, this is presumed to be a refresh token (*.top file) unless the classad argument
+	// indicates that it is not a refresh token, in which case it is stored as a *.use file
+	//
+
+/*
+	ad arg schema is
+		"service"  : <SERVICE> name
+		"handle"   : optional <handle> name appended to service name to create filenames
+		"scopes"   : optional comma-separated <scopes> list to include in JSON storage or query
+		"audience" : optional <audience> to include in JSON storage or query
+		any of the .meta JSON keywords below
+
+	<service>_<handle>.meta JSON file is
+		{
+		"use_refresh_token": true,  # if false, other fields are not needed
+		"client_secret": user provided or credd generated from <SERVICE>_CLIENT_SECRET_FILE,
+		"client_id": user provided or credd generated from <SERVICE>_CLIENT_ID,
+		"token_url": user provided or credd generated from <SERVICE>_TOKEN_URL,
+		}
+*/
+
+
+	dprintf(D_ALWAYS, "OAUTH store cred user %s len %i mode %i\n", username, credlen, mode);
+	if (!okay_for_oauth_filename(username)) {
+		// include a backtrace here because the username is NOT user-provided, it comes
+		// from the authenticted socket.  the caller of OAUTH_STORE_CRED should have
+		// verified it is in the correct form, but out of caution we check it again.
+		// this could arguably be an ASSERT() but we'd rather not crash the CredD.
+		dprintf(D_ALWAYS | D_BACKTRACE, "OAUTH store cred ERROR - Illegal char in username\n");
+		return FAILURE_BAD_ARGS;
+	}
+
+	// set to full pathname of a file to watch for if the caller needs to wait for a credmon
+	ccfile.clear();
+
+	auto_free_ptr cred_dir( param("SEC_CREDENTIAL_DIRECTORY_OAUTH") );
+	if(!cred_dir) {
+		dprintf(D_ALWAYS, "ERROR: got STORE_CRED_USER_OAUTH but SEC_CREDENTIAL_DIRECTORY_OAUTH not defined!\n");
+		return FAILURE_CONFIG_ERROR;
+	}
+
+	// remove mark on update or query for "mark and sweep"
+	// if mode is QUERY or DELETE we do it because of interest
+	// if mode is DELETE we do it because, well... delete.
+	credmon_clear_mark(cred_dir, username);
+
+	// the user's creds go into a directory
+	std::string user_cred_path;
+	dircat(cred_dir, username, user_cred_path);
+
+	// lookup and validate service name
+	std::string service;
+	if (ad && ad->LookupString("Service", service)) {
+		// this is user input so validate
+		if (!okay_for_oauth_filename(service)) {
+			dprintf(D_ALWAYS, "OAUTH store cred ERROR - Illegal char in Service name.\n");
+			return FAILURE_BAD_ARGS;
+		}
+	}
+
+	// lookup and validate handle name
+	std::string handle;
+	if (ad && ad->LookupString("Handle", handle)) {
+		// this is user input so validate
+		if (!okay_for_oauth_filename(handle)) {
+			dprintf(D_ALWAYS, "OAUTH store cred ERROR - Illegal char in Handle name.\n");
+			return FAILURE_BAD_ARGS;
+		}
+	}
+
+	// if there is a service name and a handle name, concat the two together.
+	// this does mean we don't actually support querying service and/or handle
+	// separately.  until such time as these tokens live in some semi-structured
+	// data store, perhaps with the scopes and audience, this will have to do.
+	if (!service.empty() && !handle.empty()) {
+		service += "_";
+		service += handle;
+	}
+
+	// If this is a query and the service name is empty, return the
+	//   timestamp on the last .top or .use file found.  If this is a
+	//   query and the service name is given, verify that any scopes or
+	//   audience given match and if so return the timestamp on the .use
+	//   file if present, else the .top file.
+	if ((mode & MODE_MASK) == GENERIC_QUERY) {
+		if (service.empty()) {
+			Directory creddir(cred_dir, PRIV_ROOT);
+			if (creddir.Find_Named_Entry(username)) {
+				Directory dir(user_cred_path.c_str(), PRIV_ROOT);
+				const char * fn;
+				int num_top_files = 0;
+				int num_use_files = 0;
+				while ((fn = dir.Next())) {
+					if (ends_with(fn, ".top")) {
+						++num_top_files;
+					} else if (ends_with(fn, ".use")) {
+						++num_use_files;
+					} else {
+						continue;
+					}
+					return_ad.Assign(fn, dir.GetModifyTime());
+				}
+				// TODO: add code to wait for all pending creds?
+				if (num_top_files > 0) {
+					ccfile.clear();
+					return (num_top_files > num_use_files) ? SUCCESS_PENDING : SUCCESS;
+				}
+			}
+			ccfile.clear();
+			return FAILURE_NOT_FOUND;
+		} else {
+			// does the .top file exist?
+			dircat(user_cred_path.c_str(), service.c_str(), ".top", ccfile);
+			struct stat cred_stat_buf;
+			if (stat(ccfile.c_str(), &cred_stat_buf) == 0) {
+				std::string attr("Top"); attr += service; attr += "Time";
+				return_ad.Assign(attr, cred_stat_buf.st_mtime);
+
+				// read the file back to make sure the scopes & audience match
+				int rc = cred_matches(ccfile, ad);
+				ccfile.clear();
+				if (rc != SUCCESS) {
+					return rc;
+				}
+
+				// if there's also a .use file, get its mod
+				//  time as the service attribute
+				dircat(user_cred_path.c_str(), service.c_str(), ".use", ccfile);
+				if (stat(ccfile.c_str(), &cred_stat_buf) >= 0) {
+					ccfile.clear();
+					return_ad.Assign(service, cred_stat_buf.st_mtime);
+					return SUCCESS;
+				} else {
+					return SUCCESS_PENDING;
+				}
+			} else {
+				ccfile.clear();
+				return FAILURE_NOT_FOUND;
+			}
+		}
+	}
+
+	if ((mode & MODE_MASK) == GENERIC_DELETE) {
+		if (service.empty()) {
+			Directory creddir(cred_dir, PRIV_ROOT);
+			if (creddir.Find_Named_Entry(username)) {
+				dprintf(D_ALWAYS, "Deleting OAuth dir for user %s\n", username);
+				if (!creddir.Remove_Current_File()) {
+					dprintf(D_ALWAYS, "Could not remove %s\n", user_cred_path.c_str());
+					return FAILURE_NOT_ALLOWED;
+				}
+			}
+		} else {
+			dprintf(D_ALWAYS, "Deleting OAuth files for service %s for user %s\n", service.c_str(), username);
+			dircat(user_cred_path.c_str(), service.c_str(), ".top", ccfile);
+
+			priv_state priv = set_root_priv();
+			unlink(ccfile.c_str());
+			dircat(user_cred_path.c_str(), service.c_str(), ".use", ccfile);
+			unlink(ccfile.c_str());
+			set_priv(priv);
+
+			ccfile.clear();
+		}
+		return SUCCESS;
+	}
+
+	if (service.empty()) {
+		service = "scitokens";
+		if (!handle.empty()) {
+			// this is user input but has been validated above.
+			service += "_";
+			service += handle;
+		}
+	}
+
+	// create dir for user's creds, note that for OAUTH we *don't* create this as ROOT
+	// oauth cred dir should be chmod 2770, chown root:condor (drwxrws--- root condor)
+	if (mkdir(user_cred_path.c_str(), 0700) < 0) {
+		int err = errno;
+		if (err != EEXIST) {
+			dprintf(D_ALWAYS, "Error %d, attempting to create OAuth cred subdir %s", err, user_cred_path.c_str());
+			if (err == EACCES || err == EPERM || err == ENOENT || err == ENOTDIR) {
+				// for one of several reasons, the parent directory does not allow the creation of subdirs.
+				return FAILURE_CONFIG_ERROR;
+			}
+		}
+	}
+
+	// append filename for tokens file
+	dircat(user_cred_path.c_str(), service.c_str(), ".top", ccfile);
+
+	std::string scopes;
+	std::string audience;
+	if (ad) {
+		ad->LookupString("Scopes", scopes);
+		ad->LookupString("Audience", audience);
+	}
+	std::string jsoncred;
+	size_t clen = credlen;
+	if ((scopes != "") || (audience != "")) {
+		// Add scopes and/or audience into the JSON-formatted credentials
+		classad::ClassAdJsonParser jsonp;
+		ClassAd credad;
+		if (!jsonp.ParseClassAd((const char *) cred, credad)) {
+			dprintf(D_ALWAYS, "Error, could not parse cred for %s as JSON\n", ccfile.c_str());
+			return FAILURE_JSON_PARSE;
+		}
+		if (scopes != "") credad.Assign("scopes", scopes);
+		if (audience != "") credad.Assign("audience", audience);
+		sPrintAdAsJson(jsoncred, credad);
+		jsoncred += "\n";
+		cred = (const unsigned char *) jsoncred.c_str();
+		clen = jsoncred.length();
+	}
+
+	// create/overwrite the credential file
+	dprintf(D_ALWAYS, "Writing OAuth user cred data to %s\n", ccfile.c_str());
+	if ( ! replace_secure_file(ccfile.c_str(), ".tmp", cred, clen, true)) {
+		// replace_secure_file already logged the failure if it failed.
+		ccfile.clear();
+		return FAILURE;
+	}
+
+	// return the name of the file to wait for
+	dircat(user_cred_path.c_str(), service.c_str(), ".use", ccfile);
+
+	// credential succesfully stored
+	return SUCCESS;
+}
+
+
+// this is a helper function massages the info enough that we can call the oauth store cred
+long long
+LOCAL_STORE_CRED(const char *username, const char *servicename, std::string &ccfile) {
+
+	// put the service name in an ad so the oauth code can extract it
+	ClassAd ad, ret;
+	ad.Assign("Service", servicename);
+
+	// username is passed through
+	//
+	// doesn't matter what the contents of the cred are, just that it exists,
+	// so we just store the username in there as the cred contents.
+	//
+	// mode is ADD (not a QUERY or DELETE command).
+	int mode = ADD_OAUTH_MODE;
+	//
+	// ad is constructed above.
+	//
+	// return value is not used because this is not a query.
+	//
+	// ccfile reference just passed through.
+
+	return OAUTH_STORE_CRED(username, (unsigned const char*)username, strlen(username), mode, &ad, ret, ccfile);
+}
+
+
+// handle ADD, DELETE, & QUERY for kerberos credential.
+// if command is ADD, and a credential is stored
+//   but the caller should wait for a .cc file before proceeding,
+//   the ccfile argument will be returned
+long long
+KRB_STORE_CRED(const char *username, const unsigned char *cred, const int credlen, int mode, ClassAd & return_ad, std::string & ccfile, bool &detected_local_cred)
+{
+	dprintf(D_ALWAYS, "Krb store cred user %s len %i mode %i\n", username, credlen, mode);
+
+	// default to this being a real krb store cred
+	detected_local_cred = false;
+
+	// special case: if the credential starts with the magic string
+	// "LOCAL:", we are not actually going to store anything in the krb directory,
+	// but instead simply touch a file in the OAuth directory.  detect this right away
+	// and call that function instead.
+	if (cred && credlen > 6 && MATCH == strncmp((const char*)cred, "LOCAL:", 6)) {
+		std::string servicename((const char*)&cred[6], credlen-6);
+
+		if ((mode & MODE_MASK) != GENERIC_ADD) {
+			dprintf(D_ALWAYS, "LOCAL_STORE_CRED does not support QUERY or DELETE modes, aborting the command.");
+			return FAILURE;
+		}
+
+		// capture return value
+		long long rv = LOCAL_STORE_CRED(username, servicename.c_str(), ccfile);
+
+		// report status
+		dprintf(D_SECURITY, "KRB_STORE_CRED: detected magic value with username \"%s\" and service name \"%s\", rv == %lli.\n", username, servicename.c_str(), rv);
+
+		// only update the return param if we succeeded
+		if (rv == SUCCESS) {
+			detected_local_cred = true;
+		}
+
+		// pass through return from LOCAL store.
+		return rv;
+	}
+
+	// make sure that the cc filename is cleared
+	ccfile.clear();
+
+	auto_free_ptr cred_dir( param("SEC_CREDENTIAL_DIRECTORY_KRB") );
+	if(!cred_dir) {
+		dprintf(D_ALWAYS, "ERROR: got STORE_CRED but SEC_CREDENTIAL_DIRECTORY_KRB not defined!\n");
+		return FAILURE_CONFIG_ERROR;
+	}
+
+	// remove mark on update for "mark and sweep"
+	// if mode is QUERY or DELETE we do it because of interest
+	// if mode is DELETE we do it because, well... delete.
+	credmon_clear_mark(cred_dir, username);
+
+	// check to see if .cc already exists
+	dircat(cred_dir, username, ".cc", ccfile);
+	struct stat cred_stat_buf;
+	int rc = stat(ccfile.c_str(), &cred_stat_buf);
+	bool got_ccfile = rc == 0;
+
+	// if the credential already exists, we should update it if
+	// it's more than X seconds old.  if X is zero, we always
+	// update it.  if X is negative, we never update it.
+	int fresh_time = param_integer("SEC_CREDENTIAL_REFRESH_INTERVAL", -1);
+
+	// if it already exists and we don't update, call it a "success".
+	if (got_ccfile && fresh_time < 0) {
+		dprintf(D_FULLDEBUG, "CREDMON: credentials for user %s already exist in %s, and interval is %i\n",
+			username, ccfile.c_str(), fresh_time );
+
+		if ((mode & MODE_MASK) == GENERIC_ADD) {
+			ccfile.clear(); // clear this so that the caller knows not to wait for it.
+			return cred_stat_buf.st_mtime;
+		}
+	}
+
+	// return success if the credential exists and has been recently
+	// updated.  note that if fresh_time is zero, we'll never return
+	// success here, meaning we will always update the credential.
+	time_t now = time(NULL);
+	if (got_ccfile && (now - cred_stat_buf.st_mtime < fresh_time)) {
+		// was updated in the last X seconds, so call it a "success".
+		dprintf(D_FULLDEBUG, "CREDMON: credentials for user %s already exist in %s, and interval is %i\n",
+			username, ccfile.c_str(), fresh_time );
+
+		if ((mode & MODE_MASK) == GENERIC_ADD) {
+			ccfile.clear(); // clear this so that the caller knows not to wait for it.
+			return cred_stat_buf.st_mtime;
+		}
+	}
+
+	// if this is a query, just return the timestamp on the .cc file
+	if (((mode & MODE_MASK) == GENERIC_QUERY) && got_ccfile) {
+		ccfile.clear(); // clear this so that the caller knows not to wait for it.
+		return cred_stat_buf.st_mtime;
+	}
+
+	std::string credfile;
+	dircat(cred_dir, username, ".cred", credfile);
+	const char *filename = credfile.c_str();
+
+	if ((mode & MODE_MASK) == GENERIC_QUERY) {
+		if (stat(credfile.c_str(), &cred_stat_buf) >= 0) {
+			return_ad.Assign("CredTime", cred_stat_buf.st_mtime);
+			return SUCCESS_PENDING;
+		} else {
+			ccfile.clear(); // clear this so that the caller knows not to wait for it.
+			return FAILURE_NOT_FOUND;
+		}
+	}
+
+
+	// if this is a delete operation, delete .cred and .cc files
+	if ((mode & MODE_MASK) == GENERIC_DELETE) {
+		priv_state priv = set_root_priv();
+		if (got_ccfile) {
+			rc = unlink(ccfile.c_str());
+		}
+		rc = unlink(filename);
+		set_priv(priv);
+		ccfile.clear();
+		return SUCCESS;
+	}
+
+	// mode is GENERIC_ADD
+	// we write to a temp file, then rename it over the original
+
+	dprintf(D_ALWAYS, "Writing credential data to %s\n", filename);
+
+	if ( ! replace_secure_file(filename, "tmp", cred, credlen, true)) {
+		// replace_secure_file already logged the failure if it failed.
+		return FAILURE;
+	}
+
+	// credential succesfully stored
+	return SUCCESS;
+}
+
+
+unsigned char*
+UNIX_GET_CRED(const char *user, const char *domain, size_t & len)
+{
+	dprintf(D_ALWAYS, "Unix get cred user %s domain %s\n", user, domain);
+	len = 0;
+
+	auto_free_ptr cred_dir( param("SEC_CREDENTIAL_DIRECTORY") );
+	if(!cred_dir) {
+		dprintf(D_ALWAYS, "ERROR: got GET_CRED but SEC_CREDENTIAL_DIRECTORY not defined!\n");
+		return NULL;
+	}
+
+	// create filenames
+	std::string filename;
+	formatstr(filename,"%s%c%s.cred", cred_dir.ptr(), DIR_DELIM_CHAR, user);
+	dprintf(D_ALWAYS, "CREDS: reading data from %s\n", filename.c_str());
+
+	// read the file (fourth argument "true" means as_root)
+	unsigned char *buf = 0;
+	if (read_secure_file(filename.c_str(), (void**)(&buf), &len, true)) {
+		return buf;
+	}
+
 	return NULL;
 }
 
-int store_cred_service(const char *user, const char *cred, const size_t credlen, int mode, int &cred_modified)
+
+long long store_cred_blob(const char *user, int mode, const unsigned char *blob, int bloblen, const ClassAd * ad, std::string &ccfile)
 {
-	const char *at = strchr(user, '@');
-	if ((at == NULL) || (at == user)) {
+	int domain_pos = -1;
+	if (username_is_pool_password(user, &domain_pos)) {
+		return FAILURE_BAD_ARGS;
+	}
+	if (domain_pos < 1) { // no @, or no username before the @
 		dprintf(D_ALWAYS, "store_cred: malformed user name\n");
+		return FAILURE_BAD_ARGS;
+	}
+
+	// are we operating in backward compatibility, where the mode arg is one of the ones for storing passwords?
+	// in that case, we need to look at a knob to know what kind of blob we are working with
+	if (mode >= STORE_CRED_LEGACY_PWD && mode <= STORE_CRED_LAST_MODE) {
+		return FAILURE;
+	} else {
+		int cred_type = mode & CRED_TYPE_MASK;
+		std::string username(user, domain_pos);
+		if (cred_type == STORE_CRED_USER_PWD) {
+			dprintf(D_ALWAYS, "GOT PWD STORE CRED mode=%d\n", mode);
+			int pass_mode = (mode & MODE_MASK) | STORE_CRED_USER_PWD;
+			return PWD_STORE_CRED(username.c_str(), blob, bloblen, pass_mode, ccfile);
+		} else if (cred_type == STORE_CRED_USER_OAUTH) {
+			dprintf(D_ALWAYS, "GOT OAUTH STORE CRED mode=%d\n", mode);
+			int oauth_mode = (mode & MODE_MASK) | STORE_CRED_USER_OAUTH;
+			ClassAd return_ad;
+			return OAUTH_STORE_CRED(username.c_str(), blob, bloblen, oauth_mode, ad, return_ad, ccfile);
+		} else if (cred_type == STORE_CRED_USER_KRB) {
+			dprintf(D_ALWAYS, "GOT KRB STORE CRED mode=%d\n", mode);
+			int krb_mode = (mode & MODE_MASK) | STORE_CRED_USER_KRB;
+			ClassAd return_ad;
+			bool junk = false; // API requires this output parameter, we don't look at it.
+			return KRB_STORE_CRED(username.c_str(), blob, bloblen, krb_mode, return_ad, ccfile, junk);
+		} else {
+			return FAILURE;
+		}
+	}
+
+	return FAILURE_BAD_ARGS;
+}
+
+unsigned char* getStoredCredential(int mode, const char *username, const char *domain, int & credlen)
+{
+	// TODO: add support for multiple domains
+	credlen = 0;
+	if ( !username || !domain ) {
+		return NULL;
+	}
+
+	// Support only kerberos creds for now
+	if ((mode & CRED_TYPE_MASK) != STORE_CRED_USER_KRB)
+		return NULL;
+
+	if (MATCH == strcmp(username, POOL_PASSWORD_USERNAME)) {
+		return NULL;
+	}
+
+	auto_free_ptr cred_dir( param("SEC_CREDENTIAL_DIRECTORY_KRB") );
+	if(!cred_dir) {
+		dprintf(D_ALWAYS, "ERROR: got GET_CRED but SEC_CREDENTIAL_DIRECTORY_KRB is not defined!\n");
+		return NULL;
+	}
+
+	// create filenames
+	std::string credfile;
+	const char * filename = dircat(cred_dir, username, ".cred", credfile);
+
+	dprintf(D_ALWAYS, "CREDS: reading data from %s\n", filename);
+
+	// read the file (fourth argument "true" means as_root)
+	unsigned char *buf = 0;
+	size_t len = 0;
+	if (read_secure_file(filename, (void**)(&buf), &len, true)) {
+		credlen = (int)len;
+		return buf;
+	}
+
+	dprintf(D_ALWAYS, "CREDS: failed to read securely from %s\n", filename);
+	return NULL;
+}
+
+
+#ifndef WIN32
+
+char* getStoredPassword(const char *username, const char *domain)
+{
+	// TODO: add support for multiple domains
+
+	if ( !username || !domain ) {
+		return NULL;
+	}
+
+	if (MATCH != strcmp(username, POOL_PASSWORD_USERNAME)) {
+		dprintf(D_ALWAYS, "GOT UNIX GET CRED\n");
+		size_t len = 0;
+#if 1
+		return (char*)UNIX_GET_CRED(username, domain, len);
+#else
+		unsigned char * buf = UNIX_GET_CRED(username, domain, len);
+		if (buf) {
+			// immediately convert to base64.  TJ: this seems wrong to me??
+			char* textpw = condor_base64_encode(buf, len);
+			free(buf);
+			return textpw;
+		}
+		return NULL;
+#endif
+	} 
+
+	// See if the security manager has overridden the pool password.
+	const std::string &secman_pass = SecMan::getPoolPassword();
+	if (secman_pass.size()) {
+		return strdup(secman_pass.c_str());
+	}
+
+	// EVERYTHING BELOW HERE IS FOR POOL PASSWORD ONLY
+
+	auto_free_ptr filename( param("SEC_PASSWORD_FILE") );
+	if (!filename) {
+		dprintf(D_ALWAYS,
+		        "error fetching pool password; "
+		            "SEC_PASSWORD_FILE not defined\n");
+		return NULL;
+	}
+
+	return read_password_from_filename(filename.ptr(), nullptr);
+}
+
+int store_cred_password(const char *user, const char *cred, int mode)
+{
+	int domain_pos = -1;
+	if ( ! username_is_pool_password(user, &domain_pos)) {
+		dprintf(D_ALWAYS, "store_cred: store_cred_password used with non-pool username. this is only valid on Windows\n");
 		return FAILURE;
 	}
-	if (( (size_t)(at - user) != strlen(POOL_PASSWORD_USERNAME)) ||
-	    (memcmp(user, POOL_PASSWORD_USERNAME, at - user) != 0))
-	{
-		// See if we are operating in "new" or "old" mode and dispatch accordingly
-		if (param_boolean("CREDD_OAUTH_MODE", false)) {
-			dprintf(D_ALWAYS, "GOT OAUTH STORE CRED\n");
-			return OAUTH_STORE_CRED(user, cred, credlen, mode, cred_modified);
-		}
-
-		dprintf(D_ALWAYS, "GOT UNIX STORE CRED\n");
-		return UNIX_STORE_CRED(user, cred, credlen, mode, cred_modified);
+	if (domain_pos < 1) { // no @, or no username before the @
+		dprintf(D_ALWAYS, "store_cred: malformed user name\n");
+		return FAILURE;
 	}
 
 	//
 	// THIS CODE BELOW ALL DEALS EXCLUSIVELY WITH POOL PASSWORD
 	//
 
-	char *filename;
-	if (mode != QUERY_MODE) {
-		filename = param("SEC_PASSWORD_FILE");
-		if (filename == NULL) {
+	auto_free_ptr filename;
+	if ((mode&MODE_MASK) != GENERIC_QUERY) {
+		filename.set(param("SEC_PASSWORD_FILE"));
+		if ( ! filename) {
 			dprintf(D_ALWAYS, "store_cred: SEC_PASSWORD_FILE not defined\n");
 			return FAILURE;
 		}
 	}
 
 	int answer;
-	switch (mode) {
-	case ADD_MODE: {
+	switch (mode & MODE_MASK) {
+	case GENERIC_ADD: {
 		answer = FAILURE;
 		size_t cred_sz = strlen(cred);
 		if (!cred_sz) {
-			dprintf(D_ALWAYS,
-			        "store_cred_service: empty password not allowed\n");
+			dprintf(D_ALWAYS, "store_cred_password: empty password not allowed\n");
 			break;
 		}
 		if (cred_sz > MAX_PASSWORD_LENGTH) {
-			dprintf(D_ALWAYS, "store_cred_service: password too large\n");
+			dprintf(D_ALWAYS, "store_cred_password: password too large\n");
 			break;
 		}
 		priv_state priv = set_root_priv();
@@ -381,7 +890,7 @@ int store_cred_service(const char *user, const char *cred, const size_t credlen,
 		set_priv(priv);
 		break;
 	}
-	case DELETE_MODE: {
+	case GENERIC_DELETE: {
 		priv_state priv = set_root_priv();
 		int err = unlink(filename);
 		set_priv(priv);
@@ -393,8 +902,8 @@ int store_cred_service(const char *user, const char *cred, const size_t credlen,
 		}
 		break;
 	}
-	case QUERY_MODE: {
-		char *password = getStoredCredential(POOL_PASSWORD_USERNAME, NULL);
+	case GENERIC_QUERY: {
+		char *password = getStoredPassword(POOL_PASSWORD_USERNAME, NULL);
 		if (password) {
 			answer = SUCCESS;
 			SecureZeroMemory(password, MAX_PASSWORD_LENGTH);
@@ -406,18 +915,9 @@ int store_cred_service(const char *user, const char *cred, const size_t credlen,
 		break;
 	}
 	default:
-		dprintf(D_ALWAYS, "store_cred_service: unknown mode: %d\n", mode);
+		dprintf(D_ALWAYS, "store_cred_password: unknown mode: %d\n", mode);
 		answer = FAILURE;
 	}
-
-	// clean up after ourselves
-	if (mode != QUERY_MODE) {
-		free(filename);
-	}
-
-	// if we got here we were dealing with pool password.  a return value of
-	// SUCCESS means we operated on the credential, so it was modified.
-	cred_modified = (answer == SUCCESS);
 
 	return answer;
 }
@@ -431,7 +931,7 @@ int store_cred_service(const char *user, const char *cred, const size_t credlen,
 //extern "C" FILE *DebugFP;
 //extern "C" int DebugFlags;
 
-char* getStoredCredential(const char *username, const char *domain)
+char* getStoredPassword(const char *username, const char *domain)
 {
 	lsa_mgr lsaMan;
 	char pw[255];
@@ -453,7 +953,7 @@ char* getStoredCredential(const char *username, const char *domain)
 
 	if ( ! w_pw ) {
 		dprintf(D_ALWAYS, 
-			"getStoredCredential(): Could not locate credential for user "
+			"getStoredPassword(): Could not locate credential for user "
 			"'%s@%s'\n", username, domain);
 		return NULL;
 	}
@@ -471,7 +971,7 @@ char* getStoredCredential(const char *username, const char *domain)
 	return strdup(pw);
 }
 
-int store_cred_service(const char *user, const char *pw, const size_t, int mode, int &cred_modified)
+int store_cred_password(const char *user, const char *pw, int mode)
 {
 
 	wchar_t pwbuf[MAX_PASSWORD_LENGTH];
@@ -487,12 +987,12 @@ int store_cred_service(const char *user, const char *pw, const size_t, int mode,
 	}
 
 	if (!can_switch_ids()) {
-		answer = FAILURE_NOT_SUPPORTED;
+		answer = FAILURE_NO_IMPERSONATE;
 	} else {
 		priv = set_root_priv();
 		
-		switch(mode) {
-		case ADD_MODE:
+		switch(mode & MODE_MASK) {
+		case GENERIC_ADD:
 			bool retval;
 
 			dprintf( D_FULLDEBUG, "Adding %S to credential storage.\n", 
@@ -519,7 +1019,8 @@ int store_cred_service(const char *user, const char *pw, const size_t, int mode,
 			}
 			SecureZeroMemory(pwbuf, MAX_PASSWORD_LENGTH*sizeof(wchar_t)); 
 			break;
-		case DELETE_MODE:
+
+		case GENERIC_DELETE:
 			dprintf( D_FULLDEBUG, "Deleting %S from credential storage.\n", 
 				userbuf );
 
@@ -547,7 +1048,8 @@ int store_cred_service(const char *user, const char *pw, const size_t, int mode,
 				answer = SUCCESS;
 			}
 			break;
-		case QUERY_MODE:
+
+		case GENERIC_QUERY:
 			{
 				dprintf( D_FULLDEBUG, "Checking for %S in credential storage.\n", 
 					 userbuf );
@@ -582,10 +1084,6 @@ int store_cred_service(const char *user, const char *pw, const size_t, int mode,
 		set_priv(priv);
 	}
 	
-	// if we got here we were dealing with pool password.  a return value of
-	// SUCCESS means we operated on the credential, so it was modified.
-	cred_modified = (answer == SUCCESS);
-
 	return answer;
 }	
 
@@ -669,7 +1167,7 @@ isValidCredential( const char *input_user, const char* input_pw ) {
 
 
 int
-get_cred_handler(void *, int /*i*/, Stream *s)
+cred_get_password_handler(int /*i*/, Stream *s)
 {
 	char *client_user = NULL;
 	char *client_domain = NULL;
@@ -689,7 +1187,7 @@ get_cred_handler(void *, int /*i*/, Stream *s)
 	if ( s->type() != Stream::reli_sock ) {
 		dprintf(D_ALWAYS,
 			"WARNING - password fetch attempt via UDP from %s\n",
-				((Sock*)s)->peer_addr().to_sinful().Value());
+				((Sock*)s)->peer_addr().to_sinful().c_str());
 		return TRUE;
 	}
 
@@ -700,7 +1198,7 @@ get_cred_handler(void *, int /*i*/, Stream *s)
 	if ( !sock->isAuthenticated() ) {
 		dprintf(D_ALWAYS,
 				"WARNING - authentication failed for password fetch attempt from %s\n",
-				sock->peer_addr().to_sinful().Value());
+				sock->peer_addr().to_sinful().c_str());
 		goto bail_out;
 	}
 
@@ -711,13 +1209,13 @@ get_cred_handler(void *, int /*i*/, Stream *s)
 	if ( !sock->get_encryption() ) {
 		dprintf(D_ALWAYS,
 			"WARNING - password fetch attempt without encryption from %s\n",
-				sock->peer_addr().to_sinful().Value());
+				sock->peer_addr().to_sinful().c_str());
 		goto bail_out;
 	}
 
 		// Get the username and domain from the wire
 
-	//dprintf (D_ALWAYS, "First potential block in get_cred_handler, DC==%i\n", daemonCore != NULL);
+	//dprintf (D_ALWAYS, "First potential block in get_password_handler, DC==%i\n", daemonCore != NULL);
 
 	sock->decode();
 
@@ -741,11 +1239,20 @@ get_cred_handler(void *, int /*i*/, Stream *s)
 
 	client_user = strdup(sock->getOwner());
 	client_domain = strdup(sock->getDomain());
-	client_ipaddr = strdup(sock->peer_addr().to_sinful().Value());
+	client_ipaddr = strdup(sock->peer_addr().to_sinful().c_str());
+
+	// we do not want to send out the pool password through a command handler
+	if(strcmp(user, POOL_PASSWORD_USERNAME) == 0) {
+		dprintf(D_ALWAYS,
+			"Refusing to fetch password for %s@%s requested by %s@%s at %s\n",
+			user,domain,
+			client_user,client_domain,client_ipaddr);
+		goto bail_out;
+	}
 
 		// Now fetch the password from the secure store --
 		// If not LocalSystem, this step will fail.
-	password = getStoredCredential(user,domain);
+	password = getStoredPassword(user,domain);
 	if (!password) {
 		dprintf(D_ALWAYS,
 			"Failed to fetch password for %s@%s requested by %s@%s at %s\n",
@@ -785,35 +1292,188 @@ bail_out:
 	return TRUE;
 }
 
+int
+cred_get_cred_handler(int /*i*/, Stream *s)
+{
+	char *client_user = NULL;
+	char *client_domain = NULL;
+	char *client_ipaddr = NULL;
+	int result;
+	int mode = 0;
+	char * user = NULL;
+	char * domain = NULL;
+	unsigned char * cred = NULL;
+	int credlen = 0;
+
+	/* Check our connection.  We must be very picky since we are talking
+	about sending out passwords.  We want to make certain
+	a) the Stream is a ReliSock (tcp)
+	b) it is authenticated (and thus authorized by daemoncore)
+	c) it is encrypted
+	*/
+
+	if ( s->type() != Stream::reli_sock ) {
+		dprintf(D_ALWAYS,
+			"WARNING - credential fetch attempt via UDP from %s\n",
+			((Sock*)s)->peer_addr().to_sinful().c_str());
+		return TRUE;
+	}
+
+	ReliSock* sock = (ReliSock*)s;
+
+	// Ensure authentication happened and succeeded
+	// Daemons should register this command with force_authentication = true
+	if ( !sock->isAuthenticated() ) {
+		dprintf(D_ALWAYS,
+			"WARNING - authentication failed for credential fetch attempt from %s\n",
+			sock->peer_addr().to_sinful().c_str());
+		goto bail_out;
+	}
+
+	// Enable encryption if available. If it's not available, the next
+	// call will fail and we'll abort the connection.
+	sock->set_crypto_mode(true);
+
+	if ( !sock->get_encryption() ) {
+		dprintf(D_ALWAYS,
+			"WARNING - credential fetch attempt without encryption from %s\n",
+			sock->peer_addr().to_sinful().c_str());
+		goto bail_out;
+	}
+
+	// Get the username and domain from the wire
+
+	//dprintf (D_ALWAYS, "First potential block in get_password_handler, DC==%i\n", daemonCore != NULL);
+
+	sock->decode();
+
+	result = sock->code(user);
+	if( !result ) {
+		dprintf(D_ALWAYS, "get_cred_handler: Failed to recv user.\n");
+		goto bail_out;
+	}
+
+	result = sock->code(domain);
+	if( !result ) {
+		dprintf(D_ALWAYS, "get_cred_handler: Failed to recv domain.\n");
+		goto bail_out;
+	}
+
+	result = sock->code(mode);
+	if( !result ) {
+		dprintf(D_ALWAYS, "get_cred_handler: Failed to recv mode.\n");
+		goto bail_out;
+	}
+
+	result = sock->end_of_message();
+	if( !result ) {
+		dprintf(D_ALWAYS, "get_cred_handler: Failed to recv eom.\n");
+		goto bail_out;
+	}
+
+	client_user = strdup(sock->getOwner());
+	client_domain = strdup(sock->getDomain());
+	client_ipaddr = strdup(sock->peer_addr().to_sinful().c_str());
+
+	// Now fetch the password from the secure store --
+	// If not LocalSystem, this step will fail.
+	cred = getStoredCredential(mode, user, domain, credlen);
+	if (!cred) {
+		dprintf(D_ALWAYS,
+			"Failed to fetch cred mode %d for %s@%s requested by %s@%s at %s\n",
+			mode,user,domain,
+			client_user,client_domain,client_ipaddr);
+		goto bail_out;
+	}
+
+	// Got the credential, send it
+	sock->encode();
+	result = sock->code(credlen);
+	if( !result ) {
+		dprintf(D_ALWAYS, "get_cred_handler: Failed to send credential size.\n");
+		goto bail_out;
+	}
+
+	result = sock->code_bytes(cred, credlen);
+	if( !result ) {
+		dprintf(D_ALWAYS, "get_cred_handler: Failed to send credential size.\n");
+		goto bail_out;
+	}
+
+	result = sock->end_of_message();
+	if( !result ) {
+		dprintf(D_ALWAYS, "get_cred_handler: Failed to send eom.\n");
+		goto bail_out;
+	}
+
+	// Now that we sent the password, immediately zero it out from ram
+	SecureZeroMemory(cred,credlen);
+
+	dprintf(D_ALWAYS,
+		"Fetched user %s@%s credential requested by %s@%s at %s\n",
+		user,domain,client_user,client_domain,client_ipaddr);
+
+bail_out:
+	if (client_user) free(client_user);
+	if (client_domain) free(client_domain);
+	if (client_ipaddr) free(client_ipaddr);
+	if (user) free(user);
+	if (domain) free(domain);
+	if (cred) free(cred);
+	return TRUE;
+}
+
 
 // forward declare the non-blocking continuation function.
 void store_cred_handler_continue();
 
 // declare a simple data structure for holding the info needed
 // across non-blocking retries
-struct StoreCredState {
-	char *user;
+class StoreCredState {
+public:
+	StoreCredState() :ccfile(NULL), retries(0), s(NULL) {};
+	~StoreCredState() {
+		delete s;
+		s = NULL;
+		if (ccfile) free(ccfile);
+		ccfile = NULL;
+	};
+
+	ClassAd return_ad;
+	char *ccfile;
 	int  retries;
 	Stream *s;
 };
 
 
-/* NOW WORKS ON BOTH WINDOWS AND UNIX */
-int store_cred_handler(void *, int /*i*/, Stream *s)
+/* WORKS ON BOTH WINDOWS AND UNIX */
+int store_cred_handler(int /*i*/, Stream *s)
 {
-	char *user = NULL;
-	char *pw = NULL;
-	int mode;
-	int result;
-	int answer = FAILURE;
-	int cred_modified = false;
+	std::string fulluser; // full username including domain
+	std::string username; // just the username part before the @ of the above
+	std::string pass;	  // password, if the password is a string and mode is LEGACY
+	std::string ccfile;   // credmon completion file to watch for before returning
+	ClassAd     ad;
+	ClassAd     return_ad;
+	auto_free_ptr cred;
+	int mode = 0;
+	int credlen = 0;
+#ifdef WIN32
+	int64_t answer = FAILURE;
+#else
+	long answer = FAILURE;
+#endif
+	int cred_type = 0;
+	bool deferred_reply = false; // set to true when we want to defer replying to this command
+	bool request_credmon_wait = false; // mode on the wire requested to wait for the credmon
+	const char * errinfo = NULL;
 
 	//dprintf (D_ALWAYS, "First potential block in store_cred_handler, DC==%i\n", daemonCore != NULL);
 
 	if ( s->type() != Stream::reli_sock ) {
 		dprintf(D_ALWAYS,
 			"WARNING - credential store attempt via UDP from %s\n",
-				((Sock*)s)->peer_addr().to_sinful().Value());
+				((Sock*)s)->peer_addr().to_sinful().c_str());
 		return FALSE;
 	}
 
@@ -824,7 +1484,7 @@ int store_cred_handler(void *, int /*i*/, Stream *s)
 	if ( !sock->isAuthenticated() ) {
 		dprintf(D_ALWAYS,
 			"WARNING - authentication failed for credential store attempt from %s\n",
-			sock->peer_addr().to_sinful().Value());
+			sock->peer_addr().to_sinful().c_str());
 		return FALSE;
 	}
 
@@ -832,30 +1492,76 @@ int store_cred_handler(void *, int /*i*/, Stream *s)
 
 	s->decode();
 
-	result = code_store_cred(s, user, pw, mode);
-
-	if( result == FALSE ) {
-		dprintf(D_ALWAYS, "store_cred: code_store_cred failed.\n");
-		return FALSE;
+	bool got_message = true;
+	if (! s->get(fulluser) ||
+		! s->get(pass) ||
+		! s->get(mode)) {
+		dprintf(D_ALWAYS, "store_cred: did not receive user,pw,mode.\n");
+		got_message = false;
+	} else if (!(mode & STORE_CRED_LEGACY)) {
+		if ( ! sock->get(credlen)) {
+			got_message = false;
+		} else if (credlen) {
+			if (credlen > 0x1000000 * 100) {
+				dprintf(D_ALWAYS, "store_cred: ERROR cred too large (%d). possible protocol mismatch\n", credlen);
+				got_message = false;
+			} else {
+				cred.set((char*)malloc(credlen));
+				if (! sock->get_bytes(cred.ptr(), credlen)) {
+					got_message = false;
+				}
+			}
+		}
+		if (got_message && ! getClassAd(sock, ad)) {
+			got_message = false;
+		}
 	}
 
-	if ( user ) {
+	if ( ! got_message || !sock->end_of_message()) {
+		dprintf(D_ALWAYS, "store_cred: did not recieve a valid command\n");
+		answer = FAILURE_PROTOCOL_MISMATCH;
+		goto cleanup_and_exit;
+	}
+
+	// strip the CREDMON_WAIT flag out of the mode
+	if (mode & STORE_CRED_WAIT_FOR_CREDMON) {
+		request_credmon_wait = true;
+		mode &= ~STORE_CRED_WAIT_FOR_CREDMON;
+	}
+
+	if (mode < STORE_CRED_FIRST_MODE || mode > STORE_CRED_LAST_MODE) {
+		dprintf(D_ALWAYS, "store_cred: %d is not a valid mode\n", mode);
+		answer = FAILURE_BAD_ARGS;
+		goto cleanup_and_exit;
+	}
+
+	// if no user was sent, this instructs us to take the authenticated
+	// user from the socket.
+	if (fulluser.empty()) {
+		// fulluser needs to have the @domain attached to pass checks
+		// below, even though at the moment it ultimately gets stripped
+		// off.
+		fulluser = sock->getFullyQualifiedUser();
+		dprintf(D_SECURITY | D_VERBOSE, "store_cred: Storing cred for authenticated user \"%s\"\n", fulluser.c_str());
+	}
+
+	if ( ! fulluser.empty()) {
 			// ensure that the username has an '@' delimteter
-		char const *tmp = strchr(user, '@');
-		if ((tmp == NULL) || (tmp == user)) {
-			dprintf(D_ALWAYS, "store_cred_handler: user not in user@domain format\n");
-			answer = FAILURE;
+		size_t ix_at = fulluser.find('@');
+		if (ix_at == std::string::npos || ix_at == 0) {
+			dprintf(D_ALWAYS, "store_cred_handler: user \"%s\" not in user@domain format\n", fulluser.c_str());
+			answer = FAILURE_BAD_ARGS;
 		}
 		else {
+			username = fulluser.substr(0, ix_at);
 				// We don't allow one user to set another user's credential
 				//   (except for users explicitly allowed to)
 				// TODO: We deliberately ignore the user domains. Isn't
 				//   that a security issue?
 				// we don't allow updates to the pool password through this interface
-			std::string param_val;
-			param(param_val, "CRED_SUPER_USERS");
-			StringList auth_users( param_val.c_str() );
-			auth_users.append(std::string(user).substr(0, tmp-user).c_str());
+			StringList auth_users;
+			param_and_insert_unique_items("CRED_SUPER_USERS", auth_users);
+			auth_users.insert(username.c_str());
 			const char *sock_owner = sock->getOwner();
 			if ( sock_owner == NULL ||
 #if defined(WIN32)
@@ -865,103 +1571,103 @@ int store_cred_handler(void *, int /*i*/, Stream *s)
 #endif
 			   )
 			{
-				dprintf( D_ALWAYS, "WARNING: store_cred() for user %s attempted by user %s, rejecting\n", user, sock_owner ? sock_owner : "<unknown>" );
-				answer = FAILURE;
+				dprintf( D_ALWAYS, "WARNING: store_cred() for user %s attempted by user %s, rejecting\n", fulluser.c_str(), sock_owner ? sock_owner : "<unknown>" );
+				answer = FAILURE_NOT_ALLOWED;
 
-			} else if ((mode != QUERY_MODE) &&
-			    (tmp - user == strlen(POOL_PASSWORD_USERNAME)) &&
-			    (memcmp(user, POOL_PASSWORD_USERNAME, tmp - user) == 0))
-			{
+			} else if (((mode&MODE_MASK) != GENERIC_QUERY) && username_is_pool_password(fulluser.c_str())) {
 				dprintf(D_ALWAYS, "ERROR: attempt to set pool password via STORE_CRED! (must use STORE_POOL_CRED)\n");
-				answer = FAILURE;
+				answer = FAILURE_NOT_ALLOWED;
+			} else if ((mode & ~(MODE_MASK | STORE_CRED_LEGACY)) == STORE_CRED_USER_PWD) {
+				answer = store_cred_password(fulluser.c_str(), pass.c_str(), mode);
 			} else {
-				size_t pwlen = 0;
-				if(pw) {
-					pwlen = strlen(pw)+1;
+				// mode is either Krb or OAuth
+				cred_type = mode & CRED_TYPE_MASK;
+
+				if ((mode & STORE_CRED_LEGACY) && ! pass.empty()) {
+					// the credential was passed as a base64 encoded string in the pass field.
+					int rawlen = -1;
+					unsigned char* rawbuf = NULL;
+					zkm_base64_decode(pass.c_str(), &rawbuf, &rawlen);
+					cred.set((char*)rawbuf);  // make cred responsible for freeing this
+					if (rawlen <= 0) {
+						dprintf(D_ALWAYS, "Failed to decode credential!\n");
+						answer = FAILURE;
+						goto cleanup_and_exit;
+					}
+					credlen = rawlen;
+
+					// fixup the cred type when there is a legacy mode credential by looking that the
+					// deprecated CREDD_OAUTH_MODE knob.
+					cred_type = STORE_CRED_USER_KRB;
+					if (param_boolean("CREDD_OAUTH_MODE", false)) {
+						cred_type = STORE_CRED_USER_OAUTH;
+					}
 				}
-				answer = store_cred_service(user,pw,pwlen,mode,cred_modified);
+
+				// dispatch to the correct handler
+				if (cred_type == STORE_CRED_USER_KRB) {
+					dprintf(D_ALWAYS, "GOT KRB STORE CRED mode=%d\n", mode);
+					int krb_mode = (mode & MODE_MASK) | STORE_CRED_USER_KRB;
+					bool is_local = false; // to find out if the KRB was a "LOCAL"
+					answer = KRB_STORE_CRED(username.c_str(), (unsigned char*)cred.ptr(), credlen, krb_mode, return_ad, ccfile, is_local);
+					// if this was a "locally issued" cred, switch cred type to OAUTH from here
+					// on out so we SIGHUP the correct (OAuth) credmon and not the krb one.
+					if(is_local) {
+						// remove cred type from mode and change it to OAuth
+						mode &= (~CRED_TYPE_MASK);
+						mode |= STORE_CRED_USER_OAUTH;
+						dprintf(D_SECURITY | D_FULLDEBUG, "STORE_CRED: modifed mode to STORE_CRED_USER_OAUTH.  new mode: %i\n", mode);
+					}
+				} else if (cred_type == STORE_CRED_USER_OAUTH) {
+					dprintf(D_ALWAYS, "GOT OAUTH STORE CRED mode=%d\n", mode);
+					int oauth_mode = (mode & MODE_MASK) | STORE_CRED_USER_OAUTH;
+					answer = OAUTH_STORE_CRED(username.c_str(), (unsigned char*)cred.ptr(), credlen, oauth_mode, &ad, return_ad, ccfile);
+				} else {
+					dprintf(D_ALWAYS, "unknown credential type %d\n", cred_type);
+					answer = FAILURE_BAD_ARGS;
+				}
 			}
 		}
 	}
 
-	// no credmon on windows
-#ifdef WIN32
-#else
-
-	// see if we're in "new" mode.  call a hook to translate refresh into access
-	if(param_boolean("CREDD_OAUTH_MODE", false)) {
-		char* cthook = param("SEC_CREDD_TOKEN_HOOK");
-		if (!cthook) {
-			dprintf(D_ALWAYS, "CREDS: no SEC_CREDD_TOKEN_HOOK... skipping\n");
-		} else {
-			MyString credd_token_hook = cthook;
-			free(cthook);
-
-			// run it with the full path to "top" cred as an argument
-			char* scd = param("SEC_CREDENTIAL_DIRECTORY");
-			if (!scd) {
-				dprintf(D_ALWAYS, "CREDS: no SEC_CREDENTIAL_DIRECTORY\n");
-				return false;
-			}
-			MyString cred_filename;
-			cred_filename.formatstr("%s/%s/%s", scd, sock->getOwner(), "scitokens.top");
-			free(scd);
-
-			ArgList hook_args;
-			hook_args.AppendArg(credd_token_hook.Value());
-			hook_args.AppendArg(cred_filename.Value());
-
-			dprintf(D_ALWAYS, "CREDS: invoking %s %s as root\n", credd_token_hook.Value(), cred_filename.Value());
-			priv_state priv = set_root_priv();
-
-			// need to use Create_Process and make this non-blocking
-			int rc = my_system(hook_args);
-
-			set_priv(priv);
-			if (rc) {
-				// fail
-				dprintf(D_ALWAYS, "CREDS: invoking %s %s failed with %i.\n", credd_token_hook.Value(), cred_filename.Value(), rc);
-				return FALSE;
-			}
-
-			// success
-			dprintf(D_ALWAYS, "CREDS: success converting %s\n", cred_filename.Value());
-		}
-	}
 
 	// we only need to signal CREDMON if the file was just written.  if it
 	// already existed, just leave it be, and don't signal the CREDMON.
-	if(answer == SUCCESS && cred_modified) {
+	// if we have the name of a file to watch for, then we deferr the reply
+	// we setup a timer to handle the reply for us once the file exists.
+	if (store_cred_failed(answer, mode, &errinfo)) {
+		dprintf(D_SECURITY | D_FULLDEBUG, "NBSTORECRED: not signaling credmon. result=%lld, ccfile=%s\n",
+			(long long)answer, ccfile.empty() ? "<null>" : ccfile.c_str());
+	} else if ( ! ccfile.empty()) {
 		// good so far, but the real answer is determined by our ability
-		// to signal the credmon and have the .cc file appear.  we don't
+		// to signal the credmon and have the completion file appear.  we don't
 		// want this to block so we go back to daemoncore and set a timer
 		// for 0 seconds.  the timer will reset itself as needed.
-		answer = credmon_poll_setup(user, false, true);
-		if (answer == SUCCESS) {
-			StoreCredState* retry_state = (StoreCredState*)malloc(sizeof(StoreCredState));
-			retry_state->user = strdup(user);
+		if (wake_the_credmon(mode) && request_credmon_wait) {
+			StoreCredState* retry_state = new StoreCredState();
+			retry_state->ccfile = strdup(ccfile.c_str());
 			retry_state->retries = param_integer("CREDD_POLLING_TIMEOUT", 20);
 			retry_state->s = new ReliSock(*((ReliSock*)s));
 
-			dprintf( D_FULLDEBUG, "NBSTORECRED: retry_state: %lx, dptr->user: %s, dptr->retries: %i, dptr->s %lx\n",
-				(unsigned long)retry_state, retry_state->user, retry_state->retries, (unsigned long)(retry_state->s));
+			dprintf( D_FULLDEBUG, "store_cred: setting timer to poll for completion file: %s, retries : %i, sock: %p\n",
+				retry_state->ccfile, retry_state->retries, retry_state->s);
 			daemonCore->Register_Timer(0, store_cred_handler_continue, "Poll for existence of .cc file");
 			daemonCore->Register_DataPtr(retry_state);
+			deferred_reply = true;
+		} else {
+			// If we got back a success, but didn't wake the credmon, or were told not to wait
+			// change the answer to 'pending'
+			if (answer == SUCCESS) {
+				answer = SUCCESS_PENDING;
+			}
 		}
-	} else {
-		dprintf(D_SECURITY | D_FULLDEBUG, "NBSTORECRED: not signaling credmon.  (answer==%i, cred_modified==%i)\n", answer, cred_modified);
-	}
-#endif // WIN32
-
-	if (pw) {
-		SecureZeroMemory(pw, strlen(pw));
-		free(pw);
-	}
-	if (user) {
-		free(user);
 	}
 
-#ifndef WIN32  // no credmon on windows
+cleanup_and_exit:
+	if (cred) {
+		SecureZeroMemory(cred.ptr(), credlen);
+	}
+
 	// if we modified the credential, then we also attempted to register a
 	// timer to poll for the cred file.  if that happened succesfully, return
 	// now so we can poll in a non-blocking way.
@@ -970,29 +1676,24 @@ int store_cred_handler(void *, int /*i*/, Stream *s)
 	// then there's nothing to poll for and we should not return and should
 	// finish the wire protocol below.
 	//
-	if(answer == SUCCESS && cred_modified) {
-		return TRUE;
-	}
-#endif // WIN32
-
-	s->encode();
-	if( ! s->code(answer) ) {
-		dprintf( D_ALWAYS,
-			"store_cred: Failed to send result.\n" );
-		return FALSE;
-	}
-
-	if( ! s->end_of_message() ) {
-		dprintf( D_ALWAYS,
-			"store_cred: Failed to send end of message.\n");
+	if ( ! deferred_reply) {
+		s->encode();
+		if (! s->put(answer)) {
+			dprintf(D_ALWAYS, "store_cred: Failed to send result.\n");
+			return FAILURE;
+		}
+		if (!(mode & STORE_CRED_LEGACY)) {
+			putClassAd(s, return_ad);
+		}
+		if (! s->end_of_message()) {
+			dprintf(D_ALWAYS, "store_cred: Failed to send end of message.\n");
+		}
 	}
 
-	return (answer == SUCCESS);
+	return ! store_cred_failed(answer, mode);
 }
 
 
-#ifdef WIN32
-#else
 void store_cred_handler_continue()
 {
 	// can only be called when daemonCore is non-null since otherwise
@@ -1001,47 +1702,50 @@ void store_cred_handler_continue()
 
 	StoreCredState *dptr = (StoreCredState*)daemonCore->GetDataPtr();
 
-	dprintf( D_FULLDEBUG, "NBSTORECRED: dptr: %lx, dptr->user: %s, dptr->retries: %i, dptr->s: %lx\n", (unsigned long)dptr, dptr->user, dptr->retries, (unsigned long)(dptr->s));
-	int answer = credmon_poll_continue(dptr->user, dptr->retries);
-	dprintf( D_FULLDEBUG, "NBSTORECRED: answer: %i\n", answer);
+	dprintf( D_FULLDEBUG, "Checking for completion file: %s, retries: %i, sock: %p\n", dptr->ccfile, dptr->retries, dptr->s);
 
-	if (answer == FAILURE) {
+	// stat the file as root
+	struct stat ccfile_stat;
+	priv_state priv = set_root_priv();
+	int rc = stat(dptr->ccfile, &ccfile_stat);
+	set_priv(priv);
+#ifdef WIN32  // CEDAR put on *nix thinks int64_t is ambiguous, so we use long instead (long on Win32 is not 64bits)
+	int64_t answer;
+#else
+	long answer;
+#endif
+	if (rc < 0) {
 		if (dptr->retries > 0) {
 			// re-register timer with one less retry
-			dprintf( D_FULLDEBUG, "NBSTORECRED: re-registering timer and dptr\n");
+			dprintf( D_FULLDEBUG, "Re-registering completion timer and dptr\n");
 			dptr->retries--;
 			daemonCore->Register_Timer(1, store_cred_handler_continue, "Poll for existence of .cc file");
 			daemonCore->Register_DataPtr(dptr);
 			return;
 		}
+		answer = FAILURE_CREDMON_TIMEOUT;
+	} else {
+		answer = ccfile_stat.st_mtime;
+		dprintf(D_ALWAYS, "Completion file %s exists. mtime=%lld\n", dptr->ccfile, (long long)answer);
 	}
 
 	// regardless of SUCCESS or FAILURE, if we got here we need to finish
 	// the wire protocol for STORE_CRED
 
-	dprintf( D_FULLDEBUG, "NBSTORECRED: finishing wire protocol on stream %lx\n", (unsigned long)(dptr->s));
 	dptr->s->encode();
-	if( ! dptr->s->code(answer) ) {
-		dprintf( D_ALWAYS,
-			"store_cred: Failed to send result.\n" );
+	if (! dptr->s->put(answer) || ! putClassAd(dptr->s, dptr->return_ad)) {
+		dprintf(D_ALWAYS, "store_cred: Failed to send result.\n");
 	} else if( ! dptr->s->end_of_message() ) {
-		dprintf( D_ALWAYS,
-			"store_cred: Failed to send end of message.\n");
+		dprintf( D_ALWAYS, "store_cred: Failed to send end of message.\n");
 	}
 
-	dprintf( D_FULLDEBUG, "NBSTORECRED: freeing %lx\n", (unsigned long)dptr);
-
 	// we copied the stream and strdup'ed the user, so do a deep free of dptr
-	delete (dptr->s);
-	free(dptr->user);
-	free(dptr);
-
-	dprintf( D_FULLDEBUG, "NBSTORECRED: done!\n");
+	delete dptr;
 	return;
 }
-#endif
 
 
+/* obsolete wire form for STORE_CRED
 static int code_store_cred(Stream *socket, char* &user, char* &pw, int &mode) {
 	
 	int result;
@@ -1073,13 +1777,15 @@ static int code_store_cred(Stream *socket, char* &user, char* &pw, int &mode) {
 	return TRUE;
 	
 }
+*/
 
-int store_pool_cred_handler(class Service *, int, Stream *s)
+
+int store_pool_cred_handler(int, Stream *s)
 {
 	int result;
 	char *pw = NULL;
 	char *domain = NULL;
-	MyString username = POOL_PASSWORD_USERNAME "@";
+	std::string username = POOL_PASSWORD_USERNAME "@";
 
 	if (s->type() != Stream::reli_sock) {
 		dprintf(D_ALWAYS, "ERROR: pool password set attempt via UDP\n");
@@ -1092,20 +1798,20 @@ int store_pool_cred_handler(class Service *, int, Stream *s)
 	char *credd_host = param("CREDD_HOST");
 	if (credd_host) {
 
-		MyString my_fqdn_str = get_local_fqdn();
-		MyString my_hostname_str = get_local_hostname();
+		std::string my_fqdn_str = get_local_fqdn();
+		std::string my_hostname_str = get_local_hostname();
 		// TODO: Arbitrarily picking IPv4
-		MyString my_ip_str = get_local_ipaddr(CP_IPV4).to_ip_string();
+		std::string my_ip_str = get_local_ipaddr(CP_IPV4).to_ip_string();
 
 		// figure out if we're on the CREDD_HOST
-		bool on_credd_host = (strcasecmp(my_fqdn_str.Value(), credd_host) == MATCH);
-		on_credd_host = on_credd_host || (strcasecmp(my_hostname_str.Value(), credd_host) == MATCH);
-		on_credd_host = on_credd_host || (strcmp(my_ip_str.Value(), credd_host) == MATCH);
+		bool on_credd_host = (strcasecmp(my_fqdn_str.c_str(), credd_host) == MATCH);
+		on_credd_host = on_credd_host || (strcasecmp(my_hostname_str.c_str(), credd_host) == MATCH);
+		on_credd_host = on_credd_host || (strcmp(my_ip_str.c_str(), credd_host) == MATCH);
 
 		if (on_credd_host) {
 				// we're the CREDD_HOST; make sure the source address matches ours
 			const char *addr = ((ReliSock*)s)->peer_ip_str();
-			if (!addr || strcmp(my_ip_str.Value(), addr)) {
+			if (!addr || strcmp(my_ip_str.c_str(), addr)) {
 				dprintf(D_ALWAYS, "ERROR: attempt to set pool password remotely\n");
 				free(credd_host);
 				return CLOSE_STREAM;
@@ -1115,10 +1821,6 @@ int store_pool_cred_handler(class Service *, int, Stream *s)
 	}
 
 	//dprintf (D_ALWAYS, "First potential block in store_pool_cred_handler, DC==%i\n", daemonCore != NULL);
-
-	// we don't actually care if the cred was modified in this
-	// situation, but the below function signature requires it
-	int cred_modified = false;
 
 	s->decode();
 	if (!s->code(domain) || !s->code(pw) || !s->end_of_message()) {
@@ -1135,12 +1837,11 @@ int store_pool_cred_handler(class Service *, int, Stream *s)
 
 	// do the real work
 	if (pw && *pw) {
-		size_t pwlen = strlen(pw)+1;
-		result = store_cred_service(username.Value(), pw, pwlen, ADD_MODE, cred_modified);
+		result = store_cred_password(username.c_str(), pw, GENERIC_ADD);
 		SecureZeroMemory(pw, strlen(pw));
 	}
 	else {
-		result = store_cred_service(username.Value(), NULL, 0, DELETE_MODE, cred_modified);
+		result = store_cred_password(username.c_str(), NULL, GENERIC_DELETE);
 	}
 
 	s->encode();
@@ -1159,58 +1860,45 @@ spch_cleanup:
 	return CLOSE_STREAM;
 }
 
+
+// OBSOLETE!!! do_store_cred for LEGACY password modes only!!. 
+// use the other do_store_cred for working with Krb or OAuth creds
 int 
-store_cred(const char* user, const char* pw, int mode, Daemon* d, bool force) {
+do_store_cred(const char* user, const char* pw, int mode, Daemon* d, bool force) {
 	
 	int result;
 	int return_val;
 	Sock* sock = NULL;
 
-		// to help future debugging, print out the mode we are in
-	static const int mode_offset = 100;
-	static const char *mode_name[] = {
-		ADD_CREDENTIAL,
-		DELETE_CREDENTIAL,
-		QUERY_CREDENTIAL
-#ifdef WIN32
-		, CONFIG_CREDENTIAL
-#endif
-	};	
-	dprintf ( D_ALWAYS, 
-		"STORE_CRED: In mode '%s'\n", 
-		mode_name[mode - mode_offset] );
+	// this function only works with password and LEGACY password
+	int cred_type = mode & CRED_TYPE_MASK;
+	if (cred_type != STORE_CRED_USER_PWD && cred_type != STORE_CRED_LEGACY_PWD) {
+		dprintf ( D_ALWAYS | D_BACKTRACE,  "STORE_CRED: Unsupported mode %d\n",  mode);
+		return FAILURE_BAD_ARGS;
+	}
+
+	// to help future debugging, print out the mode we are in
+	dprintf ( D_ALWAYS,  "STORE_CRED: (old) In mode %d '%s', user is \"%s\"\n", mode, mode_name[mode & MODE_MASK], user);
 	
 		// If we are root / SYSTEM and we want a local daemon, 
 		// then do the work directly to the local registry.
 		// If not, then send the request over the wire to a remote credd or schedd.
 
 	if ( is_root() && d == NULL ) {
-			// do the work directly onto the local registry
-		size_t pwlen = 0;
-		if(pw) {
-			pwlen=strlen(pw)+1;
-		}
-		// we don't actually care if the cred was modified in this
-		// situation, but the below function signature requires it
-		int cred_modified = false;
-
-		return_val = store_cred_service(user,pw,pwlen,mode,cred_modified);
+		return_val = store_cred_password(user,pw,mode);
 	} else {
 			// send out the request remotely.
 
 			// first see if we're operating on the pool password
 		int cmd = STORE_CRED;
-		char const *tmp = strchr(user, '@');
-		if (tmp == NULL || tmp == user || *(tmp + 1) == '\0') {
-			dprintf(D_ALWAYS, "store_cred: user not in user@domain format\n");
-			return FAILURE;
-		}
-		if (((mode == ADD_MODE) || (mode == DELETE_MODE)) &&
-		    ( (size_t)(tmp - user) == strlen(POOL_PASSWORD_USERNAME)) &&
-		    (memcmp(POOL_PASSWORD_USERNAME, user, tmp - user) == 0))
-		{
+		int domain_pos = -1;
+		if (username_is_pool_password(user, &domain_pos) && (mode & MODE_MASK) != GENERIC_QUERY) {
 			cmd = STORE_POOL_CRED;
-			user = tmp + 1;	// we only need to send the domain name for STORE_POOL_CRED
+			user += domain_pos + 1;	// we only need to send the domain name for STORE_POOL_CRED
+		}
+		if (domain_pos <= 0) {
+			dprintf(D_ALWAYS, "store_cred: user \"%s\" not in user@domain format\n", user);
+			return FAILURE_BAD_ARGS;
 		}
 
 		if (d == NULL) {
@@ -1226,7 +1914,7 @@ store_cred(const char* user, const char* pw, int mode, Daemon* d, bool force) {
 				sock = my_schedd.startCommand(cmd, Stream::reli_sock, 0);
 			}
 		} else {
-			dprintf(D_FULLDEBUG, "Starting a command on a REMOTE schedd\n");
+			dprintf(D_FULLDEBUG, "Starting a command on %s\n", d->idStr());
 			sock = d->startCommand(cmd, Stream::reli_sock, 0);
 		}
 		
@@ -1253,10 +1941,12 @@ store_cred(const char* user, const char* pw, int mode, Daemon* d, bool force) {
 		}
 		
 		if (cmd == STORE_CRED) {
-			result = code_store_cred(sock, const_cast<char*&>(user),
-				const_cast<char*&>(pw), mode);
-			if( result == FALSE ) {
-				dprintf(D_ALWAYS, "store_cred: code_store_cred failed.\n");
+			int legacy_mode = STORE_CRED_LEGACY_PWD | (mode & MODE_MASK); // make sure legacy bit is set because we plan to use the legacy wire form.
+			if (! sock->put(user) ||
+				! sock->put(pw) ||
+				! sock->put(legacy_mode) ||
+				! sock->end_of_message()) {
+				dprintf(D_ALWAYS, "store_cred: failed to send STORE_CRED (legacy) message\n");
 				delete sock;
 				return FAILURE;
 			}
@@ -1275,8 +1965,8 @@ store_cred(const char* user, const char* pw, int mode, Daemon* d, bool force) {
 		//dprintf (D_ALWAYS, "First potential block in store_cred, DC==%i\n", daemonCore != NULL);
 
 		sock->decode();
-		
-		result = sock->code(return_val);
+
+		result = sock->get(return_val);
 		if( !result ) {
 			dprintf(D_ALWAYS, "store_cred: failed to recv answer.\n");
 			delete sock;
@@ -1292,23 +1982,23 @@ store_cred(const char* user, const char* pw, int mode, Daemon* d, bool force) {
 	}	// end of case where we send out the request remotely
 	
 	
-	switch(mode)
+	switch(mode & MODE_MASK)
 	{
-	case ADD_MODE:
+	case GENERIC_ADD:
 		if( return_val == SUCCESS ) {
-			dprintf(D_FULLDEBUG, "Addition succeeded!\n");					
+			dprintf(D_FULLDEBUG, "Addition succeeded!\n");
 		} else {
 			dprintf(D_FULLDEBUG, "Addition failed!\n");
 		}
 		break;
-	case DELETE_MODE:
+	case GENERIC_DELETE:
 		if( return_val == SUCCESS ) {
 			dprintf(D_FULLDEBUG, "Delete succeeded!\n");
 		} else {
 			dprintf(D_FULLDEBUG, "Delete failed!\n");
 		}
 		break;
-	case QUERY_MODE:
+	case GENERIC_QUERY:
 		if( return_val == SUCCESS ) {
 			dprintf(D_FULLDEBUG, "We have a credential stored!\n");
 		} else {
@@ -1320,19 +2010,321 @@ store_cred(const char* user, const char* pw, int mode, Daemon* d, bool force) {
 	if ( sock ) delete sock;
 
 	return return_val;
-}	
+}
 
+// This implentation of do_store_cred handles password, krb, or oauth credential types
+// as of 8.9.7, this is the preferred method
+// 
+long long
+do_store_cred (
+	const char *user,
+	int mode,
+	const unsigned char * cred, int credlen,
+	ClassAd & return_ad, // extra return information for some command modes
+	ClassAd* ad /*= NULL*/,
+	Daemon *d /*= NULL*/)
+{
+	const char * err = NULL;
+#ifdef WIN32 // long is not 64 bits on Windows, and inta64_t results in compile errors on some platforms.
+	int64_t return_val;
+#else
+	long return_val;
+#endif
+	Sock* sock = NULL;
+	std::string daemonid; // for error messages
+
+	// to help future debugging, print out the mode we are in
+	dprintf ( D_ALWAYS,  "STORE_CRED: In mode %d '%s', user is \"%s\"\n", mode, mode_name[mode & MODE_MASK], user);
+
+	// if a legacy mode is requested, no ClassAd argument can be sent
+	if (mode & STORE_CRED_LEGACY) {
+		if (ad && (ad->size() > 0)) {
+			dprintf(D_ALWAYS, "STORE_CRED: ERROR ClassAd argument cannot be used with legacy mode %d\n", mode);
+			return FAILURE_BAD_ARGS;
+		}
+	}
+
+	if (credlen && ! cred) {
+		return FAILURE;
+	}
+	if ((mode & MODE_MASK) == GENERIC_ADD) {
+		if ( ! cred) {
+			return FAILURE;
+		}
+	}
+
+	// If we are root / SYSTEM and we want a local daemon, 
+	// then do the work directly to the local registry.
+	// If not, then send the request over the wire to a remote credd or schedd.
+
+	if ( is_root() && d == NULL ) {
+		std::string ccfile;	// we don't care about a completion file, but we have to pass this in anyway
+		if (mode >= STORE_CRED_LEGACY_PWD && mode <= STORE_CRED_LAST_MODE) {
+			return_val = store_cred_password(user, (const char *)cred, mode);
+		} else {
+			return_val = store_cred_blob(user, mode, cred, credlen, ad, ccfile);
+		}
+	} else {
+		// send out the request remotely.
+
+		// first see if we're operating on the pool password
+		// if we are just use the version of do_store_cred that handles passwords
+		int domain_pos = -1;
+		if (username_is_pool_password(user, &domain_pos)) {
+			int cred_type = (mode & ~MODE_MASK);
+			if ((cred_type != STORE_CRED_LEGACY_PWD) && (cred_type != STORE_CRED_USER_PWD)) {
+				return FAILURE_BAD_ARGS;
+			}
+			std::string pw;
+			if (cred) pw.assign((const char *)cred, credlen);
+			return do_store_cred(user, pw.c_str(), mode, d);
+		}
+		if ((domain_pos <= 0) && user[0]) {
+			dprintf(D_ALWAYS, "store_cred: FAILED. user \"%s\" not in user@domain format\n", user);
+			return FAILURE;
+		}
+
+		if (d == NULL) {
+			dprintf(D_FULLDEBUG, "Storing credential to local schedd\n");
+			Daemon my_schedd(DT_SCHEDD);
+			sock = my_schedd.startCommand(STORE_CRED, Stream::reli_sock, 0);
+			if (! sock) { daemonid = my_schedd.idStr(); }
+		} else {
+			dprintf(D_FULLDEBUG, "Starting a command on a REMOTE schedd or credd\n");
+			sock = d->startCommand(STORE_CRED, Stream::reli_sock, 0);
+			if (! sock) { daemonid = d->idStr(); }
+		}
+
+		if( !sock ) {
+			dprintf(D_ALWAYS, 
+				"STORE_CRED: Failed to start STORE_CRED command. Unable to contact %s\n", daemonid.c_str());
+			return FAILURE;
+		}
+
+		// for remote updates (which send the password), verify we have a secure channel,
+		sock->set_crypto_mode( true );
+
+		if ((d != NULL) &&
+			((sock->type() != Stream::reli_sock) || !((ReliSock*)sock)->triedAuthentication() || !sock->get_encryption())) {
+			dprintf(D_ALWAYS, "STORE_CRED: blocking attempt to update over insecure channel\n");
+			delete sock;
+			return FAILURE_NOT_SECURE;
+		}
+
+		std::string pw;
+		if (mode & STORE_CRED_LEGACY) {
+			if (cred) pw.assign((const char *)cred, credlen);
+		} else {
+			// TODO: password field could be used for other data, perhaps cred subtype?
+		}
+		bool sent = true;
+		// wire protocol is string, string, int.  then if the mode does NOT have the LEGACY bit set : credlen, credbytes, classad
+		if ( ! sock->put(user) ||
+			 ! sock->put(pw) || 
+			 ! sock->put(mode)) {
+			dprintf(D_ALWAYS, "store_cred: Failed to send command payload\n");
+			sent = false;
+		} else if (!(mode & STORE_CRED_LEGACY)) {
+			if ( ! sock->put(credlen)) {
+				sent = false;
+			} else if (credlen && ! sock->put_bytes(cred, credlen)) {
+				sent = false;
+			} else if (ad && ! putClassAd(sock, *ad)) {
+				sent = false;
+			} else if (!ad) { // if no classad supplied, put a dummy ad to satisfy the wire protocol
+				ClassAd tmp; tmp.Clear();
+				if ( ! putClassAd(sock, tmp)) {
+					sent = false;
+				}
+			}
+		}
+		if (sent) {
+			if ( ! sock->end_of_message()) {
+				dprintf(D_ALWAYS, "store_cred: Failed to send EOM.\n");
+				sent = false;
+			}
+		}
+		if ( ! sent) {
+			dprintf(D_ALWAYS, "store_cred: sending of command mode=%d failed.\n", mode);
+			delete sock;
+			return FAILURE;
+		}
+
+		//dprintf (D_ALWAYS, "First potential block in store_cred, DC==%i\n", daemonCore != NULL);
+
+		// now the reply. For LEGACY, the reply is an integer
+		// for non LEGACY the reply is a long long and a ClassAd
+		sock->decode();
+
+		err = NULL;
+		if ( !sock->get(return_val)) {
+			err = "failed to recieve and answer";
+			return_val = FAILURE;
+		}
+		else if (!(mode & STORE_CRED_LEGACY)) {
+			if ( ! getClassAd(sock, return_ad)) {
+				err = "possibly protocol mismatch - remote store_cred did not return a classad";
+				return_val = FAILURE_PROTOCOL_MISMATCH;
+			}
+		}
+		if (!err && !sock->end_of_message()) {
+			err = "possibly protocol mismatch - end_of_message failed";
+			return_val = FAILURE_PROTOCOL_MISMATCH;
+		}
+
+		if (err) {
+			dprintf(D_ALWAYS, "store_cred: mode=%d %s\n", mode, err);
+			delete sock;
+			return return_val;
+		}
+	}	// end of case where we send out the request remotely
+
+	switch(mode & MODE_MASK)
+	{
+	case GENERIC_ADD:
+		if (store_cred_failed(return_val, mode, &err)) {
+			dprintf(D_FULLDEBUG, "Addition failed! err=%d %s\n", (int)return_val, err?err:"");
+		} else {
+			dprintf(D_FULLDEBUG, "Addition succeeded!\n");
+		}
+		break;
+	case GENERIC_DELETE:
+		if (store_cred_failed(return_val, mode, &err)) {
+			dprintf(D_FULLDEBUG, "Delete failed! err=%d %s\n", (int)return_val, err?err:"");
+		} else {
+			dprintf(D_FULLDEBUG, "Delete succeeded!\n");
+		}
+		break;
+	case GENERIC_QUERY:
+		if (!store_cred_failed(return_val, mode, &err)) {
+			dprintf(D_FULLDEBUG, "We have a credential stored!\n");
+		} else if (return_val == FAILURE_NO_IMPERSONATE) {
+			dprintf(D_FULLDEBUG, "Running in single-user mode, credential not needed\n");
+		} else {
+			dprintf(D_FULLDEBUG, "Query failed! err=%d %s\n", (int)return_val, err?err:"");
+		}
+		break;
+	}
+
+
+	if ( sock ) delete sock;
+	return return_val;
+}
+
+
+/*
 int deleteCredential( const char* user, const char* pw, Daemon *d ) {
-	return store_cred(user, pw, DELETE_MODE, d);	
+	return do_store_cred(user, pw, DELETE_MODE, d);	
 }
 
 int addCredential( const char* user, const char* pw, Daemon *d ) {
-	return store_cred(user, pw, ADD_MODE, d);	
+	return do_store_cred(user, pw, ADD_MODE, d);	
 }
 
 int queryCredential( const char* user, Daemon *d ) {
-	return store_cred(user, NULL, QUERY_MODE, d);	
+	return do_store_cred(user, NULL, QUERY_MODE, d);	
 }
+*/
+
+int do_check_oauth_creds (
+	const classad::ClassAd* request_ads[],
+	int num_ads,
+	std::string & outputURL,
+	Daemon* d /* = NULL*/)
+{
+	ReliSock * sock;
+	CondorError err;
+	std::string daemonid;
+
+	outputURL.clear();
+	if (num_ads < 0) {
+		return -1;
+	}
+	if (num_ads == 0) {
+		return 0;
+	}
+
+	if (! d) {
+		Daemon my_credd(DT_CREDD);
+		if (my_credd.locate()) {
+			sock = (ReliSock*)my_credd.startCommand(CREDD_CHECK_CREDS, Stream::reli_sock, 20, &err);
+			if (! sock) { daemonid = my_credd.idStr(); }
+		} else {
+			dprintf(D_ALWAYS, "could not find local CredD\n");
+			return -2;
+		}
+	} else if (d->locate()) {
+		sock = (ReliSock*)d->startCommand(CREDD_CHECK_CREDS, Stream::reli_sock, 20, &err);
+		if (! sock) { daemonid = d->idStr(); }
+	} else {
+		daemonid = d->idStr();
+		dprintf(D_ALWAYS, "could not locate %s\n", daemonid.c_str());
+		return -2;
+	}
+
+	if (! sock) {
+		dprintf(D_ALWAYS, "startCommand(CREDD_CHECK_CREDS) failed to %s\n", daemonid.c_str());
+		return -3;
+	}
+
+	bool sent = false;
+	sock->encode();
+	if ( ! sock->put(num_ads)) {
+		sent = false;
+	} else {
+		sent = true;
+		for (int ii = 0; ii < num_ads; ++ii) {
+			// to insure backward compability, there are 3 fields that *must* be set to empty strings
+			// if they are missing or undefined. 8.9.9 and later will handle missing fields correctly
+			// but 8.9.* < 8.9.9 will leak values from one attribute to the other 
+			// if Handle, Scope, or Audience are not present or are set to undefined.
+			// which can happen if the python-bindings or 8.9.8 submit is making the call
+			classad::ClassAd ad(*request_ads[ii]);
+			static const char * const fix_fields[] = { "Handle", "Scopes", "Audience" };
+			for (int ii = 0; ii < (int)(sizeof(fix_fields) / sizeof(fix_fields[0])); ++ii) {
+				const char * attr = fix_fields[ii];
+				classad::Value val;
+				val.SetUndefinedValue();
+				if (! ad.EvaluateAttr(attr, val) || val.IsUndefinedValue()) {
+					ad.Assign(attr, "");
+				}
+			}
+			if (! putClassAd(sock, ad)) {
+				sent = false;
+				break;
+			}
+		}
+	}
+	// did we send the query payload? then send EOM also, of that fails the other end probably closed the socket
+	if (sent) {
+		if ( ! sock->end_of_message()) {
+			sent = false;
+		}
+	}
+
+	// if we sent a the request, no wait for a response
+	// and then close the socket.
+	if (sent) {
+		sock->decode();
+		if ( ! sock->get(outputURL) || ! sock->end_of_message()) {
+			sent = false;
+		}
+	}
+	sock->close();
+	delete sock;
+
+	// report any failures
+	if ( ! sent) {
+		dprintf(D_ALWAYS, "Failed to query OAuth from the CredD\n");
+		return -4;
+	}
+
+	// return 0 or positive values for success
+	// an empty URL indicates that the creds are already stored
+	// a non-empty URL must be visited to create the requested creds
+	return (int)outputURL.size();
+}
+
 
 #if !defined(WIN32)
 
@@ -1462,11 +2454,249 @@ get_password() {
 		
 	printf("Enter password: ");
 	if ( ! read_from_keyboard(buf, MAX_PASSWORD_LENGTH + 1, false) ) {
-		delete[] buf;
+		free(buf);
 		return NULL;
 	}
 	
 	return buf;
 }
 
+
+const std::string & IssuerKeyNameCache::NameList(CondorError * err)
+{
+	// First, check to see if our cache is still usable; if so, return it
+	time_t now = time(NULL);
+	if ((now - m_last_refresh) < param_integer("SEC_TOKEN_POOL_SIGNING_DIR_REFRESH_TIME",0)) {
+		return m_name_list;
+	}
+	m_last_refresh = now;
+
+	std::string poolkeypath;
+	param(poolkeypath, "SEC_TOKEN_POOL_SIGNING_KEY_FILE");
+
+	// we also get all other signing keys from the token key directory if there is one
+	// it is not an error to have no directory, nor is it an error to have no exclusion list
+	Regex excludeFilesRegex;
+	auto_free_ptr dirpath(param("SEC_PASSWORD_DIRECTORY"));
+	if (dirpath) {
+		auto_free_ptr excludeRegex(param("LOCAL_CONFIG_DIR_EXCLUDE_REGEXP"));
+		if (excludeRegex) {
+			const char* _errstr;
+			int _erroffset;
+			if (!excludeFilesRegex.compile(excludeRegex.ptr(), &_errstr, &_erroffset)) {
+				if (err) err->pushf("TOKEN", 1, "LOCAL_CONFIG_DIR_EXCLUDE_REGEXP "
+					"config parameter is not a valid "
+					"regular expression.  Value: %s,  Error: %s",
+					excludeRegex.ptr(), _errstr ? _errstr : "");
+				return m_name_list;
+			}
+			if (!excludeFilesRegex.isInitialized()) {
+				if (err) err->push("TOKEN", 1, "Failed to initialize exclude files regex.");
+				return m_name_list;
+			}
+		}
+	}
+
+	// If we can, try reading out the passwords as root.
+	TemporaryPrivSentry sentry(PRIV_ROOT);
+
+	// check access on the pool key, and scan the key directory
+	std::set<std::string> keys;
+
+	size_t keyslen = 0;
+	if ( ! poolkeypath.empty()) { // this is currently the pool key
+		if (0 == access(poolkeypath.c_str(), R_OK)) {
+			keys.insert("POOL");
+			keyslen += 4;
+		}
+	}
+
+	// do we have a directory? 
+	if (dirpath) {
+		Directory dir(dirpath);
+		if (!dir.Rewind()) {
+			if (err) {
+				err->pushf("CRED", 1, "Cannot open %s: %s (errno=%d)",
+					dirpath.ptr(), strerror(errno), errno);
+			}
+		} else {
+
+			const char *file;
+			while ((file = dir.Next())) {
+				if (dir.IsDirectory()) {
+					continue;
+				}
+				if (!excludeFilesRegex.isInitialized() || !excludeFilesRegex.match(file)) {
+					if (0 == access(dir.GetFullPath(), R_OK)) {
+						keys.insert(file);
+						keyslen += strlen(file);
+					}
+				} else {
+					dprintf(D_FULLDEBUG | D_SECURITY, "Skipping TOKEN key file "
+						"based on LOCAL_CONFIG_DIR_EXCLUDE_REGEXP: "
+						"'%s'\n", dir.GetFullPath());
+				}
+			}
+		}
+	}
+
+	// now turn the temporary set of keys into a comma separated string
+
+	m_name_list.clear();
+	if ( ! keys.empty()) {
+		m_name_list.reserve(keyslen + 1 + 2 * keys.size());
+		for (auto it = keys.begin(); it != keys.end(); ++it) {
+			if (! m_name_list.empty()) m_name_list += ", ";
+			m_name_list += *it;
+		}
+	}
+
+	return m_name_list;
+}
+
+// helper function for getTokenSigningKeyPath and hasTokenSigningKey
+// takes a key_id and returns the path to the file that should contain the signing key
+// will set the CondorError if the configuration is missing knobs necessary to determine the path
+// will optionally set is_legacy_pool_pass if the signing key should be loaded using backward compat hacks for pool passwords
+bool getTokenSigningKeyPath(const std::string &key_id, std::string &fullpath, CondorError *err, bool * is_pool_pass)
+{
+	bool is_pool = false;
+	if (key_id.empty() || (key_id == "POOL") || starts_with(key_id, POOL_PASSWORD_USERNAME "@")) {
+		param(fullpath, "SEC_TOKEN_POOL_SIGNING_KEY_FILE");
+		if (fullpath.empty()) {
+			if (err) err->push("TOKEN", 1, "No master pool token key setup in SEC_TOKEN_POOL_SIGNING_KEY_FILE");
+			return false;
+		}
+		// 
+		is_pool = true;
+
+	} else {
+
+		// we get all other signing keys from the token key directory
+		auto_free_ptr dirpath(param("SEC_PASSWORD_DIRECTORY"));
+		if ( ! dirpath) {
+			if (err) err->push("TOKEN", 1, "SEC_PASSWORD_DIRECTORY is undefined");
+			return false;
+		}
+		dircat(dirpath, key_id.c_str(), fullpath);
+	}
+
+	if (is_pool_pass) *is_pool_pass = is_pool;
+	return true;
+}
+
+// returns true if the token signing key file for this key id exists and is readable by root
+// will set CondorError and return false if not.
+bool hasTokenSigningKey(const std::string &key_id, CondorError *err) {
+
+	// do a quick check in the issuer name cache, but don't rebuild it
+	auto keys = g_issuer_name_cache.Peek();
+	if ( ! keys.empty()) {
+		StringList list(keys.c_str());
+		if (list.contains(key_id.c_str())) {
+			return true;
+		}
+	}
+
+	std::string fullpath;
+	if ( ! getTokenSigningKeyPath(key_id, fullpath, err, nullptr)) {
+		return false;
+	}
+	// check to see if the file exits and is readable
+	TemporaryPrivSentry sentry(PRIV_ROOT);
+	if (0 == access(fullpath.c_str(), R_OK)) {
+		return true;
+	}
+	return false;
+}
+
+bool getTokenSigningKey(const std::string &key_id, std::string &contents, CondorError *err) {
+
+	// If using the POOL password as the signing key may have to truncate at first null for backward compat
+	bool truncate_at_first_null = false;
+	// for backward compatibility, if using the pool password we may want to double the key
+	bool double_the_key = false; 
+
+	// We get the "pool" signing key for this pool from a specific knob
+	std::string fullpath;
+	bool is_pool = false;
+	if ( ! getTokenSigningKeyPath(key_id, fullpath, err, &is_pool)) {
+		return false;
+	}
+	// so that tokens issued against a non-trucated POOL signing key pre 8.9.12 still work
+	// we will always double the pool key
+	double_the_key = is_pool;
+	if (is_pool) {
+			// secret knob to tell us to process the token signing key the way we would pre 9.0
+			// Set this to true if the key has imbedded nulls and had been used to sign tokens with
+			// an earlier version of Condor, and for some reason you don't want to just truncate the
+			// file itself
+		truncate_at_first_null = param_boolean("SEC_TOKEN_POOL_SIGNING_KEY_IS_PASSWORD", false);
+	}
+
+	dprintf(D_SECURITY, "getTokenSigningKey(): for id=%s, pool=%d v84mode=%d reading %s\n",
+		key_id.c_str(), is_pool, truncate_at_first_null, fullpath.c_str());
+
+	char* buf = nullptr;
+	size_t len = 0;
+	const bool as_root = true; // TODO: don't require root if we can't do priv switching
+	if ( ! read_secure_file(fullpath.c_str(), (void**)&buf, &len, as_root) || ! buf) {
+		if (err) err->pushf("TOKEN", 1, "Failed to read file %s securely.", fullpath.c_str());
+		dprintf(D_ALWAYS, "getTokenSigningKey(): read_secure_file(%s) failed!\n", fullpath.c_str());
+		return false;
+	}
+	size_t file_len = len;
+	if (truncate_at_first_null) {
+		// buffer now contains the binary contents from the file.
+		// due to the way 8.4.X and earlier version wrote the file,
+		// there will be trailing NULL characters, although they are
+		// ignored in 8.4.X by the code that reads them.  As such, for
+		// us to agree on the password, we also need to discard
+		// everything after the first NULL.  we do this by simply
+		// resetting the len.  there is a function "strnlen" but it's a
+		// GNU extension so we just do the raw scan here:
+		size_t newlen = 0;
+		while(newlen < len && buf[newlen]) {
+			newlen++;
+		}
+		len = newlen;
+	}
+
+	// copy back the result, undoing the trivial scramble
+	// and doubling the key if needed
+	std::vector<char> pw;
+	if (double_the_key) {
+		pw.resize(len*2+1);
+		simple_scramble(reinterpret_cast<char*>(pw.data()), buf, (int)len);
+		if (truncate_at_first_null) {
+			// we want to be sure that post-scramble we still have no imbedded nulls
+			// so we force null after the end of the buffer and then get the length again. 
+			pw[len] = 0;
+			len = strlen(pw.data());
+		}
+		memcpy(&pw[len], &pw[0], len);
+		if (len < file_len) {
+			dprintf(D_ALWAYS, "WARNING: pool signing key truncated from %d to %d bytes because of internal NUL characters\n",
+				(int)file_len, (int)len);
+		}
+		len *= 2;
+	} else {
+		pw.resize(len);
+		simple_scramble(reinterpret_cast<char*>(pw.data()), buf, (int)len);
+	}
+	free(buf);
+
+	contents.assign(pw.data(), len);
+	return true;
+}
+
+const std::string & getCachedIssuerKeyNames(CondorError * err)
+{
+	return g_issuer_name_cache.NameList(err);
+}
+
+void clearIssuerKeyNameCache()
+{
+	g_issuer_name_cache.Clear();
+}
 

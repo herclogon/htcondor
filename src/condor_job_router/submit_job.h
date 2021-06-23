@@ -20,7 +20,6 @@
 #ifndef INCLUDE_SUBMIT_JOB_H
 #define INCLUDE_SUBMIT_JOB_H
 
-#include "MyString.h"
 #include "condor_classad.h"
 
 namespace classad { class ClassAd; }
@@ -45,7 +44,7 @@ enum ClaimJobResult {
 	arbitrary string, but should as uniquely as possible identify
 	this process.  "$(SUBSYS) /path/to/condor_config" is recommended.
 */
-ClaimJobResult claim_job(int cluster, int proc, MyString * error_details,
+ClaimJobResult claim_job(int cluster, int proc, std::string * error_details,
 	const char * my_identity, bool target_is_sandboxed);
 
 /*
@@ -61,7 +60,7 @@ ClaimJobResult claim_job(int cluster, int proc, MyString * error_details,
     The ClassAd is used to set priv state appropriately for manipulating
     the job through qmgmt.
 */
-ClaimJobResult claim_job(classad::ClassAd const &ad, const char * pool_name, const char * schedd_name, int cluster, int proc, MyString * error_details, const char * my_identity, bool target_is_sandboxed);
+ClaimJobResult claim_job(classad::ClassAd const &ad, const char * pool_name, const char * schedd_name, int cluster, int proc, std::string * error_details, const char * my_identity, bool target_is_sandboxed);
 
 
 /*
@@ -78,10 +77,10 @@ ClaimJobResult claim_job(classad::ClassAd const &ad, const char * pool_name, con
 		job, the yield attempt fails.  See claim_job for details
 		on suggested identity strings.
 */
-bool yield_job(bool done, int cluster, int proc, classad::ClassAd const &job_ad, MyString * error_details = 0, const char * my_identity = 0, bool target_is_sandboxed=true, bool release_on_hold = true, bool *keep_trying = 0);
+bool yield_job(bool done, int cluster, int proc, classad::ClassAd const &job_ad, std::string * error_details = 0, const char * my_identity = 0, bool target_is_sandboxed=true, bool release_on_hold = true, bool *keep_trying = 0);
 bool yield_job(classad::ClassAd const &ad, const char * pool_name,
 	const char * schedd_name, bool done, int cluster, int proc,
-	MyString * error_details = 0, const char * my_identity = 0, bool target_is_sandboxed = true,
+	std::string * error_details = 0, const char * my_identity = 0, bool target_is_sandboxed = true,
 	bool release_on_hold = true, bool *keep_trying = 0);
 
 /* 
@@ -97,20 +96,6 @@ bool yield_job(classad::ClassAd const &ad, const char * pool_name,
 
 */
 bool submit_job( const std::string &owner, const std::string &domain, ClassAd & src, const char * schedd_name, const char * pool_name, bool is_sandboxed, int * cluster_out = 0, int * proc_out = 0 );
-
-
-/* 
-- src - The classad to submit.  Will _not_ be modified.
-
-- schedd_name - Name of the schedd to send the job to, as specified in the Name
-  attribute of the schedd's classad.  Can be NULL to indicate "local schedd"
-
-- pool_name - hostname (and possible port) of collector where schedd_name can
-  be found.  Can be NULL to indicate "whatever COLLECTOR_HOST in my
-  condor_config file claims".
-
-*/
-bool submit_job( const std::string &owner, const std::string &domain, classad::ClassAd & src, const char * schedd_name, const char * pool_name, bool is_sandboxed, int * cluster_out = 0, int * proc_out = 0 );
 
 
 /*
@@ -167,7 +152,7 @@ reason - description of reason for removal
 schedd_name and pool_name can be NULL to indicate "local"
 
  */
-bool remove_job(classad::ClassAd const &ad, int cluster, int proc, char const *reason, const char * schedd_name, const char * pool_name, MyString &error_desc);
+bool remove_job(classad::ClassAd const &ad, int cluster, int proc, char const *reason, const char * schedd_name, const char * pool_name, std::string &error_desc);
 
 
 bool WriteTerminateEventToUserLog( classad::ClassAd const &ad );

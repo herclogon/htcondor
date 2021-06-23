@@ -32,22 +32,19 @@
 #include "parse.h"
 #include "util.h"
 #include "debug.h"
-#include "list.h"
 #include "util_lib_proto.h"
 #include "dagman_commands.h"
 #include "dagman_main.h"
 #include "tmp_dir.h"
 #include "basename.h"
-#include "extArray.h"
 #include "condor_string.h"  /* for strnewp() */
-#include "dagman_recursive_submit.h"
 #include "condor_getcwd.h"
 
 static const char   COMMENT    = '#';
 static const char * DELIMITERS = " \t";
-static const char * ILLEGAL_CHARS = "+.";
+static const char * ILLEGAL_CHARS = "+";
 
-static ExtArray<char*> _spliceScope;
+static std::vector<char*> _spliceScope;
 static bool _useDagDir = false;
 
 // _thisDagNum will be incremented for each DAG specified on the
@@ -55,16 +52,22 @@ static bool _useDagDir = false;
 static int _thisDagNum = -1;
 static bool _mungeNames = true;
 
+// DAGMan global schedd object. Only used here to hand off to a splice DAG.
+DCSchedd *_schedd = NULL;
+
 static bool parse_subdag( Dag *dag,
 						const char* nodeTypeKeyword,
 						const char* dagFile, int lineNum,
 						const char *directory);
 
-static bool parse_node( Dag *dag,
+static bool parse_node( Dag *dag, const char * nodeName, 
+						const char * submitFileOrSubmitDesc,
 						const char* nodeTypeKeyword,
 						const char* dagFile, int lineNum,
 						const char *directory, const char *inlineOrExt,
 						const char *submitOrDagFile);
+
+static bool pre_parse_node(MyString & nodename, const char * &submitFile);
 
 static bool parse_script(const char *endline, Dag *dag, 
 		const char *filename, int lineNumber);
@@ -125,17 +128,6 @@ isReservedWord( const char *token )
 }
 
 bool
-containsIllegalChars( const char *token ) {
-    for( unsigned int i = 0; i < strlen(token); i++ ) {
-        if( strchr( ILLEGAL_CHARS, token[i] ) ) {
-            return true;
-        }
-    }
-    return false;
-}
-
-
-bool
 isDelimiter( char c ) {
 	char const* tmp = strchr( DELIMITERS, (int)c );
 	return tmp ? true : false;
@@ -147,9 +139,37 @@ void parseSetDoNameMunge(bool doit)
 	_mungeNames = doit;
 }
 
+struct _parse_inline_submit_callback_args { char * line; int source_id; };
+
+static int parse_inline_submit_callback(void* pv, MACRO_SOURCE& /*source*/, MACRO_SET& /*macro_set*/, char * line, std::string & /*errmsg*/)
+{
+	char ** stopline = (char**)pv;
+	*stopline = line;
+	if (!line || *line != '}') {
+		return -1; /// return failure
+	}
+	return 1; // stop scanning, return success
+}
+
+int parse_up_to_close_brace(SubmitHash & hash, MacroStream &ms, std::string & errmsg, char** closeline)
+{
+	*closeline = NULL;
+
+	MACRO_EVAL_CONTEXT ctx;
+	ctx.init("SUBMIT", 2);
+
+	int err = Parse_macros(ms,
+		0, hash.macros(), READ_MACROS_SUBMIT_SYNTAX,
+		&ctx, errmsg, parse_inline_submit_callback, closeline);
+	if (err < 0)
+		return err;
+	return 0;
+}
+
+
 //-----------------------------------------------------------------------------
 bool parse(Dag *dag, const char *filename, bool useDagDir,
-			bool incrementDagNum)
+			DCSchedd *schedd, bool incrementDagNum)
 {
 	ASSERT( dag != NULL );
 
@@ -158,6 +178,7 @@ bool parse(Dag *dag, const char *filename, bool useDagDir,
 	}
 
 	_useDagDir = useDagDir;
+	_schedd = schedd;
 
 		//
 		// If useDagDir is true, we have to cd into the directory so we can
@@ -174,15 +195,17 @@ bool parse(Dag *dag, const char *filename, bool useDagDir,
 		tmpDirectory = dirname;
 		free(dirname);
 
-		MyString	errMsg;
-		if ( !dagDir.Cd2TmpDir( tmpDirectory.Value(), errMsg ) ) {
+		std::string	errMsg;
+		if ( !dagDir.Cd2TmpDir( tmpDirectory.c_str(), errMsg ) ) {
 			debug_printf( DEBUG_QUIET,
 					"ERROR: Could not change to DAG directory %s: %s\n",
-					tmpDirectory.Value(), errMsg.Value() );
+					tmpDirectory.c_str(), errMsg.c_str() );
 			return false;
 		}
 		tmpFilename = condor_basename( filename );
 	}
+	MyString tmpcwd;
+	condor_getcwd( tmpcwd );
 
 	FILE *fp = safe_fopen_wrapper_follow(tmpFilename, "r");
 	if(fp == NULL) {
@@ -190,12 +213,18 @@ bool parse(Dag *dag, const char *filename, bool useDagDir,
 		condor_getcwd( cwd );
 		debug_printf( DEBUG_QUIET, "ERROR: Could not open file %s for input "
 					"(cwd %s) (errno %d, %s)\n", tmpFilename,
-					cwd.Value(), errno, strerror(errno));
+					cwd.c_str(), errno, strerror(errno));
 		return false;
    	}
 
 	char *line;
-	int lineNumber = 0;
+	//int lineNumber = 0;
+
+	MACRO_SOURCE src = { false, false, 0, 0, 0, 0 };
+	MacroStreamYourFile ms(fp, src);
+	src.line = 0;
+	src.id = 4; // index into macro_set.sources. 4 is the first index after the pre-defined ones
+	int gl_opts = 3; // CONFIG_GETLINE_OPT_COMMENT_DOESNT_CONTINUE | CONFIG_GETLINE_OPT_CONTINUE_MAY_BE_COMMENTED_OUT;
 
 	//
 	// We now parse in two passes, so that commands such as PARENT..CHILD
@@ -208,14 +237,15 @@ bool parse(Dag *dag, const char *filename, bool useDagDir,
 	// PASS 1.
 	// This loop will read every line of the input file
 	//
-	while ( ((line=getline_trim(fp, lineNumber)) != NULL) ) {
-		std::string varline(line);
+	while ( ((line=ms.getline(gl_opts)) != NULL) ) {
+		//std::string varline(line);
+		int lineNumber = src.line;
 
 		//
 		// Find the terminating '\0'
 		//
-		char * endline = line;
-		while (*endline != '\0') endline++;
+		//char * endline = line;
+		//while (*endline != '\0') endline++;
 
 
 		// Note that getline will truncate leading spaces (as defined by isspace())
@@ -231,29 +261,132 @@ bool parse(Dag *dag, const char *filename, bool useDagDir,
 		char *token = strtok(line, DELIMITERS);
 		if ( !token ) continue; // so Coverity is happy
 
-		bool parsed_line_successfully;
+		bool parsed_line_successfully = false;
 
 		// Handle a Job spec
 		// Example Syntax is:  JOB j1 j1.condor [DONE]
 		//
 		if(strcasecmp(token, "JOB") == 0) {
-			parsed_line_successfully = parse_node( dag, 
-					   token,
-					   filename, lineNumber, tmpDirectory.Value(), "",
-					   "submitfile" );
+			MyString nodename;
+			const char * subfile = NULL;
+			pre_parse_node(nodename, subfile);
+			bool inline_submit = subfile && *subfile == '{';
+			if (inline_submit) { subfile = "submitDesc"; } // Set a pseudo filename
+			parsed_line_successfully = parse_node( dag, nodename.c_str(), subfile,
+						   "JOB",
+						   filename, lineNumber, tmpDirectory.c_str(), "",
+						   "submitfile" );
+			if (parsed_line_successfully && inline_submit) {
+				// go into inline subfile parsing mode
+				if (param_boolean("DAGMAN_USE_CONDOR_SUBMIT", true)) {
+					debug_printf(DEBUG_NORMAL, "ERROR: To use an inline job "
+					  "description for node %s, DAGMAN_USE_CONDOR_SUBMIT must "
+					  "be set to False. Aborting.\n", nodename.c_str());
+					parsed_line_successfully = false;
+				}
+				else { 
+					// Check for duplicate keys in dag->SubmitDescriptions
+					// If a duplicate exists, std::map.insert() will not throw any
+					// errors but it also won't overwrite the existing value.
+					// In this case, throw a warning and proceed as normal.
+					if(dag->SubmitDescriptions.find(std::string(nodename.Value())) != dag->SubmitDescriptions.end()) {
+						debug_printf(DEBUG_NORMAL, "Warning: a submit description "
+							"already exists with name %s, will not be overwritten."
+							"\n", nodename.c_str());
+					}
+					dag->SubmitDescriptions.insert(std::make_pair(std::string(nodename.c_str()), new SubmitHash()));
+					SubmitHash* submitDesc = dag->SubmitDescriptions.at(std::string(nodename.c_str()));
+					submitDesc->init();
+					submitDesc->setDisableFileChecks(true);
+					std::string errmsg;
+					char * stopline = NULL;
+					if (parse_up_to_close_brace(*submitDesc, ms, errmsg, &stopline) < 0) {
+						parsed_line_successfully = false;
+					} else {
+						// Attach the submit description to the actual node
+						Job *job;
+						job = dag->FindAllNodesByName((const char *)nodename.c_str(), 
+							"", filename, lineNumber);
+						if (job) {
+							job->setSubmitDesc(submitDesc);
+						}
+						else {
+							debug_printf(DEBUG_NORMAL, "Error: unable to find node "
+								"%s in our DAG structure, aborting.\n", nodename.c_str());
+						}
+					}
+				}
+			}
 		}
 
 		// Handle a SUBDAG spec
 		else if	(strcasecmp(token, "SUBDAG") == 0) {
 			parsed_line_successfully = parse_subdag( dag, 
-						token, filename, lineNumber, tmpDirectory.Value() );
+						token, filename, lineNumber, tmpDirectory.c_str() );
 		}
 
 		// Handle a FINAL spec
 		else if(strcasecmp(token, "FINAL") == 0) {
-			parsed_line_successfully = parse_node( dag, 
+			MyString nodename;
+			const char * subfile;
+			pre_parse_node(nodename, subfile);
+			bool inline_submit = subfile && *subfile == '{';
+			if (inline_submit) { subfile = "submitDesc"; } // // Generate a pseudo filename?
+			parsed_line_successfully = parse_node(dag, nodename.c_str(), subfile,
+					"FINAL",
+					filename, lineNumber, tmpDirectory.c_str(), "",
+					"submitfile");
+			if (parsed_line_successfully && inline_submit) {
+				// go into inline subfile parsing mode
+				if (param_boolean("DAGMAN_USE_CONDOR_SUBMIT", true)) {
+					debug_printf(DEBUG_NORMAL, "ERROR: To use an inline job "
+					  "description for node %s, DAGMAN_USE_CONDOR_SUBMIT must "
+					  "be set to False. Aborting.\n", nodename.c_str());
+					parsed_line_successfully = false;
+				}
+				else { 
+					// Check for duplicate keys in dag->SubmitDescriptions
+					// If a duplicate exists, std::map.insert() will not throw any
+					// errors but it also won't overwrite the existing value.
+					// In this case, throw a warning and proceed as normal.
+					if(dag->SubmitDescriptions.find(std::string(nodename.Value())) != dag->SubmitDescriptions.end()) {
+						debug_printf(DEBUG_NORMAL, "Warning: a submit description "
+							"already exists with name %s, will not be overwritten."
+							"\n", nodename.c_str());
+					}
+					dag->SubmitDescriptions.insert(std::make_pair(std::string(nodename.c_str()), new SubmitHash()));
+					SubmitHash* submitDesc = dag->SubmitDescriptions.at(std::string(nodename.c_str()));
+					submitDesc->init();
+					submitDesc->setDisableFileChecks(true);
+					std::string errmsg;
+					char * stopline = NULL;
+					if (parse_up_to_close_brace(*submitDesc, ms, errmsg, &stopline) < 0) {
+						parsed_line_successfully = false;
+					} else {
+						// Attach the submit description to the actual node
+						Job *job;
+						job = dag->FindAllNodesByName((const char *)nodename.c_str(), 
+							"", filename, lineNumber);
+						if (job) {
+							job->setSubmitDesc(submitDesc);
+						}
+						else {
+							debug_printf(DEBUG_NORMAL, "Error: unable to find node "
+								"%s in our DAG structure, aborting.\n", nodename.c_str());
+						}
+					}
+				}
+			}
+		}
+
+		// Handle a PROVISIONER spec
+		else if(strcasecmp(token, "PROVISIONER") == 0) {
+			MyString nodename;
+			const char * subfile;
+			pre_parse_node(nodename, subfile);
+			parsed_line_successfully = parse_node( dag, nodename.c_str(), subfile,
 					   token,
-					   filename, lineNumber, tmpDirectory.Value(), "",
+					   filename, lineNumber, tmpDirectory.c_str(), "",
 					   "submitfile" );
 		}
 
@@ -262,6 +395,44 @@ bool parse(Dag *dag, const char *filename, bool useDagDir,
 			parsed_line_successfully = parse_splice(dag, filename,
 						lineNumber);
 		}
+
+		// Handle a SUBMIT-DESCRIPTION spec
+		else if(strcasecmp(token, "SUBMIT-DESCRIPTION") == 0) {
+			MyString descName;
+			const char* desc;
+			pre_parse_node(descName, desc);
+			bool is_submit_description = desc && *desc == '{';
+			if (is_submit_description) {
+				// Start parsing submit description
+				if (param_boolean("DAGMAN_USE_CONDOR_SUBMIT", true)) {
+					debug_printf(DEBUG_NORMAL, "ERROR: To use an inline job "
+					  "description for node %s, DAGMAN_USE_CONDOR_SUBMIT must "
+					  "be set to False. Aborting.\n", descName.c_str());
+					parsed_line_successfully = false;
+				}
+				else {
+					// Check for duplicate keys in dag->SubmitDescriptions
+					// If a duplicate exists, std::map.insert() will not throw any
+					// errors but it also won't overwrite the existing value.
+					// In this case, throw a warning and proceed as normal.
+					if(dag->SubmitDescriptions.find(std::string(descName.Value())) != dag->SubmitDescriptions.end()) {
+						debug_printf(DEBUG_NORMAL, "Warning: a submit description "
+							"already exists with name %s, will not be overwritten."
+							"\n", descName.c_str());
+					}
+					dag->SubmitDescriptions.insert(std::make_pair(std::string(descName.c_str()), new SubmitHash()));
+					SubmitHash* submitDesc = dag->SubmitDescriptions.at(descName.c_str());
+					submitDesc->init();
+					submitDesc->setDisableFileChecks(true);
+					std::string errmsg;
+					char * stopline = NULL;
+					if (parse_up_to_close_brace(*submitDesc, ms, errmsg, &stopline) < 0) {
+						parsed_line_successfully = false;
+					}
+				}
+			}
+		}
+
 		else {
 				// Just accept everything for now -- we'll detect unknown
 				// command names in the second pass.
@@ -286,14 +457,16 @@ bool parse(Dag *dag, const char *filename, bool useDagDir,
 		return false;
 	}
 
-	lineNumber = 0;
+	// reset line number because we seeked back to the start of the file.
+	//lineNumber = 0;
+	src.line = 0;
 
 	//
 	// This loop will read every line of the input file
 	//
-	while ( ((line=getline_trim(fp, lineNumber)) != NULL) ) {
-		std::string varline(line);
-
+	while ( ((line=ms.getline(gl_opts)) != NULL) ) {
+		//std::string varline(line);
+		int lineNumber = src.line;
 		//
 		// Find the terminating '\0'
 		//
@@ -320,8 +493,34 @@ bool parse(Dag *dag, const char *filename, bool useDagDir,
 		// Example Syntax is:  JOB j1 j1.condor [DONE]
 		//
 		if(strcasecmp(token, "JOB") == 0) {
-				// Parsed in first pass.
+				// Parsed in first pass. 
+				// However we still need to check if this is an inline submit 
+				// description, and if so advance the line parser.
 			parsed_line_successfully = true;
+			int startLineNumber = lineNumber;
+			MyString nodename;
+			const char * subfile = NULL;
+			pre_parse_node(nodename, subfile);
+			bool inline_submit = subfile && *subfile == '{';
+			if (inline_submit) {
+				// It's probably pointless to look for a missing close brace at
+				// this point since it would have failed on the first pass.
+				bool found_close_bracket = false;
+				while ( ((line=ms.getline(gl_opts)) != NULL) ) {
+					lineNumber++;
+					if (line[0] == '}') {
+						found_close_bracket = true;
+						break;
+					}
+				}
+				if (!found_close_bracket) {
+					debug_printf(DEBUG_NORMAL, "Error: no closing brace in JOB %s "
+						"submit description (starting on line %d)\n",
+						nodename.c_str(), startLineNumber);
+					parsed_line_successfully = false;
+				}
+			}
+			
 		}
 
 		// Handle a SUBDAG spec
@@ -330,14 +529,45 @@ bool parse(Dag *dag, const char *filename, bool useDagDir,
 			parsed_line_successfully = true;
 		}
 
-		// Handle a FINAL spec
-		else if(strcasecmp(token, "FINAL") == 0) {
+		// Handle a PROVISIONER spec
+		else if(strcasecmp(token, "PROVISIONER") == 0) {
 				// Parsed in first pass.
 			parsed_line_successfully = true;
 		}
 
+		// Handle a FINAL spec
+		else if(strcasecmp(token, "FINAL") == 0) {
+				// Parsed in first pass.
+				// However we still need to check if this is an inline submit 
+				// description, and if so advance the line parser.
+			parsed_line_successfully = true;
+			int startLineNumber = lineNumber;
+			MyString nodename;
+			const char * subfile = NULL;
+			pre_parse_node(nodename, subfile);
+			bool inline_submit = subfile && *subfile == '{';
+			if (inline_submit) {
+				// It's probably pointless to look for a missing close brace at
+				// this point since it would have failed on the first pass.
+				bool found_close_bracket = false;
+				while ( ((line=ms.getline(gl_opts)) != NULL) ) {
+					lineNumber++;
+					if (line[0] == '}') {
+						found_close_bracket = true;
+						break;
+					}
+				}
+				if (!found_close_bracket) {
+					debug_printf(DEBUG_NORMAL, "Error: no closing brace in FINAL "
+						"%s submit description (starting on line %d)\n",
+						nodename.c_str(), startLineNumber);
+					parsed_line_successfully = false;
+				}
+			}
+		}
+
 		// Handle a SCRIPT spec
-		// Example Syntax is:  SCRIPT (PRE|POST) [DEFER status time] JobName ScriptName Args ...
+		// Example Syntax is:  SCRIPT (PRE|POST|HOLD) [DEFER status time] JobName ScriptName Args ...
 		else if ( strcasecmp(token, "SCRIPT") == 0 ) {
 			parsed_line_successfully = parse_script(endline, dag, 
 				filename, lineNumber);
@@ -469,14 +699,45 @@ bool parse(Dag *dag, const char *filename, bool useDagDir,
 						filename, lineNumber );
 		}
 
+		// Handle a SUBMIT-DESCRIPTION spec
+		else if(strcasecmp(token, "SUBMIT-DESCRIPTION") == 0) {
+				// Parsed in first pass.
+				// However we still need to advance the line parser.
+			parsed_line_successfully = true;
+			int startLineNumber = lineNumber;
+			MyString descName;
+			const char *desc = NULL;
+			pre_parse_node(descName, desc);
+			bool is_submit_description = desc && *desc == '{';
+			if (is_submit_description) {
+				// It's probably pointless to look for a missing close brace at
+				// this point since it would have failed on the first pass.
+				bool found_close_bracket = false;
+				while ( ((line=ms.getline(gl_opts)) != NULL) ) {
+					lineNumber++;
+					if (line[0] == '}') {
+						found_close_bracket = true;
+						break;
+					}
+				}
+				if (!found_close_bracket) {
+					debug_printf(DEBUG_NORMAL, "Error: no closing brace in "
+						" SUBMIT-DESCRIPTION %s (starting on line %d)\n",
+						descName.c_str(), startLineNumber);
+					parsed_line_successfully = false;
+				}
+			}
+		}
+
 		// None of the above means that there was bad input.
 		else {
 			debug_printf( DEBUG_QUIET, "%s (line %d): "
 				"ERROR: expected JOB, DATA, SUBDAG, FINAL, SCRIPT, PARENT, "
 				"RETRY, ABORT-DAG-ON, DOT, VARS, PRIORITY, CATEGORY, "
-				"MAXJOBS, CONFIG, SET_JOB_ATTR, SPLICE, FINAL, "
+				"MAXJOBS, CONFIG, SET_JOB_ATTR, SPLICE, PROVISIONER, "
 				"NODE_STATUS_FILE, REJECT, JOBSTATE_LOG, PRE_SKIP, DONE, "
-				"CONNECT, PIN_IN, PIN_OUT, or INCLUDE token (found %s)\n",
+				"CONNECT, PIN_IN, PIN_OUT, INCLUDE or SUBMIT-DESCRIPTION token "
+				"(found %s)\n",
 				filename, lineNumber, token );
 			parsed_line_successfully = false;
 		}
@@ -496,11 +757,11 @@ bool parse(Dag *dag, const char *filename, bool useDagDir,
 	dag->RecordInitialAndTerminalNodes();
 	
 	if ( useDagDir ) {
-		MyString	errMsg;
+		std::string	errMsg;
 		if ( !dagDir.Cd2MainDir( errMsg ) ) {
 			debug_printf( DEBUG_QUIET,
 					"ERROR: Could not change to original directory: %s\n",
-					errMsg.Value() );
+					errMsg.c_str() );
 			return false;
 		}
 	}
@@ -520,7 +781,10 @@ parse_subdag( Dag *dag,
 		return false;
 	}
 	if ( !strcasecmp( inlineOrExt, "EXTERNAL" ) ) {
-		return parse_node( dag, nodeTypeKeyword, dagFile,
+		MyString nodename;
+		const char * subfile;
+		pre_parse_node(nodename, subfile);
+		return parse_node( dag, nodename.c_str(), subfile, nodeTypeKeyword, dagFile,
 					lineNum, directory, " EXTERNAL", "dagfile" );
 	}
 
@@ -532,6 +796,9 @@ parse_subdag( Dag *dag,
 static const char* next_possibly_quoted_token( void )
 {
 	char *remainder = strtok( NULL, "" );
+	if ( !remainder ) {
+		return NULL;
+	}
 	while ( remainder[0] == ' ' || remainder[0] == '\t' )
 		remainder++;
 	if ( remainder[0] == '"' )
@@ -541,8 +808,33 @@ static const char* next_possibly_quoted_token( void )
 }
 
 //-----------------------------------------------------------------------------
+// parse just enough of the line to know if this is an inline submit file or a submit filename
+static bool
+pre_parse_node(MyString & nodename, const char * &submitFile)
+{
+	nodename.clear();
+	submitFile = NULL;
+
+	// first token is the node name
+	const char *nodeName = strtok(NULL, DELIMITERS);
+	if (nodeName) {
+		nodename = nodeName;
+	}
+
+	// next token is the either the submit file name,
+	// or an inline submit description
+	submitFile = next_possibly_quoted_token();
+	if (!submitFile) {
+		return false;
+	}
+
+	// return success for pre-parse. we have two tokens, we don't yet know if they have valid values though!!!
+	return true;
+}
+
+//-----------------------------------------------------------------------------
 static bool 
-parse_node( Dag *dag, 
+parse_node( Dag *dag, const char * nodeName, const char * submitFileOrSubmitDesc,
 			const char* nodeTypeKeyword,
 			const char* dagFile, int lineNum, const char *directory,
 			const char *inlineOrExt, const char *submitOrDagFile)
@@ -553,17 +845,19 @@ parse_node( Dag *dag,
 				submitOrDagFile );
 	MyString whynot;
 	bool done = false;
-	Dag *tmp = NULL;
+
+	NodeType type = NodeType::JOB;
+	if ( strcasecmp ( nodeTypeKeyword, "FINAL" ) == 0 ) type = NodeType::FINAL;
+	if ( strcasecmp ( nodeTypeKeyword, "PROVISIONER" ) == 0 ) type = NodeType::PROVISIONER;
 
 		// NOTE: fear not -- any missing tokens resulting in NULL
 		// strings will be error-handled correctly by AddNode()
 
 		// first token is the node name
-	const char *nodeName = strtok( NULL, DELIMITERS );
 	if ( !nodeName ) {
 		debug_printf( DEBUG_QUIET, "ERROR: %s (line %d): no node name "
 					"specified\n", dagFile, lineNum );
-		exampleSyntax( example.Value() );
+		exampleSyntax( example.c_str() );
 		return false;
 	}
 
@@ -571,11 +865,12 @@ parse_node( Dag *dag,
 		debug_printf( DEBUG_QUIET,
 					  "ERROR: %s (line %d): JobName cannot be a reserved word\n",
 					  dagFile, lineNum );
-		exampleSyntax( example.Value() );
+		exampleSyntax( example.c_str() );
 		return false;
 	}
 
-    if( containsIllegalChars( nodeName ) ) {
+	bool allowIllegalChars = param_boolean("DAGMAN_ALLOW_ANY_NODE_NAME_CHARACTERS", false );
+	if ( !allowIllegalChars && ( strcspn ( nodeName, ILLEGAL_CHARS ) < strlen ( nodeName ) ) ) {
         MyString errorMessage;
     	errorMessage.formatstr( "ERROR: %s (line %d): JobName %s contains one "
                   "or more illegal characters (", dagFile, lineNum, nodeName );
@@ -588,19 +883,19 @@ parse_node( Dag *dag,
             }
         }
         errorMessage += ")\n";
-        debug_error( 1, DEBUG_QUIET, "%s", errorMessage.Value() );
+        debug_error( 1, DEBUG_QUIET, "%s", errorMessage.c_str() );
         return false;
     }
 
 	MyString tmpNodeName = munge_job_name(nodeName);
-	nodeName = tmpNodeName.Value();
+	nodeName = tmpNodeName.c_str();
 
-		// next token is the submit file name
-	const char *submitFile = next_possibly_quoted_token();
-	if ( !submitFile ) {
-		debug_printf( DEBUG_QUIET, "ERROR: %s (line %d): no submit file "
-					"specified\n", dagFile, lineNum );
-		exampleSyntax( example.Value() );
+		// next token is the either the submit file name,
+		// or an inline submit description
+	if ( !submitFileOrSubmitDesc ) {
+		debug_printf( DEBUG_QUIET, "ERROR: %s (line %d): no submit file or "
+					"submit description specified\n", dagFile, lineNum );
+		exampleSyntax( example.c_str() );
 		return false;
 	}
 
@@ -620,15 +915,15 @@ parse_node( Dag *dag,
 			if ( !directory ) {
 				debug_printf( DEBUG_QUIET, "ERROR: %s (line %d): no directory "
 							"specified after DIR keyword\n", dagFile, lineNum );
-				exampleSyntax( example.Value() );
+				exampleSyntax( example.c_str() );
 				return false;
 			}
 
-			MyString errMsg;
+			std::string errMsg;
 			if ( !nodeDir.Cd2TmpDir(directory, errMsg) ) {
 				debug_printf( DEBUG_QUIET,
 							"ERROR: can't change to directory %s: %s\n",
-							directory, errMsg.Value() );
+							directory, errMsg.c_str() );
 				return false;
 			}
 			nextTok = strtok( NULL, DELIMITERS );
@@ -654,7 +949,7 @@ parse_node( Dag *dag,
 		} else {
 			debug_printf( DEBUG_QUIET, "ERROR: %s (line %d): invalid "
 						  "parameter \"%s\"\n", dagFile, lineNum, nextTok );
-			exampleSyntax( example.Value() );
+			exampleSyntax( example.c_str() );
 			return false;
 		}
 		nextTok = strtok( NULL, DELIMITERS );
@@ -664,12 +959,12 @@ parse_node( Dag *dag,
 	if ( nextTok ) {
 			debug_printf( DEBUG_QUIET, "ERROR: %s (line %d): invalid "
 						  "parameter \"%s\"\n", dagFile, lineNum, nextTok );
-			exampleSyntax( example.Value() );
+			exampleSyntax( example.c_str() );
 			return false;
 	}
 
 	// check to see if this node name is also a splice name for this dag.
-	if (dag->LookupSplice(MyString(nodeName), tmp) == 0) {
+	if (dag->LookupSplice(MyString(nodeName))) {
 		debug_printf( DEBUG_QUIET, 
 			  "ERROR: %s (line %d): "
 			  "Node name '%s' must not also be a splice name.\n",
@@ -678,55 +973,57 @@ parse_node( Dag *dag,
 	}
 
 	// If this is a "SUBDAG" line, generate the real submit file name.
+	// This can only be done with real submit files, not inline descriptions.
 	MyString nestedDagFile("");
 	MyString dagSubmitFile(""); // must be outside if so it stays in scope
-	if ( strcasecmp( nodeTypeKeyword, "SUBDAG" ) == MATCH ) {
-			// Save original DAG file name (needed for rescue DAG).
-		nestedDagFile = submitFile;
+	if ( submitFileOrSubmitDesc ) {
+		if ( strcasecmp( nodeTypeKeyword, "SUBDAG" ) == MATCH ) {
+				// Save original DAG file name (needed for rescue DAG).
+			nestedDagFile = submitFileOrSubmitDesc;
 
-			// Generate the "real" submit file name (append ".condor.sub"
-			// to the DAG file name).
-		dagSubmitFile = submitFile;
-		dagSubmitFile += DAG_SUBMIT_FILE_SUFFIX;
-		submitFile = dagSubmitFile.Value();
+				// Generate the "real" submit file name (append ".condor.sub"
+				// to the DAG file name).
+			dagSubmitFile = submitFileOrSubmitDesc;
+			dagSubmitFile += DAG_SUBMIT_FILE_SUFFIX;
+			submitFileOrSubmitDesc = dagSubmitFile.c_str();
 
-	} else if ( strstr( submitFile, DAG_SUBMIT_FILE_SUFFIX) ) {
-			// If the submit file name ends in ".condor.sub", we assume
-			// that this node is a nested DAG, and set the DAG filename
-			// accordingly.
-		nestedDagFile = submitFile;
-		nestedDagFile.replaceString( DAG_SUBMIT_FILE_SUFFIX, "" );
-		debug_printf( DEBUG_NORMAL, "Warning: the use of the JOB "
-					"keyword for nested DAGs is deprecated; please "
-					"use SUBDAG EXTERNAL instead\n" );
-		check_warning_strictness( DAG_STRICT_3 );
+		} else if ( strstr( submitFileOrSubmitDesc, DAG_SUBMIT_FILE_SUFFIX) ) {
+				// If the submit file name ends in ".condor.sub", we assume
+				// that this node is a nested DAG, and set the DAG filename
+				// accordingly.
+			nestedDagFile = submitFileOrSubmitDesc;
+			nestedDagFile.replaceString( DAG_SUBMIT_FILE_SUFFIX, "" );
+			debug_printf( DEBUG_NORMAL, "Warning: the use of the JOB "
+						"keyword for nested DAGs is deprecated; please "
+						"use SUBDAG EXTERNAL instead\n" );
+			check_warning_strictness( DAG_STRICT_3 );
+		}
 	}
 
 	// looks ok, so add it
-	bool isFinal = strcasecmp( nodeTypeKeyword, "FINAL" ) == MATCH;
 	if( !AddNode( dag, nodeName, directory,
-				submitFile, noop, done, isFinal, whynot ) )
+				submitFileOrSubmitDesc, noop, done, type, whynot ) )
 	{
 		debug_printf( DEBUG_QUIET, "ERROR: %s (line %d): %s\n",
-					  dagFile, lineNum, whynot.Value() );
-		exampleSyntax( example.Value() );
+					dagFile, lineNum, whynot.c_str() );
+		exampleSyntax( example.c_str() );
 		return false;
 	}
 
 	if ( nestedDagFile != "" ) {
-		if ( !SetNodeDagFile( dag, nodeName, nestedDagFile.Value(),
+		if ( !SetNodeDagFile( dag, nodeName, nestedDagFile.c_str(),
 					whynot ) ) {
 			debug_printf( DEBUG_QUIET, "ERROR: %s (line %d): %s\n",
-					  	dagFile, lineNum, whynot.Value() );
+					  	dagFile, lineNum, whynot.c_str() );
 			return false;
 		}
 	}
 
-	MyString errMsg;
+	std::string errMsg;
 	if ( !nodeDir.Cd2MainDir(errMsg) ) {
 		debug_printf( DEBUG_QUIET,
 					"ERROR: can't change to original directory: %s\n",
-					errMsg.Value() );
+					errMsg.c_str() );
 		return false;
 	}
 
@@ -737,7 +1034,7 @@ parse_node( Dag *dag,
 //
 // Function: parse_script
 // Purpose:  Parse a line of the format:
-//             SCRIPT [DEFER status time] (PRE|POST) JobName ScriptName Args ...
+//             SCRIPT [DEFER status time] (PRE|POST|HOLD) JobName ScriptName Args ...
 //
 //-----------------------------------------------------------------------------
 static bool 
@@ -747,15 +1044,15 @@ parse_script(
 	const char *filename, 
 	int  lineNumber)
 {
-	const char * example = "SCRIPT [DEFER status time] (PRE|POST) JobName Script Args ...";
+	const char * example = "SCRIPT [DEFER status time] (PRE|POST|HOLD) JobName Script Args ...";
 
 	//
 	// Second keyword is either PRE, POST or DEFER
 	//
-	char * prepost = strtok( NULL, DELIMITERS );
-	if ( !prepost ) {
+	char * type_name = strtok( NULL, DELIMITERS );
+	if ( !type_name ) {
 		debug_printf( DEBUG_QUIET,
-					"ERROR: %s (line %d): Missing PRE, POST, or DEFER\n",
+					"ERROR: %s (line %d): Missing PRE, POST, HOLD, or DEFER\n",
 					filename, lineNumber );
 		exampleSyntax( example );
 		return false;
@@ -763,7 +1060,7 @@ parse_script(
 
 	int defer_status = SCRIPT_DEFER_STATUS_NONE;
 	int defer_time = 0;
-	if ( !strcasecmp( prepost, "DEFER" ) ) {
+	if ( !strcasecmp( type_name, "DEFER" ) ) {
 			// Our script has a defer statement.
 		char *token = strtok( NULL, DELIMITERS );
 		if ( token == NULL ) {
@@ -800,26 +1097,28 @@ parse_script(
 			return false;
 		}
 
-			// The next token must be PRE or POST.
-		prepost = strtok( NULL, DELIMITERS );
-		if ( !prepost ) {
+			// The next token must be PRE, POST or HOLD.
+		type_name = strtok( NULL, DELIMITERS );
+		if ( !type_name ) {
 			debug_printf( DEBUG_QUIET,
-						"ERROR: %s (line %d): Missing PRE or POST\n",
+						"ERROR: %s (line %d): Missing PRE, POST or HOLD\n",
 						filename, lineNumber );
 			exampleSyntax( example );
 			return false;
 		}
 	}
 
-	bool   post;
-	if ( !strcasecmp (prepost, "PRE" ) ) {
-		post = false;
-	} else if ( !strcasecmp (prepost, "POST") ) {
-		post = true;
+	ScriptType scriptType;
+	if ( !strcasecmp (type_name, "PRE" ) ) {
+		scriptType = ScriptType::PRE;
+	} else if ( !strcasecmp (type_name, "POST") ) {
+		scriptType = ScriptType::POST;
+	} else if ( !strcasecmp (type_name, "HOLD") ) {
+		scriptType = ScriptType::HOLD;
 	} else {
 		debug_printf( DEBUG_QUIET, "ERROR: %s (line %d): "
 					  "After specifying \"SCRIPT\", you must "
-					  "indicate if you want \"PRE\" or \"POST\" "
+					  "indicate if you want \"PRE\", \"POST\", \"HOLD\" "
 					  "(or DEFER)\n",
 					  filename, lineNumber );
 		exampleSyntax (example);
@@ -842,7 +1141,7 @@ parse_script(
 
 	debug_printf(DEBUG_DEBUG_1, "jobName: %s\n", jobName);
 	MyString tmpJobName = munge_job_name(jobName);
-	jobName = tmpJobName.Value();
+	jobName = tmpJobName.c_str();
 
 	//
 	// The rest of the line is the script and args
@@ -864,7 +1163,7 @@ parse_script(
 		debug_printf( DEBUG_QUIET, "ERROR: %s (line %d): "
 					  "You named a %s script for node %s but "
 					  "didn't provide a script filename\n",
-					  filename, lineNumber, post ? "POST" : "PRE", 
+					  filename, lineNumber, type_name, 
 					  jobNameOrig );
 		exampleSyntax( example );
 		return false;
@@ -885,7 +1184,7 @@ parse_script(
 		debug_printf( DEBUG_QUIET, "ERROR: %s (line %d): "
 					  "You named a %s script for node %s but "
 					  "didn't provide a script filename\n",
-					  filename, lineNumber, post ? "POST" : "PRE", 
+					  filename, lineNumber, type_name, 
 					  jobNameOrig );
 		exampleSyntax( example );
 		return false;
@@ -900,14 +1199,13 @@ parse_script(
 
 		MyString whynot;
 			// This fails if the node already has a script.
-		if( !job->AddScript( post, rest, defer_status, defer_time, whynot ) ) {
+		if( !job->AddScript( scriptType, rest, defer_status, defer_time, whynot ) ) {
 			debug_printf( DEBUG_SILENT, "ERROR: %s (line %d): "
 					  	"failed to add %s script to node %s: %s\n",
-					  	filename, lineNumber, post ? "POST" : "PRE",
-					  	job->GetJobName(), whynot.Value() );
+					  	filename, lineNumber, type_name,
+					  	job->GetJobName(), whynot.c_str() );
 			return false;
 		}
-
 	}
 
 	if ( jobName ) {
@@ -919,6 +1217,7 @@ parse_script(
 
 	return true;
 }
+
 
 //-----------------------------------------------------------------------------
 // 
@@ -935,30 +1234,31 @@ parse_parent(
 	int  lineNumber)
 {
 	const char * example = "PARENT p1 [p2 p3 ...] CHILD c1 [c2 c3 ...]";
-	
+	MyString failReason = "";
 	const char *jobName;
 	
 	// get the job objects for the parents
-	List<Job> parents;
+	std::forward_list<Job*> parents;
+	auto last_parent = parents.before_begin();
 	while ((jobName = strtok (NULL, DELIMITERS)) != NULL &&
 		   strcasecmp (jobName, "CHILD") != 0) {
 		const char *jobNameOrig = jobName; // for error output
 		MyString tmpJobName = munge_job_name(jobName);
-		const char *jobName2 = tmpJobName.Value();
+		const char *jobName2 = tmpJobName.c_str();
 
 		// if splice name then deal with that first...
-		Dag *splice_dag;
-		if (dag->LookupSplice(jobName2, splice_dag) == 0) {
+		Dag* splice_dag = dag->LookupSplice(jobName2);
+		if (splice_dag) {
 
 			// grab all of the final nodes of the splice and make them parents
 			// for this job.
-			ExtArray<Job*> *splice_final;
+			std::vector<Job*> *splice_final;
 			splice_final = splice_dag->FinalRecordedNodes();
 
 			// now add each final node as a parent
-			for (int i = 0; i < splice_final->length(); i++) {
+			for (unsigned int i = 0; i < splice_final->size(); i++) {
 				Job *job = (*splice_final)[i];
-				parents.Append(job);
+				last_parent = parents.insert_after(last_parent, job);
 			}
 
 		} else {
@@ -973,19 +1273,22 @@ parse_parent(
 						  filename, lineNumber, jobNameOrig );
 				return false;
 			}
-			parents.Append (job);
+			last_parent = parents.insert_after(last_parent, job);
 		}
 	}
 	
 	// There must be one or more parent job names before
 	// the CHILD token
-	if (parents.Number() < 1) {
+	if (parents.empty()) {
 		debug_printf( DEBUG_QUIET, "ERROR: %s (line %d): "
 					  "Missing Parent Job names\n",
 					  filename, lineNumber );
 		exampleSyntax (example);
 		return false;
 	}
+
+	parents.sort(SortJobsById());
+	parents.unique(EqualJobsById());
 	
 	if (jobName == NULL) {
 		debug_printf( DEBUG_QUIET, 
@@ -995,17 +1298,18 @@ parse_parent(
 		return false;
 	}
 	
-	List<Job> children;
+	std::forward_list<Job*> children;
+	auto last_child = children.before_begin();
 	
 	// get the job objects for the children
 	while ((jobName = strtok (NULL, DELIMITERS)) != NULL) {
 		const char *jobNameOrig = jobName; // for error output
 		MyString tmpJobName = munge_job_name(jobName);
-		const char *jobName2 = tmpJobName.Value();
+		const char *jobName2 = tmpJobName.c_str();
 
 		// if splice name then deal with that first...
-		Dag *splice_dag;
-		if (dag->LookupSplice(jobName2, splice_dag) == 0) {
+		Dag *splice_dag = dag->LookupSplice(jobName2);
+		if (splice_dag) {
 			// grab all of the initial nodes of the splice and make them 
 			// children for this job.
 
@@ -1013,16 +1317,16 @@ parse_parent(
 				"Detected splice %s as a child....\n", filename, lineNumber,
 					jobName2);
 
-			ExtArray<Job*> *splice_initial;
+			std::vector<Job*> *splice_initial;
 			splice_initial = splice_dag->InitialRecordedNodes();
-			debug_printf( DEBUG_DEBUG_1, "Adding %d initial nodes\n", 
-				splice_initial->length());
+			debug_printf( DEBUG_DEBUG_1, "Adding %zu initial nodes\n", 
+				splice_initial->size());
 
 			// now add each initial node as a child
-			for (int i = 0; i < splice_initial->length(); i++) {
+			for (unsigned int i = 0; i < splice_initial->size(); i++) {
 				Job *job = (*splice_initial)[i];
 
-				children.Append(job);
+				last_child = children.insert_after(last_child, job);
 			}
 
 		} else {
@@ -1037,39 +1341,91 @@ parse_parent(
 						  filename, lineNumber, jobNameOrig );
 				return false;
 			}
-			children.Append (job);
+			last_child = children.insert_after(last_child, job);
 		}
 	}
 	
-	if (children.Number() < 1) {
+	if (children.empty()) {
 		debug_printf( DEBUG_QUIET, "ERROR: %s (line %d): Missing Child Job names\n",
 					  filename, lineNumber );
 		exampleSyntax (example);
 		return false;
 	}
 	
+	children.sort(SortJobsById());
+	children.unique(EqualJobsById());
+
 	//
 	// Now add all the dependencies
 	//
 	
-	Job *parent;
-	parents.Rewind();
-	while ((parent = parents.Next()) != NULL) {
-		Job *child;
+	static int numJoinNodes = 0;
+	bool useJoinNodes = param_boolean( "DAGMAN_USE_JOIN_NODES", true );
+	const char * parent_type = "parent";
+
+
+	// If this statement has multiple parent nodes and multiple child nodes, we
+	// can optimize the dag structure by creating an intermediate "join node"
+	// connecting the two sets.
+	if (useJoinNodes && more_than_one(parents) && more_than_one(children)) {
+		// First create the join node and add it
+		std::string joinNodeName;
+		formatstr(joinNodeName, "_condor_join_node%d", ++numJoinNodes);
+		Job* joinNode = AddNode(dag, joinNodeName.c_str(), "", "noop.sub", true, 
+			false, NodeType::JOB, failReason);
+		if (!joinNode) {
+			debug_printf(DEBUG_QUIET, "ERROR: %s (line %d) while attempting to"
+				" add join node\n", failReason.c_str(), lineNumber);
+		}
+		// Now connect all parents and children to the join node
+		for (auto it = parents.begin(); it != parents.end(); ++it) {
+			Job *parent = *it;
+#ifdef DEAD_CODE
+			if (!dag->AddDependency(parent, joinNode)) {
+#else
+			std::forward_list<Job*> lst = { joinNode };
+			if (!parent->AddChildren(lst, failReason)) {
+#endif
+				debug_printf( DEBUG_QUIET, "ERROR: %s (line %d) failed"
+					" to add dependency between parent"
+					" node \"%s\" and join node \"%s\"\n",
+					filename, lineNumber,
+					parent->GetJobName(), joinNode->GetJobName() );
+				return false;
+			}
+		}
+		// reset parent list to the join node and fall through to build the child edges
+		parents.clear();
+		parents.push_front(joinNode);
+		parent_type = "join";
+	}
+
+	for (auto it = parents.begin(); it != parents.end(); ++it) {
+		Job *parent = *it;
+#ifdef DEAD_CODE
 		children.Rewind();
 		while ((child = children.Next()) != NULL) {
 			if (!dag->AddDependency (parent, child)) {
 				debug_printf( DEBUG_QUIET, "ERROR: %s (line %d) failed"
-						" to add dependency between parent"
+						" to add dependency between %s"
 						" node \"%s\" and child node \"%s\"\n",
-							  filename, lineNumber,
-							  parent->GetJobName(), child->GetJobName() );
+							filename, lineNumber, parent_type,
+							parent->GetJobName(), child->GetJobName() );
 				return false;
 			}
 			debug_printf( DEBUG_DEBUG_3,
-						  "Added Dependency PARENT: %s  CHILD: %s\n",
-						  parent->GetJobName(), child->GetJobName() );
+						"Added Dependency PARENT: %s  CHILD: %s\n",
+						parent->GetJobName(), child->GetJobName() );
 		}
+#else
+		if ( ! parent->AddChildren(children, failReason)) {
+			debug_printf(DEBUG_QUIET, "ERROR: %s (line %d) failed"
+				" to add dependencies between %s"
+				" node \"%s\" and child nodes : %s\n",
+				filename, lineNumber, parent_type,
+				parent->GetJobName(), failReason.c_str());
+		}
+#endif
 	}
 	return true;
 }
@@ -1099,7 +1455,7 @@ parse_retry(
 
 	const char *jobNameOrig = jobName; // for error output
 	MyString tmpJobName = munge_job_name(jobName);
-	jobName = tmpJobName.Value();
+	jobName = tmpJobName.c_str();
 	
 	char *token = strtok( NULL, DELIMITERS );
 	if( token == NULL ) {
@@ -1166,7 +1522,7 @@ parse_retry(
 		debug_printf( DEBUG_DEBUG_3, "parse_retry(): found job %s\n",
 					job->GetJobName() );
 
-		if ( job->GetFinal() ) {
+		if ( job->GetType() == NodeType::FINAL ) {
 			debug_printf( DEBUG_QUIET, 
 			  			"ERROR: %s (line %d): Final job %s cannot have RETRY specification\n",
 			  			filename, lineNumber, job->GetJobName() );
@@ -1179,7 +1535,7 @@ parse_retry(
            	job->retry_abort_val = unless_exit;
 		}
            debug_printf( DEBUG_DEBUG_1, "Retry Abort Value for %s is %d\n",
-		   			jobName, job->retry_abort_val );
+		   			job->GetJobName(), job->retry_abort_val );
 	}
 
 	if ( jobName ) {
@@ -1218,7 +1574,7 @@ parse_abort(
 
 	const char *jobNameOrig = jobName; // for error output
 	MyString tmpJobName = munge_job_name(jobName);
-	jobName = tmpJobName.Value();
+	jobName = tmpJobName.c_str();
 	
 		// Node abort value.
 	char *abortValStr = strtok( NULL, DELIMITERS );
@@ -1291,7 +1647,7 @@ parse_abort(
 		debug_printf( DEBUG_DEBUG_3, "parse_abort(): found job %s\n",
 					job->GetJobName() );
 
-		if ( job->GetFinal() ) {
+		if ( job->GetType() == NodeType::FINAL ) {
 			debug_printf( DEBUG_QUIET, 
 			  			"ERROR: %s (line %d): Final job %s cannot have ABORT-DAG-ON specification\n",
 			  			filename, lineNumber, job->GetJobName() );
@@ -1388,9 +1744,46 @@ static bool parse_vars(Dag *dag, const char *filename, int lineNumber)
 
 	const char *jobNameOrig = jobName; // for error output
 	MyString tmpJobName = munge_job_name(jobName);
-	jobName = tmpJobName.Value();
+	jobName = tmpJobName.c_str();
+
+	MyString varName;
+	MyString varValue;
 
 	char *varsStr = strtok( NULL, "\n" ); // just get all the rest -- we'll be doing this by hand
+#if 0 
+	char *str = varsStr;
+
+	// build a temporary vector of vars in case we are doing ALL_NODES
+	std::vector<Job::NodeVar> vars;
+
+	int numPairs;
+	for (numPairs = 0; ; numPairs++) {  // for each name="value" pair
+		if (str == NULL) { // this happens when the above strtok returns NULL
+			break;
+		}
+
+		varName.clear();
+		varValue.clear();
+
+		if (!get_next_var(filename, lineNumber, str, varName, varValue)) {
+			return false;
+		}
+		if (varName.empty()) {
+			break;
+		}
+
+		const char * name = Job::dedup_str(varName.c_str());
+		const char * value = Job::dedup_str(varValue.c_str());
+		vars.push_back(Job::NodeVar(name, value));
+	}
+
+	if (numPairs == 0) {
+		debug_printf(DEBUG_QUIET,
+			"ERROR: %s (line %d): No valid name-value pairs\n",
+			filename, lineNumber);
+		return false;
+	}
+#endif
 
 	Job *job;
 	while ( ( job = dag->FindAllNodesByName( jobName,
@@ -1411,18 +1804,18 @@ static bool parse_vars(Dag *dag, const char *filename, int lineNumber)
 				break;
 			}
 
-				// Fix PR 854 (multiple macronames per VARS line don't work).
-			MyString varName( "" );
-			MyString varValue( "" );
+			varName.clear();
+			varValue.clear();
 
 			if ( !get_next_var( filename, lineNumber, str, varName,
 						varValue ) ) {
 				return false;
 			}
-			if ( varName == "" ) {
+			if ( varName.empty() ) {
 				break;
 			}
 
+#ifdef DEAD_CODE
 			// This will be inefficient for jobs with lots of variables
 			// As in O(N^2)
 			job->varsFromDag->Rewind();
@@ -1440,16 +1833,20 @@ static bool parse_vars(Dag *dag, const char *filename, int lineNumber)
 					job->varsFromDag->DeleteCurrent();
 				}
 			}
-			debug_printf(DEBUG_DEBUG_1,
-						"Argument added, Name=\"%s\"\tValue=\"%s\"\n",
-						varName.Value(), varValue.Value());
 			Job::NodeVar *var = new Job::NodeVar();
 			var->_name = varName;
 			var->_value = varValue;
 			bool appendResult;
 			appendResult = job->varsFromDag->Append( var );
 			ASSERT( appendResult );
+#else
+			job->AddVar(varName.c_str(), varValue.c_str(), filename, lineNumber);
+#endif
+			debug_printf(DEBUG_DEBUG_1,
+				"Argument added, Name=\"%s\"\tValue=\"%s\"\n",
+				varName.c_str(), varValue.c_str());
 		}
+		job->ShrinkVars();
 
 		if ( numPairs == 0 ) {
 			debug_printf(DEBUG_QUIET,
@@ -1497,7 +1894,7 @@ parse_priority(
 	debug_printf(DEBUG_DEBUG_1, "jobName: %s\n", jobName);
 	const char *jobNameOrig = jobName; // for error output
 	MyString tmpJobName = munge_job_name(jobName);
-	jobName = tmpJobName.Value();
+	jobName = tmpJobName.c_str();
 
 	//
 	// Next token is the priority value.
@@ -1546,7 +1943,7 @@ parse_priority(
 		debug_printf( DEBUG_DEBUG_3, "parse_priority(): found job %s\n",
 					job->GetJobName() );
 
-		if ( job->GetFinal() ) {
+		if ( job->GetType() == NodeType::FINAL ) {
 			debug_printf( DEBUG_QUIET, 
 			  			"ERROR: %s (line %d): Final job %s cannot have PRIORITY specification\n",
 			  			filename, lineNumber, job->GetJobName() );
@@ -1604,7 +2001,7 @@ parse_category(
 	const char *jobNameOrig = jobName; // for error output
 	debug_printf(DEBUG_DEBUG_1, "jobName: %s\n", jobName);
 	MyString tmpJobName = munge_job_name(jobName);
-	jobName = tmpJobName.Value();
+	jobName = tmpJobName.c_str();
 
 	//
 	// Next token is the category name.
@@ -1642,7 +2039,7 @@ parse_category(
 		debug_printf( DEBUG_DEBUG_3, "parse_category(): found job %s\n",
 					job->GetJobName() );
 
-		if ( job->GetFinal() ) {
+		if ( job->GetType() == NodeType::FINAL ) {
 			debug_printf( DEBUG_QUIET, 
 			  			"ERROR: %s (line %d): Final job %s cannot have CATEGORY specification\n",
 			  			filename, lineNumber, job->GetJobName() );
@@ -1676,7 +2073,7 @@ parse_splice(
 {
 	const char *example = "SPLICE SpliceName SpliceFileName [DIR directory]";
 	Dag *splice_dag = NULL;
-	MyString errMsg;
+	std::string errMsg;
 
 	//
 	// Next token is the splice name
@@ -1693,11 +2090,11 @@ parse_splice(
 
 	// Check to make sure we don't already have a node with the name of the
 	// splice.
-	if ( dag->NodeExists(spliceName.Value()) ) {
+	if ( dag->NodeExists(spliceName.c_str()) ) {
 		debug_printf( DEBUG_QUIET, 
 					  "ERROR: %s (line %d): "
 					  " Splice name '%s' must not also be a node name.\n",
-					  filename, lineNumber, spliceName.Value() );
+					  filename, lineNumber, spliceName.c_str() );
 		return false;
 	}
 
@@ -1705,7 +2102,7 @@ parse_splice(
 		munge the names of the nodes to have the splice name in them so
 		the same splice dag file with different splice names don't conflict.
 	*/
-	_spliceScope.add(strdup(munge_job_name(spliceName.Value()).Value()));
+	_spliceScope.push_back(strdup(munge_job_name(spliceName.c_str()).c_str()));
 
 	//
 	// Next token is the splice file name
@@ -1744,7 +2141,7 @@ parse_splice(
 	} else if ( dirTok != "" ) {
 		debug_printf( DEBUG_QUIET,
 					"ERROR: %s (line %d): illegal token (%s) on SPLICE line\n",
-					filename, lineNumber, dirTokOrig.Value() );
+					filename, lineNumber, dirTokOrig.c_str() );
 		exampleSyntax( example );
 		return false;
 	}
@@ -1757,7 +2154,7 @@ parse_splice(
 	if( garbage != "" ) {
 			debug_printf( DEBUG_QUIET, "ERROR: %s (line %d): invalid "
 						  "parameter \"%s\"\n", filename, lineNumber, 
-						  garbage.Value() );
+						  garbage.c_str() );
 			exampleSyntax( example );
 			return false;
 	}
@@ -1771,6 +2168,7 @@ parse_splice(
 							dag->MaxJobsSubmitted(),
 							dag->MaxPreScripts(),
 							dag->MaxPostScripts(),
+							dag->MaxHoldScripts(),
 							dag->UseDagDir(),
 							dag->MaxIdleJobProcs(),
 							dag->RetrySubmitFirst(),
@@ -1783,29 +2181,30 @@ parse_splice(
 							dag->GenerateSubdagSubmits(),
 							NULL, // this Dag will never submit a job
 							true, /* we are a splice! */
+							_schedd,
 							current_splice_scope() );
 	
 	// initialize whatever the DIR line was, or defaults to, here.
 	splice_dag->SetDirectory(directory);
 
 	debug_printf(DEBUG_VERBOSE, "Parsing Splice %s in directory %s with "
-		"file %s\n", spliceName.Value(), directory.Value(),
-		spliceFile.Value());
+		"file %s\n", spliceName.c_str(), directory.c_str(),
+		spliceFile.c_str());
 
 	// CD into the DIR directory so we can continue parsing.
 	// This must be done AFTER the DAG is created due to the DAG object
 	// doing its own chdir'ing while looking for log files.
-	if ( !spliceDir.Cd2TmpDir(directory.Value(), errMsg) ) {
+	if ( !spliceDir.Cd2TmpDir(directory.c_str(), errMsg) ) {
 		debug_printf( DEBUG_QUIET,
 					"ERROR: can't change to directory %s: %s\n",
-					directory.Value(), errMsg.Value() );
+					directory.c_str(), errMsg.c_str() );
 		return false;
 	}
 
 	// parse the splice file into a separate dag.
-	if (!parse(splice_dag, spliceFile.Value(), _useDagDir, false)) {
+	if (!parse(splice_dag, spliceFile.c_str(), _useDagDir, _schedd, false)) {
 		debug_error(1, DEBUG_QUIET, "ERROR: Failed to parse splice %s in file %s\n",
-			spliceName.Value(), spliceFile.Value());
+			spliceName.c_str(), spliceFile.c_str());
 		return false;
 	}
 
@@ -1813,23 +2212,23 @@ parse_splice(
 	if ( !spliceDir.Cd2MainDir(errMsg) ) {
 		debug_printf( DEBUG_QUIET,
 					"ERROR: can't change to original directory: %s\n",
-					errMsg.Value() );
+					errMsg.c_str() );
 		return false;
 	}
 
 	// Splices cannot have final nodes.
 	if ( splice_dag->HasFinalNode() ) {
 		debug_printf( DEBUG_QUIET, "ERROR: splice %s has a final node; "
-					"splices cannot have final nodes\n", spliceName.Value() );
+					"splices cannot have final nodes\n", spliceName.c_str() );
 		return false;
 	}
 
 	// munge the splice name
-	spliceName = munge_job_name(spliceName.Value());
+	spliceName = munge_job_name(spliceName.c_str());
 
 	// XXX I'm not sure this goes here quite yet....
 	debug_printf(DEBUG_DEBUG_1, "Splice scope is: %s\n", 
-		current_splice_scope().Value());
+		current_splice_scope().c_str());
 	splice_dag->PrefixAllNodeNames(MyString(current_splice_scope()));
 	splice_dag->_catThrottles.PrefixAllCategoryNames(
 				MyString(current_splice_scope()));
@@ -1841,18 +2240,18 @@ parse_splice(
 
 	// associate the splice_dag with its name in _this_ dag, later I'll merge
 	// the nodes from this splice into _this_ dag.
-	if (dag->InsertSplice(spliceName, splice_dag) == -1) {
+	if (!dag->InsertSplice(spliceName, splice_dag)) {
 		debug_printf( DEBUG_QUIET, "ERROR: Splice name '%s' used for multiple "
 			"splices. Splice names must be unique per dag file.\n", 
-			spliceName.Value());
+			spliceName.c_str());
 		return false;
 	}
-	debug_printf(DEBUG_DEBUG_1, "Done parsing splice %s\n", spliceName.Value());
+	debug_printf(DEBUG_DEBUG_1, "Done parsing splice %s\n", spliceName.c_str());
 
 	// pop the just pushed value off of the end of the ext array
-	free(_spliceScope[_spliceScope.getlast()]);
-	_spliceScope.truncate(_spliceScope.getlast() - 1);
-	debug_printf(DEBUG_DEBUG_1, "_spliceScope has length %d\n", _spliceScope.length());
+	_spliceScope.pop_back();
+	debug_printf(DEBUG_DEBUG_1, "_spliceScope has length %zu\n", _spliceScope.size());
+
 	return true;
 }
 
@@ -2032,7 +2431,7 @@ parse_reject(
 	MyString location;
 	location.formatstr( "%s (line %d)", filename, lineNumber );
 	debug_printf( DEBUG_QUIET, "REJECT specification at %s "
-				"will cause this DAG to fail\n", location.Value() );
+				"will cause this DAG to fail\n", location.c_str() );
 
 	dag->SetReject( location );
 	return true;
@@ -2107,7 +2506,7 @@ parse_pre_skip( Dag  *dag,
 	const char *jobNameOrig = jobName; // for error output
 	debug_printf( DEBUG_DEBUG_1, "jobName: %s\n", jobName );
 	MyString tmpJobName = munge_job_name( jobName );
-	jobName = tmpJobName.Value();
+	jobName = tmpJobName.c_str();
 
 		//
 		// The rest of the line consists of the exitcode
@@ -2152,7 +2551,7 @@ parse_pre_skip( Dag  *dag,
 			debug_printf( DEBUG_SILENT, "ERROR: %s (line %d): "
 					  	"failed to add PRE_SKIP to node %s: %s\n",
 					  	filename, lineNumber, job->GetJobName(),
-						whynot.Value() );
+						whynot.c_str() );
 			return false;
 		}
 	}
@@ -2192,7 +2591,7 @@ parse_done(
 
 	const char *jobNameOrig = jobName; // for error output
 	MyString tmpJobName = munge_job_name( jobName );
-	jobName = tmpJobName.Value();
+	jobName = tmpJobName.c_str();
 
 	//
 	// Check for illegal extra tokens.
@@ -2214,7 +2613,7 @@ parse_done(
 		return !check_warning_strictness( DAG_STRICT_1, false );
 	}
 
-	if ( job->GetFinal() ) {
+	if ( job->GetType() == NodeType::FINAL ) {
 		debug_printf( DEBUG_QUIET, 
 					  "Warning: %s (line %d): FINAL Job %s cannot be set to DONE\n",
 					  filename, lineNumber, jobNameOrig );
@@ -2249,7 +2648,7 @@ parse_connect(
 		return false;
 	}
 	MyString splice1Name = munge_job_name( splice1 );
-	splice1 = splice1Name.Value();
+	splice1 = splice1Name.c_str();
 
 	const char *splice2 = strtok( NULL, DELIMITERS );
 	if ( splice2 == NULL ) {
@@ -2260,7 +2659,7 @@ parse_connect(
 		return false;
 	}
 	MyString splice2Name = munge_job_name( splice2 );
-	splice2 = splice2Name.Value();
+	splice2 = splice2Name.c_str();
 
 	//
 	// Check for illegal extra tokens.
@@ -2274,16 +2673,16 @@ parse_connect(
 		return false;
 	}
 
-	Dag *parentSplice;
-	if ( dag->LookupSplice( splice1, parentSplice ) != 0) {
+	Dag *parentSplice = dag->LookupSplice( splice1 );
+	if ( !parentSplice ) {
 		debug_printf( DEBUG_QUIET,
 					  "ERROR: %s (line %d): Splice %s not found!\n",
 					  filename, lineNumber, splice1 );
 		return false;
 	}
 
-	Dag *childSplice;
-	if ( dag->LookupSplice( splice2, childSplice ) != 0) {
+	Dag *childSplice = dag->LookupSplice( splice2 );
+	if ( !childSplice ) {
 		debug_printf( DEBUG_QUIET,
 					  "ERROR: %s (line %d): Splice %s not found!\n",
 					  filename, lineNumber, splice2 );
@@ -2323,7 +2722,7 @@ parse_pin_in_out(
 		return false;
 	}
 	MyString nodeName = munge_job_name( node );
-	node = nodeName.Value();
+	node = nodeName.c_str();
 
 	const char *pinNumber = strtok( NULL, DELIMITERS );
 	if ( pinNumber == NULL ) {
@@ -2416,7 +2815,7 @@ parse_include(
 		// include file path is always relative to the submit directory,
 		// *not* relative to the DAG file's directory, even if
 		// 'condor_submit -usedagdir' is specified.
-	return parse( dag, tmpFilename.Value(), false, false );
+	return parse( dag, tmpFilename.c_str(), false, _schedd, false );
 }
 
 static MyString munge_job_name(const char *jobName)
@@ -2427,7 +2826,7 @@ static MyString munge_job_name(const char *jobName)
 	MyString newName;
 
 	if ( _mungeNames ) {
-		newName = IntToStr(_thisDagNum) + "." + jobName;
+		newName = std::to_string(_thisDagNum) + "." + jobName;
 	} else {
 		newName = jobName;
 	}
@@ -2439,13 +2838,13 @@ static MyString current_splice_scope(void)
 {
 	MyString tmp;
 	MyString scope;
-	if(_spliceScope.length() > 0) {
+	if(_spliceScope.size() > 0) {
 		// While a natural choice might have been : as a splice scoping
 		// separator, this character was chosen because it is a valid character
 		// on all the file systems we use (whereas : can't be a file system
 		// character on windows). The plus, and really anything other than :,
 		// isn't the best choice. Sorry.
-		tmp = _spliceScope[_spliceScope.length() - 1];
+		tmp = _spliceScope.back();
 		scope = tmp + "+";
 	}
 	return scope;
@@ -2474,12 +2873,12 @@ get_next_var( const char *filename, int lineNumber, char *&str,
 	// names are limited to alphanumerics and underscores (except
 	// that '+' is legal as the first character)
 	int varnamestate = 0; // 0 means not within a varname
-	while ( isalnum( *str ) || *str == '_' || *str == '+' ) {
+	while ( isalnum( *str ) || *str == '_' || *str == '+' || *str == '.') {
 		if ( *str == '+' ) {
 			if ( varnamestate != 0 ) {
 				debug_printf( DEBUG_QUIET,
 						"ERROR: %s (line %d): '+' can only be first character of macroname (%s)\n",
-						filename, lineNumber, varName.Value() );
+						filename, lineNumber, varName.c_str() );
 				return false;
 			}
 		}
@@ -2487,7 +2886,7 @@ get_next_var( const char *filename, int lineNumber, char *&str,
 		varName += *str++;
 	}
 
-	if ( varName.Length() == '\0' ) { // no alphanumeric symbols at all were written into name,
+	if ( varName.length() == '\0' ) { // no alphanumeric symbols at all were written into name,
 	                      // just something weird, which we'll print
 		debug_printf(DEBUG_QUIET, "ERROR: %s (line %d): Unexpected symbol: \"%c\"\n", filename,
 			lineNumber, *str);
@@ -2497,7 +2896,7 @@ get_next_var( const char *filename, int lineNumber, char *&str,
 	if ( varName == "+" ) {
 		debug_printf(DEBUG_QUIET,
 			"ERROR: %s (line %d): macroname (%s) must contain at least one alphanumeric character\n",
-			filename, lineNumber, varName.Value() );
+			filename, lineNumber, varName.c_str() );
 		return false;
 	}
 		
@@ -2507,7 +2906,7 @@ get_next_var( const char *filename, int lineNumber, char *&str,
 	}
 
 	if ( *str != '=' ) {
-		debug_printf( DEBUG_QUIET, "ERROR: %s (line %d): Illegal character (%c) in or after macroname %s\n", filename, lineNumber, *str, varName.Value() );
+		debug_printf( DEBUG_QUIET, "ERROR: %s (line %d): Illegal character (%c) in or after macroname %s\n", filename, lineNumber, *str, varName.c_str() );
 		return false;
 	}
 	str++;
@@ -2519,7 +2918,7 @@ get_next_var( const char *filename, int lineNumber, char *&str,
 	
 	if ( *str != '"' ) {
 		debug_printf(DEBUG_QUIET, "ERROR: %s (line %d): %s's value must be quoted\n", filename,
-			lineNumber, varName.Value());
+			lineNumber, varName.c_str());
 		return false;
 	}
 
@@ -2539,11 +2938,11 @@ get_next_var( const char *filename, int lineNumber, char *&str,
 		if ( !escaped ) {
 			if ( *str == '"' ) {
 				// we don't want that last " in the string
-				varValue.truncate( varValue.Length() - 1 );
+				varValue.truncate( varValue.length() - 1 );
 				stillInQuotes = false;
 			} else if ( *str == '\\' ) {
 				// on the next pass it will be filled in appropriately
-				varValue.truncate( varValue.Length() - 1 );
+				varValue.truncate( varValue.length() - 1 );
 				escaped = true;
 				continue;
 			}
@@ -2564,7 +2963,7 @@ get_next_var( const char *filename, int lineNumber, char *&str,
 	tmpName.lower_case();
 	if ( tmpName.find( "queue" ) == 0 ) {
 		debug_printf( DEBUG_QUIET, "ERROR: Illegal variable name: %s; variable "
-					"names cannot begin with \"queue\"\n", varName.Value() );
+					"names cannot begin with \"queue\"\n", varName.c_str() );
 		return false;
 	}
 

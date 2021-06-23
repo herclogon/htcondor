@@ -26,7 +26,6 @@
 #include "condor_attributes.h"
 #include "condor_classad.h"
 #include "condor_mkstemp.h"
-#include "MyString.h"
 #include "util_lib_proto.h"
 #include "vmgahp_common.h"
 #include "vm_type.h"
@@ -82,7 +81,7 @@ VirshType::Config()
 
 	config_value = param("VM_NETWORKING_BRIDGE_INTERFACE");
 	if( config_value ) {
-		m_vm_bridge_interface = delete_quotation_marks(config_value).Value();
+		m_vm_bridge_interface = delete_quotation_marks(config_value).c_str();
 		free(config_value);
 	} else if( vmgahp->m_gahp_config->m_vm_networking_types.contains("bridge") == true) {
 		vmprintf( D_ALWAYS, "ERROR: 'VM_NETWORKING_TYPE' contains "
@@ -109,10 +108,10 @@ VirshType::Start()
 {
 	vmprintf(D_FULLDEBUG, "Inside VirshType::Start\n");
 
-	if( (m_configfile.Length() == 0)) {
+	if( (m_configfile.length() == 0)) {
 
 	        m_result_msg = VMGAHP_ERR_INTERNAL;
-		vmprintf(D_FULLDEBUG, "Config file was not set configfile: %s\n", m_configfile.Value());
+		vmprintf(D_FULLDEBUG, "Config file was not set configfile: %s\n", m_configfile.c_str());
 		return false;
 	}
 
@@ -149,9 +148,9 @@ VirshType::Start()
 			// Keep going..
 		}
 	}
-	vmprintf(D_FULLDEBUG, "Trying XML: %s\n", m_xml.Value());
+	vmprintf(D_FULLDEBUG, "Trying XML: %s\n", m_xml.c_str());
 	priv_state priv = set_root_priv();
-	virDomainPtr vm = virDomainCreateXML(m_libvirt_connection, m_xml.Value(), 0);
+	virDomainPtr vm = virDomainCreateXML(m_libvirt_connection, m_xml.c_str(), 0);
 	set_priv(priv);
 
 	if(vm == NULL)
@@ -187,7 +186,7 @@ VirshType::Shutdown()
 {
 	vmprintf(D_FULLDEBUG, "Inside VirshType::Shutdown\n");
 
-	if( (m_configfile.Length() == 0) ) {
+	if( (m_configfile.length() == 0) ) {
 		m_result_msg = VMGAHP_ERR_INTERNAL;
 		return false;
 	}
@@ -200,21 +199,21 @@ VirshType::Shutdown()
 				m_delete_working_files = true;
 				m_is_checkpointed = false;
 			}else {
-				if( !m_suspendfile.IsEmpty() ) {
-					unlink(m_suspendfile.Value());
+				if( !m_suspendfile.empty() ) {
+					unlink(m_suspendfile.c_str());
 				}
 				m_suspendfile = "";
 
 				// delete the created xen vm configuration file
-				if( !m_configfile.IsEmpty() ) {
-					unlink(m_configfile.Value());
+				if( !m_configfile.empty() ) {
+					unlink(m_configfile.c_str());
 				}
 
 				// delete the checkpoint timestamp file
-				MyString tmpfilename;
-				tmpfilename.formatstr("%s%c%s", m_workingpath.Value(),
+				std::string tmpfilename;
+				formatstr(tmpfilename, "%s%c%s", m_workingpath.c_str(),
 						DIR_DELIM_CHAR, XEN_CKPT_TIMESTAMP_FILE);
-				unlink(tmpfilename.Value());
+				unlink(tmpfilename.c_str());
 
 				// We need to update timestamp of transferred writable disk files
 				updateLocalWriteDiskTimestamp(time(NULL));
@@ -234,14 +233,14 @@ VirshType::Shutdown()
 
 	if( getVMStatus() == VM_RUNNING ) {
 		priv_state priv = set_root_priv();
-                virDomainPtr dom = virDomainLookupByName(m_libvirt_connection, m_vm_name.Value());
+                virDomainPtr dom = virDomainLookupByName(m_libvirt_connection, m_vm_name.c_str());
 		set_priv(priv);
 		if(dom == NULL)
 		  {
 		    virErrorPtr err = virConnGetLastError(m_libvirt_connection);
 		    if (err && err->code != VIR_ERR_NO_DOMAIN)
 		      {
-			vmprintf(D_ALWAYS, "Error finding domain %s: %s\n", m_vm_name.Value(), err->message);
+			vmprintf(D_ALWAYS, "Error finding domain %s: %s\n", m_vm_name.c_str(), err->message);
 			return false;
 		      }
 		  }
@@ -274,7 +273,7 @@ VirshType::Checkpoint()
 {
 	vmprintf(D_FULLDEBUG, "Inside VirshType::Checkpoint\n");
 
-	if( (m_configfile.Length() == 0)) {
+	if( (m_configfile.length() == 0)) {
 		m_result_msg = VMGAHP_ERR_INTERNAL;
 		return false;
 	}
@@ -339,20 +338,20 @@ bool VirshType::CreateVirshConfigFile(const char*  /*filename*/)
   tmp = param("LIBVIRT_XML_SCRIPT_ARGS");
   if(tmp != NULL)
     {
-      MyString errormsg;
-      if (!args.AppendArgsV1RawOrV2Quoted(tmp,&errormsg)) {
+      std::string errormsg;
+      if (!args.AppendArgsV1RawOrV2Quoted(tmp, errormsg)) {
 		vmprintf(D_ALWAYS, "Cannot parse LIBVIRT_XML_SCRIPT_ARGS: %s\n", tmp);
 	  }
       free(tmp);
     }
   StringList input_strings, output_strings, error_strings;
-  MyString classad_string;
+  std::string classad_string;
   sPrintAd(classad_string, m_classAd);
   classad_string += VMPARAM_XEN_BOOTLOADER;
   classad_string += " = \"";
   classad_string += m_xen_bootloader;
   classad_string += "\"\n";
-  if(classad_string.find(VMPARAM_XEN_INITRD) < 1)
+  if(classad_string.find(VMPARAM_XEN_INITRD) == std::string::npos)
     {
       classad_string += VMPARAM_XEN_INITRD;
       classad_string += " = \"";
@@ -363,17 +362,17 @@ bool VirshType::CreateVirshConfigFile(const char*  /*filename*/)
     {
       classad_string += VMPARAM_BRIDGE_INTERFACE;
       classad_string += " = \"";
-      classad_string += m_vm_bridge_interface.c_str();
+      classad_string += m_vm_bridge_interface;
       classad_string += "\"\n";
     }
-  if(classad_string.find(ATTR_JOB_VM_NETWORKING_TYPE) < 1)
+  if(classad_string.find(ATTR_JOB_VM_NETWORKING_TYPE) == std::string::npos)
     {
       classad_string += ATTR_JOB_VM_NETWORKING_TYPE;
       classad_string += " = \"";
-      classad_string += m_vm_networking_type.Value();
+      classad_string += m_vm_networking_type;
       classad_string += "\"\n";
     }
-  input_strings.append(classad_string.Value());
+  input_strings.append(classad_string.c_str());
   
   tmp = input_strings.print_to_string();
   vmprintf(D_FULLDEBUG, "LIBVIRT_XML_SCRIPT_ARGS input_strings= %s\n", tmp);
@@ -411,19 +410,19 @@ bool
 VirshType::ResumeFromSoftSuspend(void)
 {
 	vmprintf(D_FULLDEBUG, "Inside VirshType::ResumeFromSoftSuspend\n");
-	if( (m_configfile.Length() == 0)) {
+	if( (m_configfile.length() == 0)) {
 		return false;
 	}
 
 	if( m_is_soft_suspended ) {
 
 		priv_state priv = set_root_priv();
-		virDomainPtr dom = virDomainLookupByName(m_libvirt_connection, m_vm_name.Value());
+		virDomainPtr dom = virDomainLookupByName(m_libvirt_connection, m_vm_name.c_str());
 		set_priv(priv);
 		if(dom == NULL)
 		  {
 		    virErrorPtr err = virConnGetLastError(m_libvirt_connection);
-		    vmprintf(D_ALWAYS, "Error finding domain %s: %s\n", m_vm_name.Value(), (err ? err->message : "No reason found"));
+		    vmprintf(D_ALWAYS, "Error finding domain %s: %s\n", m_vm_name.c_str(), (err ? err->message : "No reason found"));
 		    return false;
 		  }
 
@@ -447,7 +446,7 @@ VirshType::SoftSuspend()
 {
 	vmprintf(D_FULLDEBUG, "Inside VirshType::SoftSuspend\n");
 
-	if( (m_configfile.Length() == 0)) {
+	if( (m_configfile.length() == 0)) {
 		m_result_msg = VMGAHP_ERR_INTERNAL;
 		return false;
 	}
@@ -462,12 +461,12 @@ VirshType::SoftSuspend()
 	}
 
 	priv_state priv = set_root_priv();
-	virDomainPtr dom = virDomainLookupByName(m_libvirt_connection, m_vm_name.Value());
+	virDomainPtr dom = virDomainLookupByName(m_libvirt_connection, m_vm_name.c_str());
 	set_priv(priv);
 	if(dom == NULL)
 	  {
 	    virErrorPtr err = virConnGetLastError(m_libvirt_connection);
-	    vmprintf(D_ALWAYS, "Error finding domain %s: %s\n", m_vm_name.Value(), (err ? err->message : "No reason found"));
+	    vmprintf(D_ALWAYS, "Error finding domain %s: %s\n", m_vm_name.c_str(), (err ? err->message : "No reason found"));
 	    return false;
 	  }
 
@@ -490,7 +489,7 @@ VirshType::Suspend()
 {
 	vmprintf(D_FULLDEBUG, "Inside VirshType::Suspend\n");
 
-	if( (m_configfile.Length() == 0) ) {
+	if( (m_configfile.length() == 0) ) {
 		m_result_msg = VMGAHP_ERR_INTERNAL;
 		return false;
 	}
@@ -514,32 +513,32 @@ VirshType::Suspend()
 	// If a VM is soft suspended, resume it first.
 	ResumeFromSoftSuspend();
 
-	MyString tmpfilename;
+	std::string tmpfilename;
 	makeNameofSuspendfile(tmpfilename);
-	unlink(tmpfilename.Value());
+	unlink(tmpfilename.c_str());
 
 	priv_state priv = set_root_priv();
-	virDomainPtr dom = virDomainLookupByName(m_libvirt_connection, m_vm_name.Value());
+	virDomainPtr dom = virDomainLookupByName(m_libvirt_connection, m_vm_name.c_str());
 	set_priv(priv);
 	if(dom == NULL)
 	  {
 	    virErrorPtr err = virConnGetLastError(m_libvirt_connection);
-	    vmprintf(D_ALWAYS, "Error finding domain %s: %s\n", m_vm_name.Value(), (err ? err->message : "No reason found"));
+	    vmprintf(D_ALWAYS, "Error finding domain %s: %s\n", m_vm_name.c_str(), (err ? err->message : "No reason found"));
 	    return false;
 	  }
 
 	priv = set_root_priv();
-	int result = virDomainSave(dom, tmpfilename.Value());
+	int result = virDomainSave(dom, tmpfilename.c_str());
 	virDomainFree(dom);
 	set_priv(priv);
 
 	if( result != 0 ) {
-		unlink(tmpfilename.Value());
+		unlink(tmpfilename.c_str());
 		return false;
 	}
 
 	priv = set_root_priv();
-	result = chown( tmpfilename.Value(), get_user_uid(), get_user_gid() );
+	result = chown( tmpfilename.c_str(), get_user_uid(), get_user_gid() );
 	set_priv( priv );
 
 	if( result != 0 ) {
@@ -560,7 +559,7 @@ VirshType::Resume()
 {
 	vmprintf(D_FULLDEBUG, "Inside VirshType::Resume\n");
 
-	if((m_configfile.Length() == 0)) {
+	if((m_configfile.length() == 0)) {
 		m_result_msg = VMGAHP_ERR_INTERNAL;
 		return false;
 	}
@@ -581,13 +580,13 @@ VirshType::Resume()
 
 	m_is_checkpointed = false;
 
-	if( check_vm_read_access_file(m_suspendfile.Value(), true) == false ) {
+	if( check_vm_read_access_file(m_suspendfile.c_str(), true) == false ) {
 		m_result_msg = VMGAHP_ERR_VM_INVALID_SUSPEND_FILE;
 		return false;
 	}
 
 	priv_state priv = set_root_priv();
-	int result = virDomainRestore(m_libvirt_connection, m_suspendfile.Value());
+	int result = virDomainRestore(m_libvirt_connection, m_suspendfile.c_str());
 	set_priv(priv);
 
 	if( result != 0 ) {
@@ -602,7 +601,7 @@ VirshType::Resume()
 	m_cpu_time = 0;
 
 	// Delete suspend file
-	unlink(m_suspendfile.Value());
+	unlink(m_suspendfile.c_str());
 	m_suspendfile = "";
 	return true;
 }
@@ -612,7 +611,7 @@ VirshType::Status()
 {
 	vmprintf(D_FULLDEBUG, "Inside VirshType::Status\n");
 
- 	if((m_configfile.Length() == 0)) {
+ 	if((m_configfile.length() == 0)) {
  		m_result_msg = VMGAHP_ERR_INTERNAL;
  		return false;
  	}
@@ -620,8 +619,8 @@ VirshType::Status()
  	m_result_msg = "";
 
  	if( m_vm_networking ) {
- 		if( m_vm_mac.IsEmpty() == false ) {
- 			if( m_result_msg.IsEmpty() == false ) {
+ 		if( m_vm_mac.empty() == false ) {
+ 			if( m_result_msg.empty() == false ) {
  				m_result_msg += " ";
  			}
  			m_result_msg += VMGAHP_STATUS_COMMAND_MAC;
@@ -629,8 +628,8 @@ VirshType::Status()
  			m_result_msg += m_vm_mac;
  		}
 
- 		if( m_vm_ip.IsEmpty() == false ) {
- 			if( m_result_msg.IsEmpty() == false ) {
+ 		if( m_vm_ip.empty() == false ) {
+ 			if( m_result_msg.empty() == false ) {
  				m_result_msg += " ";
  			}
  			m_result_msg += VMGAHP_STATUS_COMMAND_IP;
@@ -639,7 +638,7 @@ VirshType::Status()
  		}
  	}
 
- 	if( m_result_msg.IsEmpty() == false ) {
+ 	if( m_result_msg.empty() == false ) {
  		m_result_msg += " ";
  	}
 
@@ -647,7 +646,7 @@ VirshType::Status()
  	m_result_msg += "=";
 
 	priv_state priv = set_root_priv();
-	virDomainPtr dom = virDomainLookupByName(m_libvirt_connection, m_vm_name.Value());
+	virDomainPtr dom = virDomainLookupByName(m_libvirt_connection, m_vm_name.c_str());
 	set_priv(priv);
 	if(dom == NULL)
 	{
@@ -659,7 +658,7 @@ VirshType::Status()
 			{
 				case (VIR_ERR_NO_DOMAIN):
 					// The VM isn't there anymore, so signal shutdown
-					vmprintf(D_FULLDEBUG, "Couldn't find domain %s, assuming it was shutdown\n", m_vm_name.Value());
+					vmprintf(D_FULLDEBUG, "Couldn't find domain %s, assuming it was shutdown\n", m_vm_name.c_str());
 					if(getVMStatus() == VM_RUNNING) {
 						m_self_shutdown = true;
 					}
@@ -673,7 +672,7 @@ VirshType::Status()
 				case (VIR_ERR_SYSTEM_ERROR): //
 					vmprintf(D_ALWAYS, "libvirt communication error detected, attempting to reconnect...\n");
 					this->Connect();
-					if ( NULL == ( dom = virDomainLookupByName(m_libvirt_connection, m_vm_name.Value() ) ) )
+					if ( NULL == ( dom = virDomainLookupByName(m_libvirt_connection, m_vm_name.c_str() ) ) )
 					{
 						vmprintf(D_ALWAYS, "could not reconnect to libvirt... marking vm as stopped (should exit)\n");
 						if(getVMStatus() == VM_RUNNING) {
@@ -692,7 +691,7 @@ VirshType::Status()
 					}
 				break;
 			default:
-				vmprintf(D_ALWAYS, "Error finding domain %s(%d): %s\n", m_vm_name.Value(), err->code, err->message );
+				vmprintf(D_ALWAYS, "Error finding domain %s(%d): %s\n", m_vm_name.c_str(), err->code, err->message );
 				return false;
 			}
 		}
@@ -710,7 +709,7 @@ VirshType::Status()
 	if(virDomainGetInfo(dom, info) < 0)
 	  {
 	    virErrorPtr err = virConnGetLastError(m_libvirt_connection);
-	    vmprintf(D_ALWAYS, "Error finding domain info %s: %s\n", m_vm_name.Value(), (err ? err->message : "No reason found"));
+	    vmprintf(D_ALWAYS, "Error finding domain info %s: %s\n", m_vm_name.c_str(), (err ? err->message : "No reason found"));
 	    return false;
 	  }
 	if(info->state == VIR_DOMAIN_RUNNING || info->state == VIR_DOMAIN_BLOCKED)
@@ -779,8 +778,9 @@ VirshType::Status()
 	    virDomainFree(dom);
 	    return true;
 	  }
-	virDomainFree(dom);
-	return false;
+	/* UNREACHABLE */
+	//virDomainFree(dom);
+	//return false;
 }
 
 /*
@@ -799,7 +799,7 @@ void virshIOError(const char * filename, FILE * fp)
 
 bool KVMType::CreateVirshConfigFile(const char * filename)
 {
-	MyString disk_string;
+	std::string disk_string;
 
 	if(!filename) return false;
 
@@ -815,29 +815,29 @@ bool KVMType::CreateVirshConfigFile(const char * filename)
 		m_xml += m_vm_name;
 		m_xml += "</name>";
 		m_xml += "<memory>";
-		m_xml += IntToStr( m_vm_mem * 1024 );
+		m_xml += std::to_string( m_vm_mem * 1024 );
 		m_xml += "</memory>";
 		m_xml += "<vcpu>";
-		m_xml += IntToStr( m_vcpus );
+		m_xml += std::to_string( m_vcpus );
 		m_xml += "</vcpu>";
 		m_xml += "<os><type>hvm</type></os>";
 		m_xml += "<devices>";
 		m_xml += "<console type='pty'><source path='/dev/ptmx'/></console>";
 		if( m_vm_networking )
 			{
-			vmprintf(D_FULLDEBUG, "mac address is %s\n", m_vm_job_mac.Value());
-			if( m_vm_networking_type.find("nat") >= 0 ) {
+			vmprintf(D_FULLDEBUG, "mac address is %s\n", m_vm_job_mac.c_str());
+			if( m_vm_networking_type.find("nat") != std::string::npos ) {
 			m_xml += "<interface type='network'><source network='default'/></interface>";
 			}
-			else if( m_vm_networking_type.find("bridge") >= 0 )
+			else if( m_vm_networking_type.find("bridge") != std::string::npos )
 			{
 			m_xml += "<interface type='bridge'>";
 			if (!m_vm_bridge_interface.empty()) {
 				m_xml += "<source bridge='";
-				m_xml += m_vm_bridge_interface.c_str();
+				m_xml += m_vm_bridge_interface;
 				m_xml += "'/>";
 			}
-			if(!m_vm_job_mac.IsEmpty())
+			if(!m_vm_job_mac.empty())
 				{
 				m_xml += "<mac address='";
 				m_xml += m_vm_job_mac;
@@ -861,7 +861,7 @@ bool KVMType::CreateVirshConfigFile(const char * filename)
 bool
 XenType::CreateVirshConfigFile(const char* filename)
 {
-	MyString disk_string;
+	std::string disk_string;
 
 	if( !filename ) return false;
 
@@ -874,29 +874,29 @@ XenType::CreateVirshConfigFile(const char* filename)
 		m_xml += m_vm_name;
 		m_xml += "</name>";
 		m_xml += "<memory>";
-		m_xml += IntToStr( m_vm_mem * 1024 );
+		m_xml += std::to_string( m_vm_mem * 1024 );
 		m_xml += "</memory>";
 		m_xml += "<vcpu>";
-		m_xml += IntToStr( m_vcpus );
+		m_xml += std::to_string( m_vcpus );
 		m_xml += "</vcpu>";
 		m_xml += "<os><type>linux</type>";
 
-		if( m_xen_kernel_file.IsEmpty() == false ) {
+		if( m_xen_kernel_file.empty() == false ) {
 			m_xml += "<kernel>";
 			m_xml += m_xen_kernel_file;
 			m_xml += "</kernel>";
-			if( m_xen_initrd_file.IsEmpty() == false ) {
+			if( m_xen_initrd_file.empty() == false ) {
 				m_xml += "<initrd>";
 				m_xml += m_xen_initrd_file;
 				m_xml += "</initrd>";
 			}
-			if( m_xen_root.IsEmpty() == false ) {
+			if( m_xen_root.empty() == false ) {
 				m_xml += "<root>";
 				m_xml += m_xen_root;
 				m_xml += "</root>";
 			}
 
-			if( m_xen_kernel_params.IsEmpty() == false ) {
+			if( m_xen_kernel_params.empty() == false ) {
 				m_xml += "<cmdline>";
 				m_xml += m_xen_kernel_params;
 				m_xml += "</cmdline>";
@@ -904,7 +904,7 @@ XenType::CreateVirshConfigFile(const char* filename)
 		}
 
 		m_xml += "</os>";
-		if( strcasecmp(m_xen_kernel_submit_param.Value(), XEN_KERNEL_INCLUDED) == 0) {
+		if( strcasecmp(m_xen_kernel_submit_param.c_str(), XEN_KERNEL_INCLUDED) == 0) {
 			m_xml += "<bootloader>";
 			m_xml += m_xen_bootloader;
 			m_xml += "</bootloader>";
@@ -912,17 +912,17 @@ XenType::CreateVirshConfigFile(const char* filename)
 		m_xml += "<devices>";
 		m_xml += "<console type='pty'><source path='/dev/ptmx'/></console>";
 		if( m_vm_networking ) {
-			if( m_vm_networking_type.find("nat") >= 0 ) {
+			if( m_vm_networking_type.find("nat") != std::string::npos ) {
 				m_xml += "<interface type='network'><source network='default'/></interface>";
-			} else if( m_vm_networking_type.find("bridge") >= 0 ){
+			} else if( m_vm_networking_type.find("bridge") != std::string::npos ){
 				m_xml += "<interface type='bridge'>";
 				if (!m_vm_bridge_interface.empty()) {
 					m_xml += "<source bridge='";
-					m_xml += m_vm_bridge_interface.c_str();
+					m_xml += m_vm_bridge_interface;
 					m_xml += "'/>";
 				}
-				vmprintf(D_FULLDEBUG, "mac address is %s", m_vm_job_mac.Value());
-				if(!m_vm_job_mac.IsEmpty())
+				vmprintf(D_FULLDEBUG, "mac address is %s", m_vm_job_mac.c_str());
+				if(!m_vm_job_mac.empty())
 				{
 					m_xml += "<mac address='";
 					m_xml += m_vm_job_mac;
@@ -980,7 +980,7 @@ VirshType::parseXenDiskParam(const char *format)
     vmprintf(D_FULLDEBUG, "format = %s\n", format);
 
 	StringList working_files;
-	find_all_files_in_dir(m_workingpath.Value(), working_files, true);
+	find_all_files_in_dir(m_workingpath.c_str(), working_files, true);
 
 	StringList disk_files(format, ",");
 	if( disk_files.isEmpty() ) {
@@ -1001,20 +1001,20 @@ VirshType::parseXenDiskParam(const char *format)
 		single_disk_file.rewind();
 
 		// name of a disk file
-		MyString dfile = single_disk_file.next();
-		if( dfile.IsEmpty() ) {
+		std::string dfile = single_disk_file.next();
+		if( dfile.empty() ) {
 			return false;
 		}
-		dfile.trim();
+		trim(dfile);
 
-		const char* tmp_base_name = condor_basename(dfile.Value());
+		const char* tmp_base_name = condor_basename(dfile.c_str());
 		if( !tmp_base_name ) {
 			return false;
 		}
 
 		// Every disk file for Virsh must have full path name
-		MyString disk_file;
-		if( filelist_contains_file(dfile.Value(),
+		std::string disk_file;
+		if( filelist_contains_file(dfile.c_str(),
 					&working_files, true) ) {
 			// file is transferred
 			disk_file = m_workingpath;
@@ -1024,37 +1024,37 @@ VirshType::parseXenDiskParam(const char *format)
 			m_has_transferred_disk_file = true;
 		}else {
 			// file is not transferred.
-			if( fullpath(dfile.Value()) == false) {
+			if( fullpath(dfile.c_str()) == false) {
 				vmprintf(D_ALWAYS, "File(%s) for xen disk "
-						"should have full path name\n", dfile.Value());
+						"should have full path name\n", dfile.c_str());
 				return false;
 			}
 			disk_file = dfile;
 		}
 
 		// device name
-		MyString disk_device = single_disk_file.next();
-		disk_device.trim();
-		disk_device.lower_case();
+		std::string disk_device = single_disk_file.next();
+		trim(disk_device);
+		lower_case(disk_device);
 
 		// disk permission
-		MyString disk_perm = single_disk_file.next();
-		disk_perm.trim();
+		std::string disk_perm = single_disk_file.next();
+		trim(disk_perm);
 
-		if( !strcasecmp(disk_perm.Value(), "w") || !strcasecmp(disk_perm.Value(), "rw")) 
+		if( !strcasecmp(disk_perm.c_str(), "w") || !strcasecmp(disk_perm.c_str(), "rw")) 
         {
 			// check if this disk file is writable
-			if( check_vm_write_access_file(disk_file.Value(), false) == false ) {
+			if( check_vm_write_access_file(disk_file.c_str(), false) == false ) {
 				vmprintf(D_ALWAYS, "xen disk image file('%s') cannot be modified\n",
-					   	disk_file.Value());
+					   	disk_file.c_str());
 				return false;
 			}
 		}else 
         {
 			// check if this disk file is readable
-			if( check_vm_read_access_file(disk_file.Value(), false) == false ) {
+			if( check_vm_read_access_file(disk_file.c_str(), false) == false ) {
 				vmprintf(D_ALWAYS, "xen disk image file('%s') cannot be read\n",
-						disk_file.Value());
+						disk_file.c_str());
 				return false;
 			}
 		}
@@ -1069,8 +1069,8 @@ VirshType::parseXenDiskParam(const char *format)
         if (iNumParams == 4 )
         {
             newdisk->format = single_disk_file.next();
-            newdisk->format.trim();
-            newdisk->format.lower_case();
+            trim(newdisk->format);
+            lower_case(newdisk->format);
         }
         
 		m_disk_list.Append(newdisk);
@@ -1086,11 +1086,10 @@ VirshType::parseXenDiskParam(const char *format)
 
 
 // This function should be called after parseVirshDiskParam
-MyString
+std::string
 VirshType::makeVirshDiskString(void)
 {
-	MyString xendisk;
-	xendisk = "";
+	std::string xendisk;
 	bool first_disk = true;
 
 	XenDisk *vdisk = NULL;
@@ -1100,7 +1099,7 @@ VirshType::makeVirshDiskString(void)
 			xendisk += "</disk>";
 		}
 		first_disk = false;
-        if ( strstr (vdisk->filename.Value(), ".iso") )
+        if ( strstr (vdisk->filename.c_str(), ".iso") )
         {
             xendisk += "<disk type='file' device='cdrom'>";
         }
@@ -1109,7 +1108,7 @@ VirshType::makeVirshDiskString(void)
             xendisk += "<disk type='file'>";
         }
 
-        if (vdisk->format.Length())
+        if (vdisk->format.length())
         {
            xendisk += "<driver name='qemu' type='";
            xendisk += vdisk->format;
@@ -1142,9 +1141,9 @@ VirshType::writableXenDisk(const char* file)
 	XenDisk *vdisk = NULL;
 	m_disk_list.Rewind();
 	while( m_disk_list.Next(vdisk) ) {
-		if( !strcasecmp(basename(file), basename(vdisk->filename.Value())) ) {
-			if( !strcasecmp(vdisk->permission.Value(), "w") ||
-					!strcasecmp(vdisk->permission.Value(), "rw")) {
+		if( !strcasecmp(basename(file), basename(vdisk->filename.c_str())) ) {
+			if( !strcasecmp(vdisk->permission.c_str(), "w") ||
+					!strcasecmp(vdisk->permission.c_str(), "rw")) {
 				return true;
 			}else {
 				return false;
@@ -1161,7 +1160,7 @@ VirshType::updateLocalWriteDiskTimestamp(time_t timestamp)
 	StringList working_files;
 	struct utimbuf timewrap;
 
-	find_all_files_in_dir(m_workingpath.Value(), working_files, true);
+	find_all_files_in_dir(m_workingpath.c_str(), working_files, true);
 
 	working_files.rewind();
 	while( (tmp_file = working_files.next()) != NULL ) {
@@ -1198,22 +1197,22 @@ VirshType::createCkptFiles(void)
 	if( getVMStatus() == VM_SUSPENDED ) {
 		// we create timestampfile
 		time_t current_time = time(NULL);
-		MyString timestampfile(m_suspendfile);
+		std::string timestampfile(m_suspendfile);
 		timestampfile += XEN_CKPT_TIMESTAMP_FILE_SUFFIX;
 
-		FILE *fp = safe_fopen_wrapper(timestampfile.Value(), "w");
+		FILE *fp = safe_fopen_wrapper(timestampfile.c_str(), "w");
 		if( !fp ) {
 			vmprintf(D_ALWAYS, "failed to safe_fopen_wrapper file(%s) for "
 					"checkpoint timestamp : safe_fopen_wrapper returns %s\n",
-					timestampfile.Value(), strerror(errno));
+					timestampfile.c_str(), strerror(errno));
 			Resume();
 			return false;
 		}
 		if( fprintf(fp, "%d\n", (int)current_time) < 0 ) {
 			fclose(fp);
-			unlink(timestampfile.Value());
+			unlink(timestampfile.c_str());
 			vmprintf(D_ALWAYS, "failed to fprintf for checkpoint timestamp "
-					"file(%s:%s)\n", timestampfile.Value(), strerror(errno));
+					"file(%s:%s)\n", timestampfile.c_str(), strerror(errno));
 			Resume();
 			return false;
 		}
@@ -1229,7 +1228,6 @@ VirshType::createCkptFiles(void)
 
 bool KVMType::checkXenParams(VMGahpConfig * config)
 {
-  MyString fixedvalue;
   if( !config ) {
     return false;
   }
@@ -1261,7 +1259,7 @@ bool
 XenType::checkXenParams(VMGahpConfig* config)
 {
 	char *config_value = NULL;
-	MyString fixedvalue;
+	std::string fixedvalue;
 	vmprintf(D_FULLDEBUG, "In XenType::checkXenParams()\n");
 	if( !config ) {
 		return false;
@@ -1277,9 +1275,9 @@ XenType::checkXenParams(VMGahpConfig* config)
 	free(config_value);
 
 	// Can read xen boot loader ?
-	if( check_vm_read_access_file(fixedvalue.Value(), true) == false ) {
+	if( check_vm_read_access_file(fixedvalue.c_str(), true) == false ) {
 		vmprintf(D_ALWAYS, "Xen bootloader file '%s' cannot be read\n",
-				fixedvalue.Value());
+				fixedvalue.c_str());
 		return false;
 	}
 	return true;
@@ -1296,9 +1294,9 @@ XenType::killVMFast(const char* vmname)
 }
 
 void
-VirshType::makeNameofSuspendfile(MyString& name)
+VirshType::makeNameofSuspendfile(std::string& name)
 {
-	name.formatstr("%s%c%s", m_workingpath.Value(), DIR_DELIM_CHAR,
+	formatstr(name, "%s%c%s", m_workingpath.c_str(), DIR_DELIM_CHAR,
 			XEN_MEM_SAVED_FILE);
 }
 
@@ -1313,10 +1311,10 @@ VirshType::checkCkptSuspendFile(const char* file)
 	}
 
 	// Read timestamp file
-	MyString timestampfile(file);
+	std::string timestampfile(file);
 	timestampfile += XEN_CKPT_TIMESTAMP_FILE_SUFFIX;
 
-	FILE *fp = safe_fopen_wrapper(timestampfile.Value(), "r");
+	FILE *fp = safe_fopen_wrapper(timestampfile.c_str(), "r");
 	if( !fp ) {
 		vmprintf(D_ALWAYS, "Cannot find the timestamp file\n");
 		return false;
@@ -1330,16 +1328,16 @@ VirshType::checkCkptSuspendFile(const char* file)
 	}
 	fclose(fp);
 
-	MyString tmp_str;
+	std::string tmp_str;
 	tmp_str = buffer;
-	if( tmp_str.IsEmpty() ) {
+	if( tmp_str.empty() ) {
 		vmprintf(D_ALWAYS, "Invalid timestamp file\n");
 		return false;
 	}
-	tmp_str.trim();
+	trim(tmp_str);
 
 	time_t timestamp;
-	timestamp = (time_t)atoi(tmp_str.Value());
+	timestamp = (time_t)atoi(tmp_str.c_str());
 	if( timestamp <= 0 ) {
 		vmprintf(D_ALWAYS, "Invalid timestamp file\n");
 		return false;
@@ -1348,15 +1346,15 @@ VirshType::checkCkptSuspendFile(const char* file)
 	XenDisk *vdisk = NULL;
 	m_disk_list.Rewind();
 	while( m_disk_list.Next(vdisk) ) {
-		if( !strcasecmp(vdisk->permission.Value(), "w") ||
-				!strcasecmp(vdisk->permission.Value(), "rw")) {
+		if( !strcasecmp(vdisk->permission.c_str(), "w") ||
+				!strcasecmp(vdisk->permission.c_str(), "rw")) {
 			// this is a writable disk file
 			// get modification time of this disk file
 			time_t disk_mtime;
 			struct stat disk_stat;
-			if( stat(vdisk->filename.Value(), &disk_stat ) < 0 ) {
+			if( stat(vdisk->filename.c_str(), &disk_stat ) < 0 ) {
 				vmprintf(D_ALWAYS, "\nERROR: Failed to access \"%s\":%s\n",
-						vdisk->filename.Value(), strerror(errno));
+						vdisk->filename.c_str(), strerror(errno));
 				return false;
 			}
 			disk_mtime = disk_stat.st_mtime;
@@ -1375,7 +1373,7 @@ VirshType::checkCkptSuspendFile(const char* file)
 }
 
 bool
-VirshType::findCkptConfigAndSuspendFile(MyString &vmconfig, MyString &suspendfile)
+VirshType::findCkptConfigAndSuspendFile(std::string &vmconfig, std::string &suspendfile)
 {
 	if( m_transfer_intermediate_files.isEmpty() ) {
 		return false;
@@ -1384,36 +1382,36 @@ VirshType::findCkptConfigAndSuspendFile(MyString &vmconfig, MyString &suspendfil
 	vmconfig = "";
 	suspendfile = "";
 
-	MyString tmpconfig;
-	MyString tmpsuspendfile;
+	std::string tmpconfig;
+	std::string tmpsuspendfile;
 
 	if( filelist_contains_file( XEN_CONFIG_FILE_NAME,
 				&m_transfer_intermediate_files, true) ) {
 		// There is a vm config file for checkpointed files
-		tmpconfig.formatstr("%s%c%s",m_workingpath.Value(),
+		formatstr(tmpconfig, "%s%c%s", m_workingpath.c_str(),
 				DIR_DELIM_CHAR, XEN_CONFIG_FILE_NAME);
 	}
 
-	MyString tmp_name;
+	std::string tmp_name;
 	makeNameofSuspendfile(tmp_name);
 
-	if( filelist_contains_file(tmp_name.Value(),
+	if( filelist_contains_file(tmp_name.c_str(),
 				&m_transfer_intermediate_files, true) ) {
 		// There is a suspend file that was created during vacate
 		tmpsuspendfile = tmp_name;
-		if( check_vm_read_access_file(tmpsuspendfile.Value(), true) == false) {
+		if( check_vm_read_access_file(tmpsuspendfile.c_str(), true) == false) {
 			return false;
 		}
 	}
 
-	if( (tmpconfig.Length() > 0) &&
-			(tmpsuspendfile.Length() > 0 )) {
+	if( (tmpconfig.length() > 0) &&
+			(tmpsuspendfile.length() > 0 )) {
 		// check if the timestamp of suspend file is same to
 		// that of writable disk files
 		// If timestamp differs between suspend file and writable disk file,
 		// it means that there was a crash.
 		// So we need to restart this VM job from the beginning.
-		if( checkCkptSuspendFile(tmpsuspendfile.Value()) ) {
+		if( checkCkptSuspendFile(tmpsuspendfile.c_str()) ) {
 			vmconfig = tmpconfig;
 			suspendfile = tmpsuspendfile;
 			return true;
@@ -1427,14 +1425,14 @@ VirshType::killVM()
 {
 	vmprintf(D_FULLDEBUG, "Inside VirshType::killVM\n");
 
-	if( ( m_vm_name.Length() == 0 ) ) {
+	if( ( m_vm_name.length() == 0 ) ) {
 		return false;
 	}
 
 	// If a VM is soft suspended, resume it first.
 	ResumeFromSoftSuspend();
 
-	return killVMFast(m_vm_name.Value(), m_libvirt_connection);
+	return killVMFast(m_vm_name.c_str(), m_libvirt_connection);
 }
 
 bool
@@ -1504,9 +1502,9 @@ bool XenType::CreateConfigFile()
 		m_result_msg = VMGAHP_ERR_JOBCLASSAD_XEN_NO_KERNEL_PARAM;
 		return false;
 	}
-	m_xen_kernel_submit_param.trim();
+	trim(m_xen_kernel_submit_param);
 
-	if(strcasecmp(m_xen_kernel_submit_param.Value(), XEN_KERNEL_INCLUDED) == 0 )
+	if(strcasecmp(m_xen_kernel_submit_param.c_str(), XEN_KERNEL_INCLUDED) == 0 )
 	{
 		//if (strcasecmp(vm_type.Value(), CONDOR_VM_UNIVERSE_XEN) == 0){
 			vmprintf(D_ALWAYS, "VMGahp will use xen bootloader\n");
@@ -1521,7 +1519,7 @@ bool XenType::CreateConfigFile()
 				free(config_value);
 			}
 		//}
-	}else if(strcasecmp(m_xen_kernel_submit_param.Value(), XEN_KERNEL_HW_VT) == 0) {
+	}else if(strcasecmp(m_xen_kernel_submit_param.c_str(), XEN_KERNEL_HW_VT) == 0) {
 		vmprintf(D_ALWAYS, "This VM requires hardware virtualization\n");
 		if( !m_vm_hardware_vt ) {
 			m_result_msg = VMGAHP_ERR_JOBCLASSAD_MISMATCHED_HARDWARE_VT;
@@ -1533,18 +1531,18 @@ bool XenType::CreateConfigFile()
 	}else {
 		// A job user defined a customized kernel
 		// make sure that the file for xen kernel is readable
-		if( check_vm_read_access_file(m_xen_kernel_submit_param.Value(), false) == false) {
+		if( check_vm_read_access_file(m_xen_kernel_submit_param.c_str(), false) == false) {
 			vmprintf(D_ALWAYS, "xen kernel file '%s' cannot be read\n",
-					m_xen_kernel_submit_param.Value());
+					m_xen_kernel_submit_param.c_str());
 			m_result_msg = VMGAHP_ERR_JOBCLASSAD_XEN_KERNEL_NOT_FOUND;
 			return false;
 		}
-		MyString tmp_fullname;
-		if( isTransferedFile(m_xen_kernel_submit_param.Value(),
+		std::string tmp_fullname;
+		if( isTransferedFile(m_xen_kernel_submit_param.c_str(),
 					tmp_fullname) ) {
 			// this file is transferred
 			// we need a full path
-			m_xen_kernel_submit_param = tmp_fullname;
+			m_xen_kernel_submit_param = tmp_fullname.c_str();
 		}
 
 		m_xen_kernel_file = m_xen_kernel_submit_param;
@@ -1552,24 +1550,24 @@ bool XenType::CreateConfigFile()
 		if( m_classAd.LookupString(VMPARAM_XEN_INITRD, m_xen_initrd_file)
 					== 1 ) {
 			// A job user defined a customized ramdisk
-			m_xen_initrd_file.trim();
-			if( check_vm_read_access_file(m_xen_initrd_file.Value(), false) == false) {
+			trim(m_xen_initrd_file);
+			if( check_vm_read_access_file(m_xen_initrd_file.c_str(), false) == false) {
 				// make sure that the file for xen ramdisk is readable
 				vmprintf(D_ALWAYS, "xen ramdisk file '%s' cannot be read\n",
-						m_xen_initrd_file.Value());
+						m_xen_initrd_file.c_str());
 				m_result_msg = VMGAHP_ERR_JOBCLASSAD_XEN_INITRD_NOT_FOUND;
 				return false;
 			}
-			if( isTransferedFile(m_xen_initrd_file.Value(),
+			if( isTransferedFile(m_xen_initrd_file.c_str(),
 						tmp_fullname) ) {
 				// this file is transferred
 				// we need a full path
-				m_xen_initrd_file = tmp_fullname;
+				m_xen_initrd_file = tmp_fullname.c_str();
 			}
 		}
 	}
 
-	if( m_xen_kernel_file.IsEmpty() == false ) {
+	if( m_xen_kernel_file.empty() == false ) {
 		// Read the parameter of Virsh Root
 		if( m_classAd.LookupString(VMPARAM_XEN_ROOT, m_xen_root) != 1 ) {
 			vmprintf(D_ALWAYS, "%s cannot be found in job classAd\n",
@@ -1577,10 +1575,10 @@ bool XenType::CreateConfigFile()
 			m_result_msg = VMGAHP_ERR_JOBCLASSAD_XEN_NO_ROOT_DEVICE_PARAM;
 			return false;
 		}
-		m_xen_root.trim();
+		trim(m_xen_root);
 	}
 
-	MyString xen_disk;
+	std::string xen_disk;
 	// Read the parameter of Virsh Disk
 	if( m_classAd.LookupString(VMPARAM_VM_DISK, xen_disk) != 1 ) {
 		vmprintf(D_ALWAYS, "%s cannot be found in job classAd\n",
@@ -1588,15 +1586,15 @@ bool XenType::CreateConfigFile()
 		m_result_msg = VMGAHP_ERR_JOBCLASSAD_XEN_NO_DISK_PARAM;
 		return false;
 	}
-	xen_disk.trim();
+	trim(xen_disk);
 
 	// from this point below we start to check the params
 	// and access data.
 	priv = set_root_priv();
 
-	if( parseXenDiskParam(xen_disk.Value()) == false ) {
+	if( parseXenDiskParam(xen_disk.c_str()) == false ) {
 		vmprintf(D_ALWAYS, "xen disk format(%s) is incorrect\n",
-				xen_disk.Value());
+				xen_disk.c_str());
 		m_result_msg = VMGAHP_ERR_JOBCLASSAD_XEN_INVALID_DISK_PARAM;
 		set_priv(priv);
 		return false;
@@ -1605,15 +1603,15 @@ bool XenType::CreateConfigFile()
 
 	// Read the parameter of Virsh Kernel Param
 	if( m_classAd.LookupString(VMPARAM_XEN_KERNEL_PARAMS, m_xen_kernel_params) == 1 ) {
-		m_xen_kernel_params.trim();
+		trim(m_xen_kernel_params);
 	}
 
 	// Check whether this is re-starting after vacating checkpointing,
 	if( m_transfer_intermediate_files.isEmpty() == false ) {
 		// we have chckecpointed files
 		// Find vm config file and suspend file
-		MyString ckpt_config_file;
-		MyString ckpt_suspend_file;
+		std::string ckpt_config_file;
+		std::string ckpt_suspend_file;
 		if( findCkptConfigAndSuspendFile(ckpt_config_file, ckpt_suspend_file)
 				== false ) {
 			vmprintf(D_ALWAYS, "Checkpoint files exist but "
@@ -1651,20 +1649,20 @@ bool XenType::CreateConfigFile()
 
 
 	// create a vm config file
-	MyString tmp_config_name;
-	tmp_config_name.formatstr("%s%c%s",m_workingpath.Value(),
+	std::string tmp_config_name;
+	formatstr(tmp_config_name, "%s%c%s", m_workingpath.c_str(),
 			DIR_DELIM_CHAR, XEN_CONFIG_FILE_NAME);
 
 	vmprintf(D_ALWAYS, "CreateXenVMConfigFile\n");
 
-	if( CreateXenVMConfigFile(tmp_config_name.Value())
+	if( CreateXenVMConfigFile(tmp_config_name.c_str())
 			== false ) {
 		m_result_msg = VMGAHP_ERR_CRITICAL;
 		return false;
 	}
 
 	// set vm config file
-	m_configfile = tmp_config_name.Value();
+	m_configfile = tmp_config_name.c_str();
 	return true;
 }
 
@@ -1696,7 +1694,7 @@ KVMType::CreateConfigFile()
 		m_vm_mem = 32;
 	}
 
-	MyString kvm_disk;
+	std::string kvm_disk;
 	// Read the parameter of Virsh Disk
 	if( m_classAd.LookupString(VMPARAM_VM_DISK, kvm_disk) != 1 ) {
 		vmprintf(D_ALWAYS, "%s cannot be found in job classAd\n",
@@ -1704,15 +1702,15 @@ KVMType::CreateConfigFile()
 		m_result_msg = VMGAHP_ERR_JOBCLASSAD_KVM_NO_DISK_PARAM;
 		return false;
 	}
-	kvm_disk.trim();
+	trim(kvm_disk);
 
 	// from this point below we start to check the params
 	// and access data.
 	priv = set_root_priv();
 
-	if( parseXenDiskParam(kvm_disk.Value()) == false ) {
+	if( parseXenDiskParam(kvm_disk.c_str()) == false ) {
 		vmprintf(D_ALWAYS, "kvm disk format(%s) is incorrect\n",
-				kvm_disk.Value());
+				kvm_disk.c_str());
 		m_result_msg = VMGAHP_ERR_JOBCLASSAD_KVM_INVALID_DISK_PARAM;
 		set_priv(priv);
 		return false;
@@ -1723,8 +1721,8 @@ KVMType::CreateConfigFile()
 	if( m_transfer_intermediate_files.isEmpty() == false ) {
 		// we have chckecpointed files
 		// Find vm config file and suspend file
-		MyString ckpt_config_file;
-		MyString ckpt_suspend_file;
+		std::string ckpt_config_file;
+		std::string ckpt_suspend_file;
 		if( findCkptConfigAndSuspendFile(ckpt_config_file, ckpt_suspend_file)
 				== false ) {
 			vmprintf(D_ALWAYS, "Checkpoint files exist but "
@@ -1760,20 +1758,20 @@ KVMType::CreateConfigFile()
 
 
 	// create a vm config file
-	MyString tmp_config_name;
-	tmp_config_name.formatstr("%s%c%s",m_workingpath.Value(),
+	std::string tmp_config_name;
+	formatstr(tmp_config_name, "%s%c%s", m_workingpath.c_str(),
 			DIR_DELIM_CHAR, XEN_CONFIG_FILE_NAME);
 
 	vmprintf(D_ALWAYS, "CreateKvmVMConfigFile\n");
 
-	if( CreateXenVMConfigFile(tmp_config_name.Value())
+	if( CreateXenVMConfigFile(tmp_config_name.c_str())
 			== false ) {
 		m_result_msg = VMGAHP_ERR_CRITICAL;
 		return false;
 	}
 
 	// set vm config file
-	m_configfile = tmp_config_name.Value();
+	m_configfile = tmp_config_name.c_str();
 	return true;
 }
 

@@ -225,13 +225,15 @@ ProcFamilyServer::use_glexec_for_family()
 	read_from_client(&proxy_len, sizeof(int));
 
 	proc_family_error_t err;
-	if (proxy_len <= 0) {
+	// prevent the client from causing the server to malloc unbounded memory
+	if ((proxy_len <= 0) || (proxy_len > (1024 * 1024)))  {
 		err = PROC_FAMILY_ERROR_BAD_GLEXEC_INFO;
 	}
 	else {
 		char* proxy = new char[proxy_len];
 		ASSERT(proxy != NULL);
 		read_from_client(proxy, proxy_len);
+		proxy[proxy_len - 1] = '\0';
 		err = m_monitor.use_glexec_for_family(pid, proxy);
 		delete[] proxy;
 	}
@@ -247,6 +249,8 @@ ProcFamilyServer::get_usage()
 	read_from_client(&pid, sizeof(pid_t));
 
 	ProcFamilyUsage usage;
+	dprintf(D_ALWAYS, "PROC_FAMILY_GET_USAGE for pid %d\n", pid);
+
 	proc_family_error_t err = m_monitor.get_family_usage(pid, &usage);
 	
 	write_to_client(&err, sizeof(proc_family_error_t));
@@ -505,7 +509,8 @@ ProcFamilyServer::wait_loop()
 				break;
 				
 			case PROC_FAMILY_GET_USAGE:
-				dprintf(D_ALWAYS, "PROC_FAMILY_GET_USAGE\n");
+				// print this out on the same line with the pid of interest
+				//dprintf(D_ALWAYS, "PROC_FAMILY_GET_USAGE\n");
 				get_usage();
 				break;
 

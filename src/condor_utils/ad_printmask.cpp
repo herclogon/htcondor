@@ -196,7 +196,7 @@ calc_widths(ClassAd * al, ClassAd *target /*=NULL*/ )
 		case INT_CUSTOM_FMT:
 			{
 				int intValue;
-				if (al->EvalInteger(attr, target, intValue)) {
+				if (EvalInteger(attr, al, target, intValue)) {
 					colval = (fmt->df)(intValue , al, *fmt);
 				}
 			}
@@ -205,14 +205,14 @@ calc_widths(ClassAd * al, ClassAd *target /*=NULL*/ )
 		case FLT_CUSTOM_FMT:
 			{
 				double realValue;
-				if (al->EvalFloat(attr, target, realValue)) {
+				if (EvalFloat(attr, al, target, realValue)) {
 					colval = (fmt->ff)(realValue , al, *fmt);
 				}
 			}
 			break;
 
 		case STR_CUSTOM_FMT:
-			if (al->EvalString(attr, target, &value_from_classad)) {
+			if (EvalString(attr, al, target, &value_from_classad)) {
 				colval = (fmt->sf)(value_from_classad, al, *fmt);
 				free(value_from_classad);
 			}
@@ -322,7 +322,7 @@ char * AttrListPrintMask::display_Headings(List<const char> & headings)
 		MyString tmp_fmt;
 		if (fmt->width) {
 			tmp_fmt.formatstr("%%-%ds", fmt->width);
-			retval.formatstr_cat(tmp_fmt.Value(), pszHead);
+			retval.formatstr_cat(tmp_fmt.c_str(), pszHead);
 		} else {
 			retval += pszHead;
 		}
@@ -333,14 +333,14 @@ char * AttrListPrintMask::display_Headings(List<const char> & headings)
 
 	}
 
-	if (overall_max_width && retval.Length() > overall_max_width)
+	if (overall_max_width && retval.length() > overall_max_width)
 		retval.truncate(overall_max_width);
 
 	if (row_suffix)
 		retval += row_suffix;
 
 	// Convert return MyString to new char *.
-	return strdup(retval.Value() );
+	return strdup(retval.c_str() );
 }
 
 char * AttrListPrintMask::
@@ -396,7 +396,7 @@ PrintCol(MyString * prow, Formatter & fmt, const char * value)
 	if (col_prefix && ! (fmt.options & FormatOptionNoPrefix))
 		(*prow) += col_prefix;
 
-	int col_start = prow->Length();
+	int col_start = prow->length();
 
 	const char * printfFmt = fmt.printfFmt;
 	if ( ! printfFmt && fmt.width) {
@@ -418,7 +418,7 @@ PrintCol(MyString * prow, Formatter & fmt, const char * value)
 	}
 
 	if (fmt.options & FormatOptionAutoWidth) {
-		int col_width = prow->Length() - col_start;
+		int col_width = prow->length() - col_start;
 		fmt.width = MAX(fmt.width, col_width);
 	}
 
@@ -604,7 +604,7 @@ static int calc_column_width(Formatter *fmt, classad::Value * pval)
 	switch (pval->GetType()) {
 	case classad::Value::REAL_VALUE: {
 		double realValue  = 0;
-		pval->IsRealValue(realValue);
+		(void) pval->IsRealValue(realValue);
 		if (fmt_type == PFT_FLOAT || fmt_type == PFT_INT || fmt_type == PFT_TIME || fmt_type == PFT_DATE) {
 			format_value<double>(tmp, realValue, fmt_type, *fmt);
 			return (int)tmp.length();
@@ -730,11 +730,9 @@ render (MyRowOfValues & rov, ClassAd *al, ClassAd *target /* = NULL */)
 			// The string format type is a very special case, because it will
 			// UNPARSE when the attr is not an expression and doesn't evaluate to a string...
 			if (fmt->fmtKind == CustomFormatFn::PRINTF_FMT && (fmt_type == PFT_STRING) && ! attr_is_expr) {
-				char * value_from_classad = NULL;
-				if (al->EvalString(attr, target, &value_from_classad)) {
+				std::string value_from_classad;
+				if (EvalString(attr, al, target, value_from_classad)) {
 					pval->SetStringValue(value_from_classad);
-					free(value_from_classad);
-					value_from_classad = NULL;
 					col_is_valid = true;
 				} else {
 					// For the %s format, if we can't evaluate then unparse.
@@ -742,11 +740,16 @@ render (MyRowOfValues & rov, ClassAd *al, ClassAd *target /* = NULL */)
 				}
 			}
 			if (fmt_type ==  PFT_RAW) {
-				std::string buff;
-				classad::ClassAdUnParser unparser;
-				unparser.SetOldClassAd(true, true);
-				unparser.Unparse(buff, tree);
-				pval->SetStringValue(buff);
+				// special case for attr_is_expr when the expression is really an attribute reference.
+				if (tree->GetKind() == classad::ExprTree::NodeKind::ATTRREF_NODE) {
+					pval->SetStringValue("undefined");
+				} else {
+					std::string buff;
+					classad::ClassAdUnParser unparser;
+					unparser.SetOldClassAd(true, true);
+					unparser.Unparse(buff, tree);
+					pval->SetStringValue(buff);
+				}
 				col_is_valid = true;
 			} else {
 				col_is_valid = EvalExprTree(tree, al, target, *pval);
@@ -757,9 +760,20 @@ render (MyRowOfValues & rov, ClassAd *al, ClassAd *target /* = NULL */)
 					// but we don't currently have a shared_ptr flavor of nested classads
 					// so we can't actually fix that here right now.
 					classad::ExprList * plist = NULL;
+					classad::ClassAd * pclassad = NULL;
 					if (pval->IsListValue(plist) && plist) {
 						classad_shared_ptr<classad::ExprList> lst( (classad::ExprList*)plist->Copy() );
 						pval->SetListValue(lst);
+					} else if( pval->IsClassAdValue( pclassad ) && pclassad ) {
+						classad::ClassAd * copy = (classad::ClassAd*)pclassad->Copy();
+						// Deep copies do NOT reset the parent pointer or the
+						// chained ad pointer; do so now, to prevent bad
+						// dereferences in the future.  There's a good chance
+						// that this is stupid and should fixed.
+						copy->ChainToAd(NULL);
+						copy->SetParentScope(NULL);
+						classad_shared_ptr<classad::ClassAd> ca( copy );
+						pval->SetClassAdValue(ca);
 					}
 				}
 			}
@@ -881,21 +895,21 @@ display (std::string & out, MyRowOfValues & rov)
 		switch (fmt->fmtKind) {
 		case CustomFormatFn::INT_CUSTOM_FMT:
 			if (col_is_valid || (fmt->options & FormatOptionAlwaysCall)) {
-				pval->IsNumber(intValue);
+				(void) pval->IsNumber(intValue);
 				pszVal = fmt->df(intValue, *fmt);
 				col_is_valid = true; printfFmt = NULL;
 			}
 			break;
 		case CustomFormatFn::FLT_CUSTOM_FMT:
 			if (col_is_valid || (fmt->options & FormatOptionAlwaysCall)) {
-				pval->IsNumber(realValue);
+				(void) pval->IsNumber(realValue);
 				pszVal = fmt->ff(realValue, *fmt);
 				col_is_valid = true; printfFmt = NULL;
 			}
 			break;
 		case CustomFormatFn::STR_CUSTOM_FMT:
 			if (col_is_valid || (fmt->options & FormatOptionAlwaysCall)) {
-				pval->IsStringValue(pszVal);
+				(void) pval->IsStringValue(pszVal);
 				pszVal = fmt->sf(pszVal, *fmt);
 				col_is_valid = true; printfFmt = NULL;
 			}
@@ -926,11 +940,11 @@ display (std::string & out, MyRowOfValues & rov)
 				case PFT_INT:
 				case PFT_POINTER:
 				case PFT_CHAR:
-					pval->IsNumber(intValue);
+					(void) pval->IsNumber(intValue);
 					pszVal = format_value<long long>(mstrValue, intValue, fmt_info.type, *fmt);
 					break;
 				case PFT_FLOAT:
-					pval->IsNumber(realValue);
+					(void) pval->IsNumber(realValue);
 					pszVal = format_value<double>(mstrValue, realValue, fmt_info.type, *fmt);
 					break;
 				case PFT_STRING:
@@ -955,7 +969,7 @@ display (std::string & out, MyRowOfValues & rov)
 				}
 			}
 		} else if ( ! pszVal) {
-			pval->IsStringValue(pszVal);
+			(void) pval->IsStringValue(pszVal);
 		}
 
 		// at this point, pszVal is the display text for the column
@@ -1230,9 +1244,9 @@ int parse_autoformat_args (
 		lbl += fRaw ? "%r" : (fCapV ? "%V" : "%v");
 		if (diagnostic) {
 			printf ("Arg %d --- register format [%s] width=%d, opt=0x%x [%s]\n",
-				ixArg, lbl.Value(), wid, opts, pattr);
+				ixArg, lbl.c_str(), wid, opts, pattr);
 		}
-		print_mask.registerFormat(lbl.Value(), wid, opts, pattr);
+		print_mask.registerFormat(lbl.c_str(), wid, opts, pattr);
 		++ixArg;
 	}
 	return ixArg;

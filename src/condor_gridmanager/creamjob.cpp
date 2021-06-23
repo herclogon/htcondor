@@ -150,12 +150,8 @@ void CreamJobReconfig()
 	CreamJob::setConnectFailureRetry( tmp_int );
 
 	// Tell all the resource objects to deal with their new config values
-	CreamResource *next_resource;
-
-	CreamResource::ResourcesByName.startIterations();
-	
-	while ( CreamResource::ResourcesByName.iterate( next_resource ) != 0 ) {
-		next_resource->Reconfig();
+	for (auto &elem : CreamResource::ResourcesByName) {
+		elem.second->Reconfig();
 	}
 }
 
@@ -185,7 +181,7 @@ CreamJob::CreamJob( ClassAd *classad )
 	: BaseJob( classad )
 {
 
-	int bool_value;
+	bool bool_value;
 	char buff[4096];
 	std::string buff2;
 	std::string iwd;
@@ -385,9 +381,9 @@ CreamJob::CreamJob( ClassAd *classad )
 			buff2 += job_output;
 			localOutput = strdup( buff2.c_str() );
 
-			bool_value = 0;
+			bool_value = false;
 			jobAd->LookupBool( ATTR_STREAM_OUTPUT, bool_value );
-			streamOutput = (bool_value != 0);
+			streamOutput = bool_value;
 			stageOutput = !streamOutput;
 		}
 	}
@@ -406,9 +402,9 @@ CreamJob::CreamJob( ClassAd *classad )
 			buff2 += job_error;
 			localError = strdup( buff2.c_str() );
 
-			bool_value = 0;
+			bool_value = false;
 			jobAd->LookupBool( ATTR_STREAM_ERROR, bool_value );
-			streamError = (bool_value != 0);
+			streamError = bool_value;
 			stageError = !streamError;
 		}
 	}
@@ -420,7 +416,7 @@ CreamJob::CreamJob( ClassAd *classad )
 		// on any initialization that's been skipped.
 	gmState = GM_HOLD;
 	if ( !error_string.empty() ) {
-		jobAd->Assign( ATTR_HOLD_REASON, error_string.c_str() );
+		jobAd->Assign( ATTR_HOLD_REASON, error_string );
 	}
 	return;
 }
@@ -970,7 +966,6 @@ void CreamJob::doEvaluateState()
 			}
 			myResource->CancelSubmit( this );
 			if ( condorState == COMPLETED || condorState == REMOVED ) {
-				SetRemoteJobId( NULL );
 				gmState = GM_DELETE;
 			} else {
 				// Clear the contact string here because it may not get
@@ -1052,7 +1047,6 @@ void CreamJob::doEvaluateState()
 				}
 			}
 
-			SetRemoteJobId( NULL );
 			myResource->CancelSubmit( this );
 			remoteState = CREAM_JOB_STATE_UNSET;
 			SetRemoteJobStatus( NULL );
@@ -1061,6 +1055,7 @@ void CreamJob::doEvaluateState()
 			if ( condorState == REMOVED ) {
 				gmState = GM_DELETE;
 			} else {
+				SetRemoteJobId( NULL );
 				gmState= GM_HOLD;
 			}
 		} break;
@@ -1086,7 +1081,6 @@ void CreamJob::doEvaluateState()
 				break;
 			}
 
-			SetRemoteJobId( NULL );
 			myResource->CancelSubmit( this );
 			remoteState = CREAM_JOB_STATE_UNSET;
 			SetRemoteJobStatus( NULL );
@@ -1095,6 +1089,7 @@ void CreamJob::doEvaluateState()
 			if ( condorState == REMOVED ) {
 				gmState = GM_DELETE;
 			} else {
+				SetRemoteJobId( NULL );
 				//gmState = GM_CLEAR_REQUEST;
 				gmState= GM_HOLD;
 			}
@@ -1124,7 +1119,7 @@ void CreamJob::doEvaluateState()
 				   remoteState == CREAM_JOB_STATE_ABORTED ||
 				   remoteState == CREAM_JOB_STATE_DONE_FAILED ) 
 				     && condorState != REMOVED 
-					 && wantResubmit == 0 
+					 && wantResubmit == false 
 					 && doResubmit == 0 ) {
 				if(remoteJobId == NULL) {
 					dprintf(D_FULLDEBUG,
@@ -1148,10 +1143,10 @@ void CreamJob::doEvaluateState()
 			}
 			// Only allow a rematch *if* we are also going to perform a resubmit
 			if ( wantResubmit || doResubmit ) {
-				jobAd->EvalBool(ATTR_REMATCH_CHECK,NULL,wantRematch);
+				jobAd->LookupBool(ATTR_REMATCH_CHECK,wantRematch);
 			}
 			if ( wantResubmit ) {
-				wantResubmit = 0;
+				wantResubmit = false;
 				dprintf(D_ALWAYS,
 						"(%d.%d) Resubmitting to CREAM because %s==TRUE\n",
 						procID.cluster, procID.proc, ATTR_GLOBUS_RESUBMIT_CHECK );
@@ -1185,10 +1180,10 @@ void CreamJob::doEvaluateState()
 			
 			int stage_time;
 			if ( jobAd->LookupInteger( ATTR_STAGE_IN_START, stage_time ) ) {
-				jobAd->Assign( ATTR_STAGE_IN_START, "Undefined" );
+				jobAd->AssignExpr( ATTR_STAGE_IN_START, "Undefined" );
 			}
 			if ( jobAd->LookupInteger( ATTR_STAGE_IN_FINISH, stage_time ) ) {
-				jobAd->Assign( ATTR_STAGE_IN_FINISH, "Undefined" );
+				jobAd->AssignExpr( ATTR_STAGE_IN_FINISH, "Undefined" );
 			}
 
 			if ( wantRematch ) {
@@ -1197,7 +1192,7 @@ void CreamJob::doEvaluateState()
 						procID.cluster, procID.proc, ATTR_REMATCH_CHECK );
 
 				// Set ad attributes so the schedd finds a new match.
-				int dummy;
+				bool dummy;
 				if ( jobAd->LookupBool( ATTR_JOB_MATCHED, dummy ) != 0 ) {
 					jobAd->Assign( ATTR_JOB_MATCHED, false );
 					jobAd->Assign( ATTR_CURRENT_HOSTS, 0 );
@@ -1480,20 +1475,20 @@ char *CreamJob::buildSubmitAd()
 
 		isb.insert( tmp_str2.c_str() );
 
-		submitAd.Assign( ATTR_EXECUTABLE, tmp_str2.c_str() );
+		submitAd.Assign( ATTR_EXECUTABLE, tmp_str2 );
 	} else {
 		//PRE-STAGED
-		submitAd.Assign( ATTR_EXECUTABLE, tmp_str.c_str() );
+		submitAd.Assign( ATTR_EXECUTABLE, tmp_str );
 	}
 
 		//ARGUMENTS
 	ArgList args;
-	MyString arg_errors;
-	if( !args.AppendArgsFromClassAd( jobAd, &arg_errors ) ) {
+	std::string arg_errors;
+	if( !args.AppendArgsFromClassAd( jobAd, arg_errors ) ) {
 		dprintf( D_ALWAYS, "(%d.%d) Failed to read job arguments: %s\n",
-				 procID.cluster, procID.proc, arg_errors.Value());
+				 procID.cluster, procID.proc, arg_errors.c_str());
 		formatstr( errorString, "Failed to read job arguments: %s\n",
-				   arg_errors.Value() );
+				   arg_errors.c_str() );
 		return NULL;
 	}
 	if(args.Count() != 0) {
@@ -1518,12 +1513,12 @@ char *CreamJob::buildSubmitAd()
 			tmp_str2 = condor_basename( tmp_str.c_str() );
 			isb.insert(condor_basename( tmp_str2.c_str() ) );
 			
-			submitAd.Assign( ATTR_STD_INPUT, tmp_str2.c_str() );
+			submitAd.Assign( ATTR_STD_INPUT, tmp_str2 );
 		} else {
 			//PRE-STAGED. Be careful, if stdin is not found in WN, job
 			// will not complete successfully.
 			if ( tmp_str[0] == '/' ) { //Only add absolute path
-				submitAd.Assign( ATTR_STD_INPUT, tmp_str.c_str() );
+				submitAd.Assign( ATTR_STD_INPUT, tmp_str );
 			}
 		}
 	}
@@ -1559,11 +1554,11 @@ char *CreamJob::buildSubmitAd()
 
 		if (result) {
 			tmp_str2 = condor_basename( tmp_str.c_str() );
-			submitAd.Assign( ATTR_STD_OUTPUT, tmp_str2.c_str() );
+			submitAd.Assign( ATTR_STD_OUTPUT, tmp_str2 );
 
 			osb.insert( condor_basename( tmp_str2.c_str() ) );
 		} else {
-			submitAd.Assign( ATTR_STD_OUTPUT, tmp_str.c_str() );
+			submitAd.Assign( ATTR_STD_OUTPUT, tmp_str );
 		}
 	}
 
@@ -1575,11 +1570,11 @@ char *CreamJob::buildSubmitAd()
 
 		if (result) {
 			tmp_str2 = condor_basename( tmp_str.c_str() );
-			submitAd.Assign( ATTR_STD_ERROR, tmp_str2.c_str() );
+			submitAd.Assign( ATTR_STD_ERROR, tmp_str2 );
 
 			osb.insert( condor_basename( tmp_str2.c_str() ) );
 		} else {
-			submitAd.Assign( ATTR_STD_ERROR, tmp_str.c_str() );
+			submitAd.Assign( ATTR_STD_ERROR, tmp_str );
 		}
 	}
 
@@ -1587,21 +1582,17 @@ char *CreamJob::buildSubmitAd()
 		//need to have a value
 		// TODO This needs to be extracted from the VOMS extension in the
 		//   job's credential.
-//	sprintf(buf, "%s = \"%s\"", ATTR_VIR_ORG, "");
-	formatstr(buf, "%s = \"%s\"", ATTR_VIR_ORG, "ignored");
-	submitAd.Insert(buf.c_str());
+	submitAd.Assign(ATTR_VIR_ORG, "ignored");
 	
 		//BATCHSYSTEM
-	formatstr(buf, "%s = \"%s\"", ATTR_BATCH_SYSTEM, resourceBatchSystemString);
-	submitAd.Insert(buf.c_str());
+	submitAd.Assign(ATTR_BATCH_SYSTEM, resourceBatchSystemString);
 	
 		//QUEUENAME
-	formatstr(buf, "%s = \"%s\"", ATTR_QUEUE_NAME, resourceQueueString);
-	submitAd.Insert(buf.c_str());
+	submitAd.Assign(ATTR_QUEUE_NAME, resourceQueueString);
 
 	submitAd.Assign("outputsandboxbasedesturi", "gsiftp://localhost");
 
-	MyString ad_string;
+	std::string ad_string;
 	std::string ad_str;
 
 	classad::ClassAdUnParser unparser;
@@ -1625,8 +1616,8 @@ char *CreamJob::buildSubmitAd()
 		}
 		formatstr_cat(buf, "} ]");
 
-		int insert_pos = strrchr( ad_string.Value(), ']' ) - ad_string.Value();
-		ad_string.replaceString( "]", buf.c_str(), insert_pos );
+		int insert_pos = strrchr( ad_string.c_str(), ']' ) - ad_string.c_str();
+		replace_str( ad_string, "]", buf.c_str(), insert_pos );
 	}
 
 		//OUTPUT SANDBOX
@@ -1641,18 +1632,18 @@ char *CreamJob::buildSubmitAd()
 		}
 		formatstr_cat(buf, "} ]");
 
-		int insert_pos = strrchr( ad_string.Value(), ']' ) - ad_string.Value();
-		ad_string.replaceString( "]", buf.c_str(), insert_pos );
+		int insert_pos = strrchr( ad_string.c_str(), ']' ) - ad_string.c_str();
+		replace_str( ad_string, "]", buf.c_str(), insert_pos );
 	}
 
 		//ENVIRONMENT
 	Env envobj;
-	MyString env_errors;
-	if(!envobj.MergeFrom(jobAd,&env_errors)) {
+	std::string env_errors;
+	if(!envobj.MergeFrom(jobAd, env_errors)) {
 		dprintf(D_ALWAYS,"(%d.%d) Failed to read job environment: %s\n",
-				procID.cluster, procID.proc, env_errors.Value());
+				procID.cluster, procID.proc, env_errors.c_str());
 		formatstr(errorString,"Failed to read job environment: %s\n",
-							env_errors.Value());
+							env_errors.c_str());
 		return NULL;
 	}
 	char **env_vec = envobj.getStringArray();
@@ -1669,22 +1660,22 @@ char *CreamJob::buildSubmitAd()
 		}
 		formatstr_cat( buf, "} ]" );
 
-		int insert_pos = strrchr( ad_string.Value(), ']' ) - ad_string.Value();
-		ad_string.replaceString( "]", buf.c_str(), insert_pos );
+		int insert_pos = strrchr( ad_string.c_str(), ']' ) - ad_string.c_str();
+		replace_str( ad_string, "]", buf.c_str(), insert_pos );
 	}
 	deleteStringArray(env_vec);
 
 	if ( jobAd->LookupString( ATTR_CREAM_ATTRIBUTES, tmp_str ) ) {
 		formatstr( buf, "; %s ]", tmp_str.c_str() );
 
-		int insert_pos = strrchr( ad_string.Value(), ']' ) - ad_string.Value();
-		ad_string.replaceString( "]", buf.c_str(), insert_pos );
+		int insert_pos = strrchr( ad_string.c_str(), ']' ) - ad_string.c_str();
+		replace_str( ad_string, "]", buf.c_str(), insert_pos );
 	}
 
 /*
 	dprintf(D_FULLDEBUG, "SUBMITAD:\n%s\n",ad_string.Value()); 
 */
-	return strdup( ad_string.Value() );
+	return strdup( ad_string.c_str() );
 }
 
 bool CreamJob::IsConnectionError( const char *msg )
@@ -1805,7 +1796,7 @@ TransferRequest *CreamJob::MakeStageOutRequest()
 	if ( jobAd->LookupString( ATTR_TRANSFER_OUTPUT_FILES, tmp_str ) ) {
 		char *filename;
 		char *remaps = NULL;
-		MyString new_name;
+		std::string new_name;
 		jobAd->LookupString( ATTR_TRANSFER_OUTPUT_REMAPS, &remaps );
 
 		StringList output_files(tmp_str.c_str());
@@ -1819,7 +1810,7 @@ TransferRequest *CreamJob::MakeStageOutRequest()
 												new_name ) ) {
 				formatstr( buf, "%s%s",
 						 new_name[0] == '/' ? "file://" : iwd_str.c_str(),
-						 new_name.Value() );
+						 new_name.c_str() );
 			} else {
 				formatstr( buf, "%s%s",
 						 iwd_str.c_str(),

@@ -111,6 +111,8 @@ class CheckEvents {
 	*/
 	check_event_result_t CheckAnEvent(const ULogEvent *event,
 			MyString &errorMsg);
+	check_event_result_t CheckAnEvent(const ULogEvent *event,
+			std::string &errorMsg);
 
 	/** Check all jobs when we think they're done.  Makes sure we have
 		exactly one submit event and one termanated/aborted/executable
@@ -122,6 +124,7 @@ class CheckEvents {
 		@return check_event_result_t, see above.
 	*/
 	check_event_result_t CheckAllJobs(MyString &errorMsg);
+	check_event_result_t CheckAllJobs(std::string &errorMsg);
 
 	/** Convert a check_event_result_t to the corresponding string.
 		@param The result.
@@ -216,27 +219,27 @@ class CheckEvents {
 		// one entry for each Condor job we process.
 	HashTable<CondorID, JobInfo *>	jobHash;
 
-	inline bool		AllowAlmostAll() { return allowEvents & ALLOW_ALMOST_ALL; }
+	inline bool		AllowAlmostAll() const { return allowEvents & ALLOW_ALMOST_ALL; }
 
-	inline bool		AllowExtraAborts() { return
+	inline bool		AllowExtraAborts() const { return
 			(allowEvents & ALLOW_ALMOST_ALL) ||
 			(allowEvents & ALLOW_TERM_ABORT); }
 
-	inline bool		AllowExtraRuns() { return
+	inline bool		AllowExtraRuns() const { return
 			allowEvents & ALLOW_RUN_AFTER_TERM; }
 
-	inline bool		AllowGarbage() { return (allowEvents & ALLOW_ALMOST_ALL) ||
+	inline bool		AllowGarbage() const { return (allowEvents & ALLOW_ALMOST_ALL) ||
 			(allowEvents & ALLOW_GARBAGE); }
 
-	inline bool		AllowExecSubmit() { return
+	inline bool		AllowExecSubmit() const { return
 			(allowEvents & ALLOW_ALMOST_ALL) ||
 			(allowEvents & ALLOW_EXEC_BEFORE_SUBMIT); }
 
-	inline bool		AllowDoubleTerm() { return
+	inline bool		AllowDoubleTerm() const { return
 			(allowEvents & ALLOW_ALMOST_ALL) ||
 			(allowEvents & ALLOW_DOUBLE_TERMINATE); }
 
-	inline bool		AllowDuplicates() { return
+	inline bool		AllowDuplicates() const { return
 			(allowEvents & ALLOW_ALMOST_ALL) ||
 			allowEvents & ALLOW_DUPLICATE_EVENTS; }
 

@@ -107,14 +107,6 @@ public:
 				, m_timeslice_ms(timeslice_ms)
 				, m_done(at_end)
 				, m_options(0) {}
-			filter_iterator(const filter_iterator &other)
-				: m_table(other.m_table)
-				, m_cur(other.m_cur)
-				, m_found_ad(other.m_found_ad)
-				, m_requirements(other.m_requirements)
-				, m_timeslice_ms(other.m_timeslice_ms)
-				, m_done(other.m_done)
-				, m_options(other.m_options) {}
 
 			~filter_iterator() {}
 			AD operator *() const {
@@ -143,8 +135,8 @@ public:
 
 	void BeginTransaction();
 	bool AbortTransaction();
-	void CommitTransaction();
-	void CommitNondurableTransaction();
+	void CommitTransaction(const char * comment = NULL);
+	void CommitNondurableTransaction(const char * comment = NULL);
 	bool InTransaction() { return active_transaction != NULL; }
 	int SetTransactionTriggers(int mask);
 	int GetTransactionTriggers();
@@ -240,7 +232,7 @@ private:
 	void LogState(FILE* fp);
 	FILE* log_fp;
 
-	char const *logFilename() { return log_filename_buf.Value(); }
+	char const *logFilename() { return log_filename_buf.c_str(); }
 	MyString log_filename_buf;
 	Transaction *active_transaction;
 	int max_historical_logs;
@@ -257,8 +249,8 @@ public:
 	LogHistoricalSequenceNumber(unsigned long historical_sequence_number, time_t timestamp);
 	int Play(void *data_structure);
 
-	unsigned long get_historical_sequence_number() {return historical_sequence_number;}
-	time_t get_timestamp() {return timestamp;}
+	unsigned long get_historical_sequence_number() const {return historical_sequence_number;}
+	time_t get_timestamp() const {return timestamp;}
 
 private:
 	virtual int WriteBody(FILE *fp);
@@ -416,15 +408,25 @@ private:
 
 class LogEndTransaction : public LogRecord {
 public:
-	LogEndTransaction() { op_type = CondorLogOp_EndTransaction; }
-	virtual ~LogEndTransaction(){};
+	LogEndTransaction() : comment(NULL) { op_type = CondorLogOp_EndTransaction; }
+	virtual ~LogEndTransaction() { free(comment); comment = NULL; }
 
 	int Play(void *data_structure); // data_structure should be of type LoggableClassAdTable *
+	const char * get_comment() { return comment; }
+	void set_comment(const char * cmt) {
+		// delete the old comment and set the new one
+		// never set an empty comment, that would lead to a parse error on read-back
+		if (comment) { free(comment); }
+		if (cmt && cmt[0]) {
+			comment = strdup(cmt);
+		}
+	}
 private:
-	virtual int WriteBody(FILE* /*fp*/) {return 0;}
+	virtual int WriteBody(FILE* fp);
 	virtual int ReadBody(FILE* fp);
 
 	virtual char const *get_key() {return NULL;}
+	char * comment;
 };
 
 // These are non-templated helper functions that do most of the work of the classad log
@@ -519,9 +521,9 @@ ClassAdLog<K,AD>::ClassAdLog(const char *filename,int max_historical_logs_arg,co
 		is_clean, requires_successful_cleaning, errmsg);
 
 	if ( ! log_fp) {
-		EXCEPT("%s", errmsg.Value());
+		EXCEPT("%s", errmsg.c_str());
 	} else if ( ! errmsg.empty()) {
-		dprintf(D_ALWAYS, "ClassAdLog %s has the following issues: %s\n", filename, errmsg.Value());
+		dprintf(D_ALWAYS, "ClassAdLog %s has the following issues: %s\n", filename, errmsg.c_str());
 	}
 	if( !is_clean || requires_successful_cleaning ) {
 		if (open_read_only && requires_successful_cleaning) {
@@ -643,10 +645,10 @@ ClassAdLog<K,AD>::TruncLog()
 		errmsg);
 	if ( ! log_fp) {
 		// if after rotation, the log is no longer open, the the failure is fatal, and we must except
-		EXCEPT("%s", errmsg.Value());
+		EXCEPT("%s", errmsg.c_str());
 	}
 	if ( ! errmsg.empty()) {
-		dprintf(D_ALWAYS, "%s", errmsg.Value());
+		dprintf(D_ALWAYS, "%s", errmsg.c_str());
 	}
 
 	return rotated;
@@ -663,7 +665,7 @@ ClassAdLog<K,AD>::LogState(FILE *fp)
 		la, this->GetTableEntryMaker(),
 		errmsg);
 	if (! success) {
-		EXCEPT("%s", errmsg.Value());
+		EXCEPT("%s", errmsg.c_str());
 	}
 }
 
@@ -709,13 +711,14 @@ ClassAdLog<K,AD>::AbortTransaction()
 
 template <typename K, typename AD>
 void
-ClassAdLog<K,AD>::CommitTransaction()
+ClassAdLog<K,AD>::CommitTransaction(const char * comment /*=NULL*/)
 {
 	// Sometimes we do a CommitTransaction() when we don't know if there was
 	// an active transaction.  This is allowed.
 	if (!active_transaction) return;
 	if (!active_transaction->EmptyTransaction()) {
 		LogEndTransaction *log = new LogEndTransaction;
+		log->set_comment(comment);
 		active_transaction->AppendLog(log);
 		bool nondurable = m_nondurable_level > 0;
 		ClassAdLogTable<K,AD> la(table);
@@ -727,10 +730,10 @@ ClassAdLog<K,AD>::CommitTransaction()
 
 template <typename K, typename AD>
 void
-ClassAdLog<K,AD>::CommitNondurableTransaction()
+ClassAdLog<K,AD>::CommitNondurableTransaction(const char * comment /*=NULL*/)
 {
 	int old_level = IncNondurableCommitLevel();
-	CommitTransaction();
+	CommitTransaction(comment);
 	DecNondurableCommitLevel( old_level );
 }
 

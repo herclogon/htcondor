@@ -24,7 +24,7 @@
 #include "condor_attributes.h"
 #include "internet.h"
 
-KeyCacheEntry::KeyCacheEntry( char const *id_param, const condor_sockaddr * addr_param, KeyInfo* key_param, ClassAd * policy_param, int expiration_param, int lease_interval ) {
+KeyCacheEntry::KeyCacheEntry( char const *id_param, const condor_sockaddr * addr_param, const KeyInfo* key_param, const ClassAd * policy_param, int expiration_param, int lease_interval ) {
 	if (id_param) {
 		_id = strdup(id_param);
 	} else {
@@ -38,9 +38,45 @@ KeyCacheEntry::KeyCacheEntry( char const *id_param, const condor_sockaddr * addr
 	}
 
 	if (key_param) {
-		_key = new KeyInfo(*key_param);
+		_keys.push_back(new KeyInfo(*key_param));
+		_preferred_protocol = key_param->getProtocol();
 	} else {
-		_key = NULL;
+		_preferred_protocol = CONDOR_NO_PROTOCOL;
+	}
+
+	if (policy_param) {
+		_policy = new ClassAd(*policy_param);
+	} else {
+		_policy = NULL;
+	}
+
+	_expiration = expiration_param;
+	_lease_interval = lease_interval;
+	_lease_expiration = 0;
+	_lingering = false;
+	renewLease();
+}
+
+// NOTE: In this constructor, we assume ownership of the KeyInfo objects
+//   in the vector. In the single-KeyInfo constructor, we copy it.
+KeyCacheEntry::KeyCacheEntry( char const *id_param, const condor_sockaddr * addr_param, std::vector<KeyInfo*> key_param, const ClassAd * policy_param, int expiration_param, int lease_interval ) {
+	if (id_param) {
+		_id = strdup(id_param);
+	} else {
+		_id = NULL;
+	}
+
+	if (addr_param) {
+		_addr = new condor_sockaddr(*addr_param);
+	} else {
+		_addr = NULL;
+	}
+
+	_keys = key_param;
+	if (_keys.empty()) {
+		_preferred_protocol = CONDOR_NO_PROTOCOL;
+	} else {
+		_preferred_protocol = _keys[0]->getProtocol();
 	}
 
 	if (policy_param) {
@@ -82,14 +118,23 @@ const condor_sockaddr*  KeyCacheEntry::addr() {
 }
 
 KeyInfo* KeyCacheEntry::key() {
-	return _key;
+	return key(_preferred_protocol);
+}
+
+KeyInfo* KeyCacheEntry::key(Protocol protocol) {
+	for ( auto key: _keys ) {
+		if ( key->getProtocol() == protocol ) {
+			return key;
+		}
+	}
+	return NULL;
 }
 
 ClassAd* KeyCacheEntry::policy() {
 	return _policy;
 }
 
-int KeyCacheEntry::expiration() {
+int KeyCacheEntry::expiration() const {
 		// Return the sooner of the two expiration timestamps.
 		// A 0 timestamp indicates no expiration.
 	if( _expiration ) {
@@ -103,7 +148,7 @@ int KeyCacheEntry::expiration() {
 	return _lease_expiration;
 }
 
-char const *KeyCacheEntry::expirationType() {
+char const *KeyCacheEntry::expirationType() const {
 	if( _lease_expiration && (_lease_expiration < _expiration || !_expiration) ) {
 		return "lease";
 	}
@@ -115,6 +160,17 @@ char const *KeyCacheEntry::expirationType() {
 
 void KeyCacheEntry::setExpiration(int new_expiration) {
 	_expiration = new_expiration;
+}
+
+bool KeyCacheEntry::setPreferredProtocol(Protocol preferred)
+{
+	for (auto key : _keys) {
+		if (key->getProtocol() == preferred) {
+			_preferred_protocol = preferred;
+			return true;
+		}
+	}
+	return false;
 }
 
 void KeyCacheEntry::renewLease() {
@@ -136,10 +192,8 @@ void KeyCacheEntry::copy_storage(const KeyCacheEntry &copy) {
     	_addr = NULL;
 	}
 
-	if (copy._key) {
-		_key = new KeyInfo(*(copy._key));
-	} else {
-		_key = NULL;
+	for (auto key : copy._keys) {
+		_keys.push_back(new KeyInfo(*key));
 	}
 
 	if (copy._policy) {
@@ -152,6 +206,7 @@ void KeyCacheEntry::copy_storage(const KeyCacheEntry &copy) {
 	_lease_interval = copy._lease_interval;
 	_lease_expiration = copy._lease_expiration;
 	_lingering = copy._lingering;
+	_preferred_protocol = copy._preferred_protocol;
 }
 
 
@@ -162,8 +217,8 @@ void KeyCacheEntry::delete_storage() {
 	if (_addr) {
 	  delete _addr;
 	}
-	if (_key) {
-	  delete _key;
+	for (auto key : _keys) {
+		delete key;
 	}
 	if (_policy) {
 	  delete _policy;
@@ -174,7 +229,7 @@ void KeyCacheEntry::delete_storage() {
 KeyCache::KeyCache() {
 	key_table = new HashTable<MyString, KeyCacheEntry*>(hashFunction);
 	m_index = new KeyCacheIndex(hashFunction);
-	dprintf ( D_SECURITY, "KEYCACHE: created: %p\n", key_table );
+	dprintf ( D_SECURITY|D_FULLDEBUG, "KEYCACHE: created: %p\n", key_table );
 }
 
 KeyCache::KeyCache(const KeyCache& k) {
@@ -199,7 +254,7 @@ const KeyCache& KeyCache::operator=(const KeyCache& k) {
 
 
 void KeyCache::copy_storage(const KeyCache &copy) {
-	dprintf ( D_SECURITY, "KEYCACHE: created: %p\n", key_table );
+	dprintf ( D_SECURITY|D_FULLDEBUG, "KEYCACHE: created: %p\n", key_table );
 
 	// manually iterate all entries from the hash.  they are
 	// pointers, and we need to copy that object.
@@ -219,17 +274,11 @@ void KeyCache::delete_storage()
 		key_table->startIterations();
 		while( key_table->iterate(key_entry) ) {
 			if( key_entry ) {
-				if( IsDebugVerbose(D_SECURITY) ) {
-					dprintf( D_SECURITY, "KEYCACHEENTRY: deleted: %p\n", 
-							 key_entry );
-				}
 				delete key_entry;
 			}
 		}
 		key_table->clear();
-		if( IsDebugVerbose(D_SECURITY) ) {
-			dprintf( D_SECURITY, "KEYCACHE: deleted: %p\n", key_table );
-		}
+		//dprintf( D_SECURITY|D_FULLDEBUG, "KEYCACHE: deleted: %p\n", key_table );
 	}
 	if( m_index ) {
 		MyString index;
@@ -278,13 +327,13 @@ bool KeyCache::insert(KeyCacheEntry &e) {
 void
 KeyCache::makeServerUniqueId(MyString const &parent_id,int server_pid,MyString *result) {
 	ASSERT( result );
-	if( parent_id.IsEmpty() || server_pid == 0 ) {
+	if( parent_id.empty() || server_pid == 0 ) {
 			// If our peer is not a daemon, parent_id will be empty
 			// and there is no point in indexing it, because we
 			// never query by PID alone.
 		return;
 	}
-	result->formatstr("%s.%d",parent_id.Value(),server_pid);
+	result->formatstr("%s.%d",parent_id.c_str(),server_pid);
 }
 
 bool KeyCache::lookup(const char *key_id, KeyCacheEntry *&e_ptr) {
@@ -310,9 +359,10 @@ KeyCache::addToIndex(KeyCacheEntry *key)
 {
 		// update our index
 	ClassAd *policy = key->policy();
-	MyString parent_id, server_unique_id;
+	std::string parent_id;
+	MyString server_unique_id;
 	int server_pid=0;
-	MyString server_addr, peer_addr;
+	std::string server_addr, peer_addr;
 
 	policy->LookupString(ATTR_SEC_SERVER_COMMAND_SOCK, server_addr);
 	policy->LookupString(ATTR_SEC_PARENT_UNIQUE_ID, parent_id);
@@ -331,9 +381,10 @@ void
 KeyCache::removeFromIndex(KeyCacheEntry *key)
 {
 		//remove references to this key from the index
-	MyString parent_id, server_unique_id;
+	std::string parent_id;
+	MyString server_unique_id;
 	int server_pid=0;
-	MyString server_addr, peer_addr;
+	std::string server_addr, peer_addr;
 	ClassAd *policy = key->policy();
 	ASSERT( policy );
 
@@ -353,7 +404,7 @@ KeyCache::removeFromIndex(KeyCacheEntry *key)
 void
 KeyCache::addToIndex(KeyCacheIndex *hash,MyString const &index,KeyCacheEntry *key)
 {
-	if( index.IsEmpty() ) {
+	if( index.empty() ) {
 		return;
 	}
 	ASSERT( key );
@@ -412,11 +463,11 @@ void KeyCache::expire(KeyCacheEntry *e) {
 	time_t key_exp = e->expiration();
 	char const *expiration_type = e->expirationType();
 
-	dprintf (D_SECURITY, "KEYCACHE: Session %s %s expired at %s", e->id(), expiration_type, ctime(&key_exp) );
+	dprintf (D_SECURITY|D_FULLDEBUG, "KEYCACHE: Session %s %s expired at %s", e->id(), expiration_type, ctime(&key_exp) );
 
 	// remove its reference from the hash table
 	remove(key_id);       // This should do it
-	dprintf (D_SECURITY, "KEYCACHE: Removed %s from key cache.\n", key_id);
+	dprintf (D_SECURITY|D_FULLDEBUG, "KEYCACHE: Removed %s from key cache.\n", key_id);
 
 	free( key_id );
 }
@@ -434,7 +485,7 @@ StringList * KeyCache::getExpiredKeys() {
 	while (key_table->iterate(id, key_entry)) {
 		// check the freshness date on that key
 		if (key_entry->expiration() && key_entry->expiration() <= cutoff_time) {
-            list->append(id.Value());
+            list->append(id.c_str());
 			//expire(key_entry);
 		}
 	}
@@ -458,7 +509,7 @@ KeyCache::getKeysForPeerAddress(char const *addr)
 
 	keylist->Rewind();
 	while( keylist->Next(key) ) {
-		MyString server_addr,peer_addr;
+		std::string server_addr,peer_addr;
 		ClassAd *policy = key->policy();
 
 		policy->LookupString(ATTR_SEC_SERVER_COMMAND_SOCK, server_addr);
@@ -491,7 +542,8 @@ KeyCache::getKeysForProcess(char const *parent_unique_id,int pid)
 
 	keylist->Rewind();
 	while( keylist->Next(key) ) {
-		MyString this_parent_id,this_server_unique_id;
+		std::string this_parent_id;
+		MyString this_server_unique_id;
 		int this_server_pid=0;
 		ClassAd *policy = key->policy();
 

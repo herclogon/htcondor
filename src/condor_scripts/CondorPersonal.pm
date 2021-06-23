@@ -220,6 +220,7 @@ my $USESHARERPORT = 0;
 my $RunningTimeStamp = 0;
 
 my $topleveldir = getcwd();
+   $topleveldir =~ s/condor_tests$/test-runs/;
 my $home = $topleveldir;
 my $localdir;
 my $condorlocaldir;
@@ -359,32 +360,46 @@ sub StartCondorWithParams
 	$mpid = "pdir$mpid";
 	my $config_and_port = "";
 	my $winpath = "";
+	my $now = time();
+
+	if(exists $personal_condor_params{"runs_dir"}) {
+		$topleveldir = $personal_condor_params{"runs_dir"};
+		debug( "USING $topleveldir as topleveldir for test runs\n",$debuglevel);
+	}
 
 	if(exists $personal_condor_params{"test_glue"}) {
-		system("mkdir -p $topleveldir/condor_tests/$testname.saveme/$mpid/$mpid$version");
-    	$topleveldir = "$topleveldir/condor_tests/$testname.saveme/$mpid/$mpid$version";
+		system("mkdir -p $topleveldir/condor_tests/$testname.saveme/$mpid$version");
+		$topleveldir = "$topleveldir/condor_tests/$testname.saveme/$mpid$version";
+		#system("mkdir -p $topleveldir/condor_tests/$testname.saveme/$mpid/$mpid$version");
+		#$topleveldir = "$topleveldir/condor_tests/$testname.saveme/$mpid/$mpid$version";
 	} else {
 		if(is_windows() && is_windows_native_perl()) {
-			CreateDir("-p $topleveldir\\$testname.saveme\\$mpid\\$mpid$version");
-    		$topleveldir = "$topleveldir\\$testname.saveme\\$mpid\\$mpid$version";
+			CreateDir("-p $topleveldir\\$testname.saveme\\$mpid$version");
+			$topleveldir = "$topleveldir\\$testname.saveme\\$mpid$version";
+			#CreateDir("-p $topleveldir\\$testname.saveme\\$mpid\\$mpid$version");
+			#$topleveldir = "$topleveldir\\$testname.saveme\\$mpid\\$mpid$version";
 		} elsif(is_windows() && is_cygwin_perl()) {
-			CreateDir("-p $topleveldir/$testname.saveme/$mpid/$mpid$version");
-    		my $tmp1 = "$topleveldir/$testname.saveme/$mpid/$mpid$version";
-    		$topleveldir = `cygpath -m $tmp1`;
+			CreateDir("-p $topleveldir/$testname.saveme/$mpid$version");
+			my $tmp1 = "$topleveldir/$testname.saveme/$mpid$version";
+			#CreateDir("-p $topleveldir/$testname.saveme/$mpid/$mpid$version");
+			#my $tmp1 = "$topleveldir/$testname.saveme/$mpid/$mpid$version";
+			$topleveldir = `cygpath -m $tmp1`;
 			CondorUtils::fullchomp($topleveldir);
 		} else {
-			CreateDir("-p $topleveldir/$testname.saveme/$mpid/$mpid$version");
-    		$topleveldir = "$topleveldir/$testname.saveme/$mpid/$mpid$version";
+			CreateDir("-p $topleveldir/$testname.saveme/$mpid$version");
+			$topleveldir = "$topleveldir/$testname.saveme/$mpid$version";
+			#CreateDir("-p $topleveldir/$testname.saveme/$mpid/$mpid$version");
+			#$topleveldir = "$topleveldir/$testname.saveme/$mpid/$mpid$version";
 		}
 	}
 
-	$procdaddress = $mpid . $version;
+	$procdaddress = $mpid . $now . $version;
 
 
 	if(exists $personal_condor_params{"personaldir"}) {
 		$topleveldir = $personal_condor_params{"personaldir"};
 		debug( "SETTING $topleveldir as topleveldir\n",$debuglevel);
-		system("mkdir -p $topleveldir");
+		CreateDir("-p $topleveldir");
 	}
 
 	# if we are wrapping tests, publish log location
@@ -1221,6 +1236,7 @@ debug( "HMMMMMMMMMMM personal local is $personal_local , mytoppath is $mytoppath
 				print NEW "CONDOR_JOB_POLL_INTERVAL = 5\n";
 				print NEW "PERIODIC_EXPR_TIMESLICE = .99\n";
 				print NEW "JOB_START_DELAY = 0\n";
+				print NEW "DAGMAN_USER_LOG_SCAN_INTERVAL = 1\n";
 				print NEW "LOCK = \$(LOG)\n";
 				if($iswindows == 1) {
 				#print NEW "PROCD_LOG = \$(LOG)/ProcLog\n";
@@ -1434,7 +1450,6 @@ sub StartPersonalCondor
 				print "Failed system call starting master\n";
 			}
 		}
-		sleep(2);
 	} else {
 		debug_flush();
 		die "Bad state for a new personal condor configuration! running :-(\n";
@@ -1442,7 +1457,7 @@ sub StartPersonalCondor
 
 	# is test opting into new condor personal status yet?
 	my $res = 1;
-	sleep(5);
+	sleep(1);
 	if(exists $control{"no_wait"}) {
 		#print "use no methods here to be sure daemons are up.\n";
 	} else {

@@ -24,6 +24,20 @@ use Check::SimpleJob;
 
 $testname = "job_schedd_restart-check_reconnect";
 
+
+#testreq: personal
+my $config = <<CONDOR_TESTREQ_CONFIG;
+    DAEMON_LIST = MASTER,SCHEDD,COLLECTOR,NEGOTIATOR,STARTD
+    WANT_SUSPEND = FALSE
+    NEGOTIATION_INTERVAL = 5
+    ALL_DEBUG = D_FULLDEBUG
+    NUM_CPUS = 6
+CONDOR_TESTREQ_CONFIG
+#endtestreq
+
+TLOG "$testname test started\n";
+
+
 $beforequeue = "job_schedd_restart-holdjobs.before";
 $afterqueue = "job_schedd_restart-holdjobs.after";
 
@@ -136,31 +150,10 @@ my $on_evictedwithoutcheckpoint = sub {
 };
 
 
-my $firstappend_condor_config = '
-    DAEMON_LIST = MASTER,SCHEDD,COLLECTOR,NEGOTIATOR,STARTD
-    WANT_SUSPEND = FALSE
-    NEGOTIATION_INTERVAL = 5
-    ALL_DEBUG = D_FULLDEBUG
-    NUM_CPUS = 6
-';
-
-my $configfile = CondorTest::CreateLocalConfig($firstappend_condor_config,"scheddrestartrunningjobs");
-
-# First order up the config but do not start it. If the condor_config_val fails
-# there is no reason to go on
-
-CondorTest::StartCondorWithParams(
-    condor_name => "scheddrestartrunningjobs",
-    fresh_local => "TRUE",
-    condorlocalsrc => "$configfile",
-);
-
-
-
 $result = SimpleJob::RunCheck(
     append_submit_commands => $appended_submit_info,
     queue_sz => 5,
-    duration => 0,
+    duration => 3600,
 	timeout => 480,
     on_execute => $executed,
     on_disconnected => $disconnected,

@@ -124,16 +124,16 @@ param_boinc( const char* attr_name, const char* alt_name )
 	if( ! attr_name ) {
 		EXCEPT( "param_boinc() called with NULL attr_name" );
 	}
-	MyString param_name;
-	param_name.formatstr( "BOINC_%s", attr_name );
-	char* tmp = param( param_name.Value() );
+	std::string param_name;
+	formatstr( param_name, "BOINC_%s", attr_name );
+	char* tmp = param( param_name.c_str() );
 	if( tmp ) {
 		free( tmp );
 		return true;
 	}
 	if( alt_name ) {
-		param_name.formatstr( "BOINC_%s", alt_name );
-		tmp = param( param_name.Value() );
+		formatstr( param_name, "BOINC_%s", alt_name );
+		tmp = param( param_name.c_str() );
 		if( tmp ) {
 			free( tmp );
 			return true;
@@ -316,11 +316,10 @@ BOINC_BackfillMgr::spawnClient( Resource *rip )
 	if( ! m_boinc_starter ) {
 		Starter* tmp_starter;
 		ClassAd fake_ad;
-		MyString fake_req;
+		std::string fake_req;
 		bool no_starter = false;
-		fake_req.formatstr( "%s = TARGET.%s", ATTR_REQUIREMENTS,
-						  ATTR_HAS_JIC_LOCAL_CONFIG );
-		fake_ad.Insert( fake_req.Value() );
+		formatstr( fake_req, "TARGET.%s", ATTR_HAS_JIC_LOCAL_CONFIG );
+		fake_ad.AssignExpr( ATTR_REQUIREMENTS, fake_req.c_str() );
 		tmp_starter = resmgr->starter_mgr.newStarter( &fake_ad, NULL, no_starter );
 		if( ! tmp_starter ) {
 			dprintf( D_ALWAYS, "ERROR: Can't find a starter with %s\n",
@@ -365,9 +364,9 @@ BOINC_BackfillMgr::killClient( void )
 int
 BOINC_BackfillMgr::reaper( int pid, int status )
 {
-	MyString status_str;
+	std::string status_str;
 	statusString( status, status_str );
-	dprintf( D_ALWAYS, "BOINC client (pid %d) %s\n", pid, status_str.Value() );
+	dprintf( D_ALWAYS, "BOINC client (pid %d) %s\n", pid, status_str.c_str() );
 	if( ! m_boinc_starter ) {
 		EXCEPT( "Impossible: BOINC_BackfillMgr::reaper() pid [%d] "
 				"called while m_boinc_starter is NULL!", pid );

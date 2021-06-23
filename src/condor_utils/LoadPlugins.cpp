@@ -61,7 +61,7 @@ LoadPlugins()
 	const char *error;
 	StringList plugins;
 	char *plugin_files;
-	MyString plugin_dir;
+	std::string plugin_dir;
 	const char *plugin_file;
 
 		// Only initialize once /*, except for when we are force'd.*/
@@ -89,15 +89,15 @@ LoadPlugins()
 		} else {
 			plugin_dir = tmp;
 			free(tmp); tmp = NULL;
-			Directory directory(plugin_dir.Value());
+			Directory directory(plugin_dir.c_str());
 			while (NULL != (plugin_file = directory.Next())) {
 					// NOTE: This should eventually support .dll for
-					// Windows, .dylib for Darwin, .sl for HPUX, etc
+					// Windows, .dylib for Darwin, etc
 				if (0 == strcmp(".so", plugin_file + strlen(plugin_file) - 3)) {
 					dprintf(D_FULLDEBUG,
 							"PLUGIN_DIR, found: %s\n",
 							plugin_file);
-					plugins.append((plugin_dir + DIR_DELIM_STRING + plugin_file).Value());
+					plugins.append((plugin_dir + DIR_DELIM_STRING + plugin_file).c_str());
 				} else {
 					dprintf(D_FULLDEBUG,
 							"PLUGIN_DIR, ignoring: %s\n",

@@ -26,6 +26,7 @@
 #include "ipv6_hostname.h"
 #include "consumption_policy.h"
 #include "credmon_interface.h"
+#include "ToE.h"
 
 #include <map>
 using std::map;
@@ -33,12 +34,10 @@ using std::map;
 /* XXX fix me */
 #include "../condor_sysapi/sysapi.h"
 
-extern "C" int tcp_accept_timeout( int, struct sockaddr*, int*, int );
-
 static int deactivate_claim(Stream *stream, Resource *rip, bool graceful);
 
 int
-command_handler( Service*, int cmd, Stream* stream )
+command_handler(int cmd, Stream* stream )
 {
 	int rval = FALSE;
 	Resource* rip;
@@ -87,7 +86,7 @@ deactivate_claim(Stream *stream, Resource *rip, bool graceful)
 		return FALSE;
 	}
 
-	int rval;
+	int rval = 0;
 	bool claim_is_closing = rip->curClaimIsClosing();
 
 		// send response to shadow before killing starter to avoid a
@@ -107,11 +106,35 @@ deactivate_claim(Stream *stream, Resource *rip, bool graceful)
 		claim_is_closing = false;
 	}
 
-	if(graceful) {
-		rval = rip->deactivate_claim();
-	}
-	else {
-		rval = rip->deactivate_claim_forcibly();
+	if( rip->r_cur ) {
+		struct timeval when;
+		// This ClassAd gets delete()d by toe when toe goes out of scope,
+		// because Insert() transfers ownership.
+		classad::ClassAd * tag = new classad::ClassAd();
+		condor_gettimestamp( when );
+		tag->InsertAttr( "Who", stream->peer_description() );
+		if( graceful ) {
+			tag->InsertAttr( "HowCode", ToE::DeactivateClaim );
+			tag->InsertAttr( "How", ToE::strings[ToE::DeactivateClaim] );
+		} else {
+			tag->InsertAttr( "HowCode", ToE::DeactivateClaimForcibly );
+			tag->InsertAttr( "How", ToE::strings[ToE::DeactivateClaimForcibly] );
+		}
+		tag->InsertAttr( "When", (long long)when.tv_sec );
+
+		classad::ClassAd toe;
+		toe.Insert(ATTR_JOB_TOE, tag );
+
+		std::string jobAdFileName;
+		formatstr( jobAdFileName, "%s/dir_%d/.job.ad", rip->r_cur->executeDir(), rip->r_cur->starterPID() );
+		ToE::writeTag( & toe, jobAdFileName );
+
+		if(graceful) {
+			rval = rip->deactivate_claim();
+		}
+		else {
+			rval = rip->deactivate_claim_forcibly();
+		}
 	}
 
 	if( claim_is_closing && rip->r_cur ) {
@@ -126,7 +149,7 @@ deactivate_claim(Stream *stream, Resource *rip, bool graceful)
 }
 
 int
-command_activate_claim( Service*, int cmd, Stream* stream )
+command_activate_claim(int cmd, Stream* stream )
 {
 	char* id = NULL;
 	Resource* rip;
@@ -202,9 +225,9 @@ int swap_claim_and_activation(Resource * rip, ClassAd & opts, Stream* stream)
 	int rval = NOT_OK;
 	Resource* rip_dest = NULL;
 	std::string idd;
-	if (opts.EvalString("DestinationSlotName", rip->r_cur->ad(), idd)) {
+	if (EvalString("DestinationSlotName", &opts, rip->r_cur->ad(), idd)) {
 		rip_dest = resmgr->get_by_name(idd.c_str());
-	} else if (opts.EvalString("DestinationClaimId", rip->r_cur->ad(), idd)) {
+	} else if (EvalString("DestinationClaimId", &opts, rip->r_cur->ad(), idd)) {
 		rip_dest = resmgr->get_by_cur_id(idd.c_str());
 	}
 
@@ -228,8 +251,8 @@ int swap_claim_and_activation(Resource * rip, ClassAd & opts, Stream* stream)
 			dprintf(D_ALWAYS, "Claim swap from %s to %s succeeded, updating ads\n", rip->r_id_str, rip_dest->r_id_str);
 
 			// Update the resource classads
-			rip->r_cur->publish( rip->r_classad, A_PUBLIC );
-			rip_dest->r_cur->publish( rip_dest->r_classad, A_PUBLIC );
+			rip->r_cur->publish(rip->r_classad);
+			rip_dest->r_cur->publish(rip_dest->r_classad);
 			rval = OK;
 		}
 	}
@@ -241,7 +264,7 @@ int swap_claim_and_activation(Resource * rip, ClassAd & opts, Stream* stream)
 // handles commands that have a claim id, & classad
 //
 int
-command_with_opts_handler( Service*, int cmd, Stream* stream )
+command_with_opts_handler(int cmd, Stream* stream )
 {
 	int rval = FALSE;
 	ClassAd opts;
@@ -267,7 +290,7 @@ command_with_opts_handler( Service*, int cmd, Stream* stream )
 }
 
 int
-command_vacate_all( Service*, int cmd, Stream* ) 
+command_vacate_all(int cmd, Stream* ) 
 {
 	dprintf( D_ALWAYS, "command_vacate_all() called.\n" );
 	switch( cmd ) {
@@ -288,7 +311,7 @@ command_vacate_all( Service*, int cmd, Stream* )
 
 
 int
-command_pckpt_all( Service*, int, Stream* ) 
+command_pckpt_all(int, Stream* ) 
 {
 	dprintf( D_ALWAYS, "command_pckpt_all() called.\n" );
 	resmgr->walk( &Resource::void_periodic_checkpoint );
@@ -297,7 +320,7 @@ command_pckpt_all( Service*, int, Stream* )
 
 
 int
-command_x_event( Service*, int, Stream* s ) 
+command_x_event(int, Stream* s ) 
 {
 	// Simple attempt to avoid D_ALWAYS warnings from registering twice.
 	static Stream * lastStashed = NULL;
@@ -334,7 +357,7 @@ command_x_event( Service*, int, Stream* s )
 
 
 int
-command_give_state( Service*, int, Stream* stream ) 
+command_give_state(int, Stream* stream ) 
 {
 	int rval = TRUE;
 	dprintf( D_FULLDEBUG, "command_give_state() called.\n" );
@@ -348,7 +371,7 @@ command_give_state( Service*, int, Stream* stream )
 }
 
 int
-command_give_totals_classad( Service*, int, Stream* stream ) 
+command_give_totals_classad( int, Stream* stream ) 
 {
 	int rval = FALSE;
 	dprintf( D_FULLDEBUG, "command_give_totals_classad() called.\n" );
@@ -363,7 +386,7 @@ command_give_totals_classad( Service*, int, Stream* stream )
 
 
 int
-command_request_claim( Service*, int cmd, Stream* stream ) 
+command_request_claim(int cmd, Stream* stream ) 
 {
 	char* id = NULL;
 	Resource* rip;
@@ -432,7 +455,7 @@ command_request_claim( Service*, int cmd, Stream* stream )
 }
 
 int
-command_release_claim( Service*, int cmd, Stream* stream ) 
+command_release_claim(int cmd, Stream* stream ) 
 {
 	char* id = NULL;
 	Resource* rip;
@@ -516,35 +539,26 @@ command_release_claim( Service*, int cmd, Stream* stream )
 
 countres:
 
-	ClassAdList cal;
-	resmgr->makeAdList(&cal);
-        ClassAd *ad;
-	int ResCount = 0;
-	cal.Open();
-	while( (ad=cal.Next()) ) {
-                MyString remoteuser;
-                MyString name;
-                ad->LookupString("RemoteUser",remoteuser);
-                ad->LookupString("Name",name);
-		if(strcmp(curuser.c_str(), remoteuser.c_str()) == 0) {
-			ResCount++;
-		}
-	}
-#ifndef WIN32
-	if(!param_boolean("CREDD_OAUTH_MODE", false)) {
+	if (curuser.empty())
+		return TRUE;
+
+	// Does this user currently own other resources on this machine?
+	auto_free_ptr cred_dir_krb(param("SEC_CREDENTIAL_DIRECTORY_KRB"));
+	if (cred_dir_krb) {
+
+		int ResCount = resmgr->claims_for_this_user(curuser.c_str());
 		if (ResCount == 0) {
-			dprintf(D_FULLDEBUG, "CREDMON: user %s no longer running jobs, mark cred for sweeping.\n", curuser.c_str());
-			credmon_mark_creds_for_sweeping(curuser.c_str());
+			dprintf(D_FULLDEBUG, "user %s no longer has any claims, marking KRB cred for sweeping.\n", curuser.c_str());
+			credmon_mark_creds_for_sweeping(cred_dir_krb, curuser.c_str());
 		} else {
-			dprintf(D_FULLDEBUG, "CREDMON: user %s still running %i jobs\n", curuser.c_str(), ResCount);
+			dprintf(D_FULLDEBUG, "user %s still has %d claims\n", curuser.c_str(), ResCount);
 		}
 	}
-#endif //WIN32
 
 	return TRUE;
 }
 
-int command_suspend_claim( Service*, int cmd, Stream* stream )
+int command_suspend_claim(int cmd, Stream* stream )
 {
 	char* id = NULL;
 	Resource* rip;
@@ -567,6 +581,8 @@ int command_suspend_claim( Service*, int cmd, Stream* stream )
 		refuse( stream );
 		return FALSE;
 	}
+
+	free( id );
 	
 	State s = rip->state();
 	switch( s ) {
@@ -582,7 +598,7 @@ int command_suspend_claim( Service*, int cmd, Stream* stream )
 	return rval;
 }
 
-int command_continue_claim( Service*, int cmd, Stream* stream )
+int command_continue_claim(int cmd, Stream* stream )
 {
 	char* id = NULL;
 	Resource* rip;
@@ -615,15 +631,17 @@ int command_continue_claim( Service*, int cmd, Stream* stream )
 			break;
 		default:
 			rip->log_ignore( cmd, s, rip->activity() );
+			free(id);
 			return FALSE;
 	}		
 	
+	free(id);
 	return rval;
 }
 
 
 int
-command_name_handler( Service*, int cmd, Stream* stream ) 
+command_name_handler(int cmd, Stream* stream ) 
 {
 	char* name = NULL;
 	Resource* rip;
@@ -702,7 +720,7 @@ command_name_handler( Service*, int cmd, Stream* stream )
 
 
 int
-command_match_info( Service*, int cmd, Stream* stream ) 
+command_match_info(int cmd, Stream* stream ) 
 {
 	char* id = NULL;
 	Resource* rip;
@@ -784,7 +802,7 @@ void hack_test_claim_swap(StringList & args)
 
 
 int
-command_query_ads( Service*, int, Stream* stream) 
+command_query_ads(int, Stream* stream) 
 {
 	ClassAd queryAd;
 	ClassAd *ad;
@@ -800,42 +818,27 @@ command_query_ads( Service*, int, Stream* stream)
 		return FALSE;
 	}
 
-   MyString stats_config;
-   int      dc_publish_flags = daemonCore->dc_stats.PublishFlags;
-   queryAd.LookupString("STATISTICS_TO_PUBLISH",stats_config);
-   if ( ! stats_config.IsEmpty()) {
-#if 0 // HACK to test swapping claims without a schedd
-       dprintf(D_ALWAYS, "Got QUERY_STARTD_ADS with stats config: %s\n", stats_config.c_str());
-       if (starts_with_ignore_case(stats_config.c_str(), "swap:")) {
-		   StringList swap_args(stats_config.c_str()+5);
-		   hack_test_claim_swap(swap_args);
-       } else
-#endif
-      daemonCore->dc_stats.PublishFlags = 
-         generic_stats_ParseConfigString(stats_config.Value(), 
-                                         "DC", "DAEMONCORE", 
-                                         dc_publish_flags);
-   }
+		// Construct a list of all our ClassAds that match the query
+	resmgr->makeAdList( ads, queryAd );
 
-		// Construct a list of all our ClassAds:
-	resmgr->makeAdList( &ads, &queryAd );
-	
-    if ( ! stats_config.IsEmpty()) {
-       daemonCore->dc_stats.PublishFlags = dc_publish_flags;
-    }
+	classad::References proj;
+	std::string projection;
+	if (queryAd.LookupString(ATTR_PROJECTION, projection) && ! projection.empty()) {
+		StringTokenIterator list(projection);
+		const std::string * attr;
+		while ((attr = list.next_string())) { proj.insert(*attr); }
+	}
 
-		// Now, find the ClassAds that match.
+		// Now, return the ClassAds that match.
 	stream->encode();
 	ads.Open();
 	while( (ad = ads.Next()) ) {
-		if( IsAHalfMatch( &queryAd, ad ) ) {
-			if( !stream->code(more) || !putClassAd(stream, *ad) ) {
-				dprintf (D_ALWAYS, 
-						 "Error sending query result to client -- aborting\n");
-				return FALSE;
-			}
-			num_ads++;
-        }
+		if( !stream->code(more) || !putClassAd(stream, *ad, PUT_CLASSAD_NO_PRIVATE, proj.empty() ? NULL : &proj) ) {
+			dprintf (D_ALWAYS, 
+						"Error sending query result to client -- aborting\n");
+			return FALSE;
+		}
+		num_ads++;
 	}
 
 		// Finally, close up shop.  We have to send NO_MORE.
@@ -849,7 +852,7 @@ command_query_ads( Service*, int, Stream* stream)
 }
 
 int
-command_vm_register( Service*, int, Stream* s )
+command_vm_register(int, Stream* s )
 {
 	char *raddr = NULL;
 
@@ -889,7 +892,7 @@ command_vm_register( Service*, int, Stream* s )
 }
 
 int
-command_vm_universe( Service*, int cmd, Stream* stream )
+command_vm_universe( int cmd, Stream* stream )
 {
 	char *value = NULL; // Pid of Starter
 	int starter_pid = 0;
@@ -988,7 +991,7 @@ command_vm_universe( Service*, int cmd, Stream* stream )
 
 #if !defined(WIN32)
 int
-command_delegate_gsi_cred( Service*, int, Stream* stream )
+command_delegate_gsi_cred(int, Stream* stream )
 {
 	// The shadow is trying to delegate its user proxy, in case
 	// we plan to use glexec to spawn the starter (which we will
@@ -1058,7 +1061,7 @@ command_delegate_gsi_cred( Service*, int, Stream* stream )
 
 	// create a temporary file to hold the proxy and set it
 	// to mode 600
-	MyString proxy_file;
+	std::string proxy_file;
 	char* glexec_user_dir = param("GLEXEC_USER_DIR");
 	if (glexec_user_dir != NULL) {
 		proxy_file = glexec_user_dir;
@@ -1068,7 +1071,7 @@ command_delegate_gsi_cred( Service*, int, Stream* stream )
 		proxy_file = "/tmp";
 	}
 	proxy_file += "/startd-tmp-proxy-XXXXXX";
-	char* proxy_file_tmp = strdup(proxy_file.Value());
+	char* proxy_file_tmp = strdup(proxy_file.c_str());
 	ASSERT(proxy_file_tmp != NULL);
 	int fd = condor_mkstemp( proxy_file_tmp );
 	proxy_file = proxy_file_tmp;
@@ -1085,7 +1088,7 @@ command_delegate_gsi_cred( Service*, int, Stream* stream )
 
 	dprintf( D_FULLDEBUG,
 	         "writing temporary proxy to: %s\n",
-	         proxy_file.Value() );
+	         proxy_file.c_str() );
 
 	// sender decides whether to use delegation or simply copy
 	int use_delegation = 0;
@@ -1097,7 +1100,7 @@ command_delegate_gsi_cred( Service*, int, Stream* stream )
 	int rv;
 	filesize_t dont_care;
 	if( use_delegation ) {
-		rv = sock->get_x509_delegation( proxy_file.Value(), false, NULL );
+		rv = sock->get_x509_delegation( proxy_file.c_str(), false, NULL );
 	}
 	else {
 		dprintf( D_FULLDEBUG,
@@ -1109,7 +1112,7 @@ command_delegate_gsi_cred( Service*, int, Stream* stream )
 			reply( sock, CONDOR_ERROR );
 			return FALSE;
 		}
-		rv = sock->get_file( &dont_care, proxy_file.Value() );
+		rv = sock->get_file( &dont_care, proxy_file.c_str() );
 	}
 	if( rv == -1 ) {
 		dprintf( D_ALWAYS, "Error: couldn't get proxy\n");
@@ -1142,7 +1145,7 @@ command_delegate_gsi_cred( Service*, int, Stream* stream )
 	// we have the proxy - now stash its location in the Claim's
 	// Client object so we can get at it when we launch the
 	// starter
-	claim->client()->setProxyFile( proxy_file.Value() );
+	claim->client()->setProxyFile( proxy_file.c_str() );
 
 	return TRUE;
 }
@@ -1151,13 +1154,6 @@ command_delegate_gsi_cred( Service*, int, Stream* stream )
 //////////////////////////////////////////////////////////////////////
 // Protocol helper functions
 //////////////////////////////////////////////////////////////////////
-
-#define ABORT \
-delete req_classad;						\
-if (client_addr) free(client_addr);		\
-return_code = abort_claim(rip);		\
-if( new_dynamic_slot ) rip->change_state( delete_state );	\
-return return_code;
 
 int
 abort_claim( Resource* rip )
@@ -1212,6 +1208,12 @@ abort_claim( Resource* rip )
 	return FALSE;
 }
 
+#define ABORT \
+delete req_classad;						\
+return_code = abort_claim(rip);		\
+if( new_dynamic_slot ) rip->change_state( delete_state );	\
+return return_code;
+
 int
 request_claim( Resource* rip, Claim *claim, char* id, Stream* stream )
 {
@@ -1221,9 +1223,10 @@ request_claim( Resource* rip, Claim *claim, char* id, Stream* stream )
 	int cmd;
 	float rank = 0;
 	float oldrank = 0;
-	char *client_addr = NULL;
+	std::string client_addr;
 	int interval;
 	ClaimIdParser idp(id);
+	bool secure_claim_id = false;
 
 		// Used in ABORT macro, yuck
 	bool new_dynamic_slot = false;
@@ -1257,7 +1260,7 @@ request_claim( Resource* rip, Claim *claim, char* id, Stream* stream )
 		// want to make an attempt to be backwards-compatibile.
 	if ( stream->code(client_addr) ) {
 		// We got the schedd addr, we must be talking to a post 6.1.11 schedd
-		rip->dprintf( D_FULLDEBUG, "Schedd addr = %s\n", client_addr );
+		rip->dprintf( D_FULLDEBUG, "Schedd addr = %s\n", client_addr.c_str() );
 		if( !stream->code(interval) ) {
 			rip->dprintf( D_ALWAYS, "Can't receive alive interval\n" );
 			ABORT;
@@ -1266,9 +1269,7 @@ request_claim( Resource* rip, Claim *claim, char* id, Stream* stream )
 		}
 			// Now, store them into r_cur or r_pre, as appropiate
 		claim->setaliveint( interval );
-		claim->client()->setaddr( client_addr );
-		free( client_addr );
-		client_addr = NULL;
+		claim->client()->setaddr( client_addr.c_str() );
 			// The schedd is asking us to preempt these claims to make
 			// the pslot it is really claiming bigger.  New in 8.1.6
 		int num_preempting = 0;
@@ -1307,14 +1308,24 @@ request_claim( Resource* rip, Claim *claim, char* id, Stream* stream )
 				bool is_busy = dslots[i]->activity() != idle_act;
 				dslots[i]->kill_claim();
 				if (is_busy) {
+					Resource * pslot = dslots[i]->get_parent();
 					// if they were idle, kill_claim delete'd them
-					*(dslots[i]->get_parent()->r_attr) += *(dslots[i]->r_attr);
+					//PRAGMA_REMIND("we have to unbind here, because we decrement r_attr, remember the GPUS we unbind so we can be sure to re-bind *those* for the new claim.")
+					dslots[i]->r_attr->unbind_DevIds(dslots[i]->r_id, dslots[i]->r_sub_id);
+					*(pslot->r_attr) += *(dslots[i]->r_attr);
+					// empty out the resource bag, so that we if the destruction decrements the 
+					// parent resource bag again, it does nothing.
 					*(dslots[i]->r_attr) -= *(dslots[i]->r_attr);
+					if (pslot != parent) {
+						// we *intend* to have all of these d-slots share a parent, but in case they don't
+						// we need to make sure that the parent refreshes it's classad
+						pslot->refresh_classad_resources();
+					}
 				}
 				// TODO Do we need to call refresh_classad() on either slot?
 			}
 			if (parent) {
-				parent->refresh_classad( A_PUBLIC );
+				parent->refresh_classad_resources();
 			}
 			free( dslots );
 		}
@@ -1326,6 +1337,10 @@ request_claim( Resource* rip, Claim *claim, char* id, Stream* stream )
 		rip->dprintf( D_ALWAYS, "Can't receive eom from schedd\n" );
 		ABORT;
 	}
+
+		// If we include a claim id in our response, should it be
+		// encrypted? In the old protocol, it was sent in the clear.
+	req_classad->LookupBool("_condor_SECURE_CLAIM_ID", secure_claim_id);
 
 		// At this point, the schedd has registered this socket (stream)
 		// and likely has gone off to service other requests.  Thus, 
@@ -1536,7 +1551,7 @@ request_claim( Resource* rip, Claim *claim, char* id, Stream* stream )
 		// function after the preemption has completed when the startd
 		// is finally ready to reply to the and finish the claiming
 		// process.
-	accept_request_claim( rip, leftover_claim, and_pair );
+	accept_request_claim( rip, secure_claim_id, leftover_claim, and_pair );
 
 		// We always need to return KEEP_STREAM so that daemon core
 		// doesn't try to delete the stream we've already deleted.
@@ -1575,7 +1590,7 @@ abort_accept_claim( Resource* rip, Stream* stream )
 
 
 bool
-accept_request_claim( Resource* rip, Claim* leftover_claim, bool and_pair )
+accept_request_claim( Resource* rip, bool secure_claim_id, Claim* leftover_claim, bool and_pair )
 {
 	int interval = -1;
 	char *client_addr = NULL;
@@ -1598,18 +1613,22 @@ accept_request_claim( Resource* rip, Claim* leftover_claim, bool and_pair )
 		Reply of 4 (REQUEST_CLAIM_PAIR) means claim accepted by a slot
 		  that is paired, and the partner slot ad and claim id will be
 		  sent next.
+		Reply of 5 (REQUEST_CLAIM_LEFTOVERS_2) is the same as 3, but
+		  the claim id is encrypted.
+		Reply of 6 (REQUEST_CLAIM_PAIR_2) is the same as 4, but
+		  the claim id is encrypted.
 	*/
 	int cmd = OK;
 	if ( leftover_claim && leftover_claim->id() && 
 		 leftover_claim->rip()->r_classad ) 
 	{
-		// schedd wants leftovers, send reply code 3
-		cmd = REQUEST_CLAIM_LEFTOVERS;
+		// schedd wants leftovers, send reply code 3 (or 5)
+		cmd = secure_claim_id ? REQUEST_CLAIM_LEFTOVERS_2 : REQUEST_CLAIM_LEFTOVERS;
 	}
 	else if (rip->r_pair_name) {
 		ripb = resmgr->get_by_name(rip->r_pair_name);
 		if (ripb && and_pair) {
-			cmd = REQUEST_CLAIM_PAIR;
+			cmd = secure_claim_id ? REQUEST_CLAIM_PAIR_2 : REQUEST_CLAIM_PAIR;
 		}
 	}
 
@@ -1621,17 +1640,25 @@ accept_request_claim( Resource* rip, Claim* leftover_claim, bool and_pair )
 		abort_accept_claim( rip, stream );
 		return false;
 	}
-	if ( cmd == REQUEST_CLAIM_LEFTOVERS )
+	if ( cmd == REQUEST_CLAIM_LEFTOVERS || cmd == REQUEST_CLAIM_LEFTOVERS_2 )
 	{
 		// schedd just claimed a dynamic slot, and it wants
 		// us to send back to the classad and the new claim id for
 		// leftovers in the parent partitionable slot.
 		dprintf(D_FULLDEBUG,"Will send partitionable slot leftovers to schedd\n");
 
-		leftover_claim->rip()->r_classad->Assign(ATTR_LAST_SLOT_NAME, rip->r_name);
+		ClassAd *pad = leftover_claim->rip()->r_classad;
+	#if 1
+		// publish and flatten the p-slot ad
+		ClassAd ad;
+		leftover_claim->rip()->publish_single_slot_ad(ad, 0, Resource::Purpose::for_req_claim);
+		pad = &ad;
+	#endif
+
+		pad->Assign(ATTR_LAST_SLOT_NAME, rip->r_name);
 		MyString claimId(leftover_claim->id());
-		if ( !stream->put(claimId) ||
-			 !putClassAd(stream, *leftover_claim->rip()->r_classad) )
+		if ( !(secure_claim_id ? stream->put_secret(claimId.c_str()) : stream->put(claimId)) ||
+			 !putClassAd(stream, *pad) )
 		{
 			rip->dprintf( D_ALWAYS, 
 				"Can't send partitionable slot leftovers to schedd.\n" );
@@ -1639,14 +1666,19 @@ accept_request_claim( Resource* rip, Claim* leftover_claim, bool and_pair )
 			return false;
 		}
 	}
-	else if (cmd == REQUEST_CLAIM_PAIR)
+	else if (cmd == REQUEST_CLAIM_PAIR || cmd == REQUEST_CLAIM_PAIR_2)
 	{
 		dprintf(D_FULLDEBUG,"Sending paired slot claim to schedd\n");
-		//PRAGMA_REMIND("remove these next two dprintfs later")
-		//dprintf(D_FULLDEBUG,"\tmain slot claim id is %s\n", rip->r_cur->id());
-		//dprintf(D_FULLDEBUG,"\tpaired slot claim id is %s\n", ripb->r_cur->id());
+		ClassAd * pad = ripb->r_classad;
+	#if 1
+		// publish and flatten the p-slot ad
+		ClassAd ad;
+		ripb->publish_single_slot_ad(ad, 0, Resource::Purpose::for_req_claim);
+		pad = &ad;
+	#endif
 		MyString claimId(ripb->r_cur->id());
-		if ( !stream->put(claimId) || ! putClassAd(stream, *ripb->r_classad)) {
+		if ( !(secure_claim_id ? stream->put_secret(claimId.c_str()) : stream->put(claimId)) ||
+		     ! putClassAd(stream, *pad)) {
 			rip->dprintf( D_ALWAYS,
 				"Can't send paired slot claim & ad to schedd.\n" );
 			abort_accept_claim( rip, stream );
@@ -1698,21 +1730,21 @@ accept_request_claim( Resource* rip, Claim* leftover_claim, bool and_pair )
 
 		// Figure out the hostname of our client.
 	ASSERT(sock->peer_addr().is_valid());
-	MyString hostname = get_full_hostname(sock->peer_addr());
-	if(hostname.IsEmpty()) {
-		MyString ip = sock->peer_addr().to_ip_string();
+	std::string hostname = get_full_hostname(sock->peer_addr());
+	if(hostname.empty()) {
+		std::string ip = sock->peer_addr().to_ip_string();
 		rip->dprintf( D_FULLDEBUG,
-					  "Can't find hostname of client machine %s\n", ip.Value() );
-		if (ripb) { ripb->r_cur->client()->sethost(ip.Value()); }
-		rip->r_cur->client()->sethost(ip.Value());
+					  "Can't find hostname of client machine %s\n", ip.c_str() );
+		if (ripb) { ripb->r_cur->client()->sethost(ip.c_str()); }
+		rip->r_cur->client()->sethost(ip.c_str());
 	} else {
-		if (ripb) { ripb->r_cur->client()->sethost(hostname.Value()); }
-		rip->r_cur->client()->sethost( hostname.Value() );
+		if (ripb) { ripb->r_cur->client()->sethost(hostname.c_str()); }
+		rip->r_cur->client()->sethost( hostname.c_str() );
 	}
 
 		// Get the owner of this claim out of the request classad.
 	if( (rip->r_cur->ad())->
-			EvalString( ATTR_USER, rip->r_cur->ad(), RemoteOwner ) == 0 ) {
+			LookupString( ATTR_USER, RemoteOwner ) == 0 ) {
 		rip->dprintf( D_ALWAYS, 
 				 "Can't evaluate attribute %s in request ad.\n", 
 				 ATTR_USER );
@@ -1754,8 +1786,7 @@ accept_request_claim( Resource* rip, Claim* leftover_claim, bool and_pair )
 
 
 #define ABORT \
-if( req_classad ) 	 					\
-	delete( req_classad );				\
+delete( req_classad );				\
 free( shadow_addr );					\
 return FALSE
 
@@ -1763,19 +1794,11 @@ int
 activate_claim( Resource* rip, Stream* stream ) 
 {
 		// Formerly known as "startjob"
-	int mach_requirements = 1;
+	bool mach_requirements = true;
 	ClassAd	*req_classad = NULL, *mach_classad = rip->r_classad;
-	ReliSock rsock_1, rsock_2;
-#ifndef WIN32
-	int sock_1, sock_2;
-	int fd_1, fd_2;
-	struct sockaddr_storage frm;
-	int len = sizeof frm;	
-	StartdRec stRec;
-#endif
 	int starter = MAX_STARTERS;
 	Sock* sock = (Sock*)stream;
-	char* shadow_addr = strdup(sock->peer_addr().to_ip_string().Value());
+	char* shadow_addr = strdup(sock->peer_addr().to_ip_string().c_str());
 
 	if( rip->state() != claimed_state ) {
 		rip->dprintf( D_ALWAYS, "Not in claimed state, aborting.\n" );
@@ -1815,9 +1838,7 @@ activate_claim( Resource* rip, Stream* stream )
 
 		// Now, ask the ResMgr to recompute so we have totally
 		// up-to-date values for everything in our classad.
-		// Unfortunately, this happens to all the resources in an SMP
-		// at once, but that's the only way to compute anything... 
-	resmgr->compute( A_TIMEOUT | A_UPDATE );
+	resmgr->compute_dynamic(true, rip);
 
 		// Possibly print out the ads we just got to the logs.
 	if( IsDebugLevel( D_JOB ) ) {
@@ -1842,9 +1863,9 @@ activate_claim( Resource* rip, Stream* stream )
     }
 
 	rip->r_reqexp->restore();
-	if( mach_classad->EvalBool( ATTR_REQUIREMENTS, 
+	if( EvalBool( ATTR_REQUIREMENTS, mach_classad,
 								req_classad, mach_requirements ) == 0 ) {
-		mach_requirements = 0;
+		mach_requirements = false;
 	}
 	if (!(cp_sufficient && mach_requirements)) {
 		rip->dprintf( D_ALWAYS, "Machine Requirements check failed!\n" );
@@ -1918,100 +1939,9 @@ activate_claim( Resource* rip, Stream* stream )
 	} 
 #ifndef WIN32
 	else {
-		//
-		// This should be exclusively for the standard universe.
-		//
-		condor_sockaddr streamSA;
-		if(! streamSA.from_ip_string( stream->my_ip_str() )) {
-			EXCEPT( "Unable to extract socket address from stream.\n" );
-		}
-
-		// We don't officially support IPv6 in standard universe...
-		if( streamSA.is_ipv6() ) {
-			dprintf( D_ALWAYS, "WARNING -- request to run standard-universe job via IPv6.  There may be problems.\n" );
-		}
-
-		stRec.version_num = VERSION_FOR_FLOCK;
-
-		// The shadow expects to be able to connect to the given port
-		// numbers at the address (and protocol) is used to contact the
-		// startd in the first place.
-		rsock_1.bind( streamSA.get_protocol(), false, 0, false );
-		rsock_1.listen();
-		sock_1 = rsock_1.get_file_desc();
-		stRec.ports.port1 = rsock_1.get_port();
-
-		rsock_2.bind( streamSA.get_protocol(), false, 0, false );
-		rsock_2.listen();
-		sock_2 = rsock_2.get_file_desc();
-		stRec.ports.port2 = rsock_2.get_port();
-
-		stRec.server_name = strdup( get_local_fqdn().Value() );
-
-		// Send our local IP address, too.
-		// stRec.ip_addr actually is never used.
-		// Just make sure that it does not have 0 value.
-		// // TODO: Arbitrarily picking IPv4 
-		condor_sockaddr local_addr = get_local_ipaddr(CP_IPV4);
-		struct in_addr local_in_addr = local_addr.to_sin().sin_addr;
-		memcpy( &stRec.ip_addr, &local_in_addr, sizeof(struct in_addr) );
-
-		stream->encode();
-		if (!stream->code(stRec)) {
-			delete tmp_starter;
-			ABORT;
-		}
-
-		if (!stream->end_of_message()) {
-			delete tmp_starter;
-			ABORT;
-		}
-
-			/* now that we sent stRec, free stRec.server_name which we strduped */
-		free( stRec.server_name );
-
-			/* Wait for connection to port1 */
-		len = sizeof frm;
-		memset( (char *)&frm,0, sizeof frm );
-		while( (fd_1=tcp_accept_timeout(sock_1, (struct sockaddr *)&frm,
-										&len, 150)) < 0 ) {
-			if( fd_1 != -3 ) {  /* tcp_accept_timeout returns -3 on EINTR */
-				if( fd_1 == -2 ) {
-					rip->dprintf( D_ALWAYS, "accept timed out\n" );
-					delete tmp_starter;
-					ABORT;
-				} else {
-					rip->dprintf( D_ALWAYS, 
-								  "tcp_accept_timeout returns %d, errno=%d\n",
-								  fd_1, errno );
-					delete tmp_starter;
-					ABORT;
-				}
-			}
-		}
-	
-			/* Wait for connection to port2 */
-		len = sizeof frm;
-		memset( (char *)&frm,0,sizeof frm );
-		while( (fd_2 = tcp_accept_timeout(sock_2, (struct sockaddr *)&frm,
-										  &len, 150)) < 0 ) {
-			if( fd_2 != -3 ) {  /* tcp_accept_timeout returns -3 on EINTR */
-				if( fd_2 == -2 ) {
-					rip->dprintf( D_ALWAYS, "accept timed out\n" );
-					delete tmp_starter;
-					close(fd_1);
-					ABORT;
-				} else {
-					rip->dprintf( D_ALWAYS, 
-								  "tcp_accept_timeout returns %d, errno=%d\n",
-								  fd_2, errno );
-					delete tmp_starter;
-					close(fd_1);
-					ABORT;
-				}
-			}
-		}
-		tmp_starter->setPorts( fd_1, fd_2 );
+		rip->dprintf( D_ALWAYS, "Standard universe starter is not supported.\n" );
+		delete tmp_starter;
+		ABORT;
 	}
 #endif	// of ifdef WIN32
 
@@ -2050,7 +1980,7 @@ activate_claim( Resource* rip, Stream* stream )
 	}
 
 		// Finally, update all these things into the resource classad.
-	rip->r_cur->publish( rip->r_classad, A_PUBLIC );
+	rip->r_cur->publish(rip->r_classad);
 
 	rip->dprintf( D_ALWAYS,
 				  "State change: claim-activation protocol successful\n" );
@@ -2167,7 +2097,7 @@ caRequestCODClaim( Stream *s, char* cmd_str, ClassAd* req_ad )
 	const char* requirements_str = NULL;
 	Resource* rip;
 	Claim* claim;
-	MyString err_msg;
+	std::string err_msg;
 	ExprTree *tree;
 	ReliSock* rsock = (ReliSock*)s;
 	int lease_duration = 0;
@@ -2178,7 +2108,7 @@ caRequestCODClaim( Stream *s, char* cmd_str, ClassAd* req_ad )
 		err_msg += owner;
 		err_msg += "' is not authorized for using COD at this machine"; 
 		return sendErrorReply( s, cmd_str, CA_NOT_AUTHORIZED,
-							   err_msg.Value() );
+							   err_msg.c_str() );
 	}
 	dprintf( D_COMMAND, 
 			 "Serving request for a new COD claim by user '%s'\n", 
@@ -2191,7 +2121,7 @@ caRequestCODClaim( Stream *s, char* cmd_str, ClassAd* req_ad )
 				 "Request did not contain %s, assuming TRUE\n",
 				 ATTR_REQUIREMENTS );
 		requirements_str = "TRUE";
-		req_ad->Insert( "Requirements = TRUE" );
+		req_ad->Assign( ATTR_REQUIREMENTS, true );
 	} else {
 		requirements_str = ExprTreeToString( tree );
 	}
@@ -2205,7 +2135,7 @@ caRequestCODClaim( Stream *s, char* cmd_str, ClassAd* req_ad )
 		err_msg += " (";
 		err_msg += requirements_str;
 		err_msg += ')';
-		return sendErrorReply( s, cmd_str, CA_FAILURE, err_msg.Value() );
+		return sendErrorReply( s, cmd_str, CA_FAILURE, err_msg.c_str() );
 	}
 
 	if( !req_ad->LookupInteger(ATTR_JOB_LEASE_DURATION, lease_duration) ) {
@@ -2227,20 +2157,11 @@ caRequestCODClaim( Stream *s, char* cmd_str, ClassAd* req_ad )
 		// a complete resource ad (like what we'd send to the
 		// collector), and include the ClaimID  
 	ClassAd reply;
-	rip->publish( &reply, A_ALL_PUB );
+	rip->publish_single_slot_ad(reply, time(NULL), Resource::Purpose::for_cod);
 
-	MyString line;
-	line = ATTR_CLAIM_ID;
-	line += " = \"";
-	line += claim->id();
-	line += '"';
-	reply.Insert( line.Value() );
+	reply.Assign( ATTR_CLAIM_ID, claim->id() );
 	
-	line = ATTR_RESULT;
-	line += " = \"";
-	line += getCAResultString( CA_SUCCESS );
-	line += '"';
-	reply.Insert( line.Value() );
+	reply.Assign( ATTR_RESULT, getCAResultString( CA_SUCCESS ) );
 
 	int rval = sendCAReply( s, cmd_str, &reply );
 	if( ! rval ) {
@@ -2259,20 +2180,19 @@ int
 caRequestClaim( Stream *s, char* cmd_str, ClassAd* req_ad )
 {
 	ClaimType claim_type;
-	char* ct_str = NULL;
-	MyString err_msg; 
+	std::string ct_str;
+	std::string err_msg; 
 
 		// Now, depending on what kind of claim they're asking for, do
 		// the right thing
-	if( ! req_ad->LookupString(ATTR_CLAIM_TYPE, &ct_str) ) {
+	if( ! req_ad->LookupString(ATTR_CLAIM_TYPE, ct_str) ) {
 		err_msg = "No ";
 		err_msg += ATTR_CLAIM_TYPE;
 		err_msg += " in ClassAd";
 		return sendErrorReply( s, cmd_str, CA_INVALID_REQUEST, 
-							   err_msg.Value() );
+							   err_msg.c_str() );
 	}
-	claim_type = getClaimTypeNum( ct_str );
-	free( ct_str ); 
+	claim_type = getClaimTypeNum( ct_str.c_str() );
 	switch( claim_type ) {
 	case CLAIM_COD:
 		return caRequestCODClaim( s, cmd_str, req_ad );
@@ -2280,19 +2200,19 @@ caRequestClaim( Stream *s, char* cmd_str, ClassAd* req_ad )
 	case CLAIM_OPPORTUNISTIC:
 		err_msg = ATTR_CLAIM_TYPE;
 		err_msg += " (";
-		err_msg += getClaimTypeString( claim_type );
+		err_msg += ct_str;
 		err_msg += ") not supported by this startd";
 		return sendErrorReply( s, cmd_str, CA_INVALID_REQUEST,
-							   err_msg.Value() );
+							   err_msg.c_str() );
 		break;
 	default:
 		err_msg = "Unrecognized ";
 		err_msg += ATTR_CLAIM_TYPE;
 		err_msg += " (";
-		err_msg += getClaimTypeString( claim_type );
+		err_msg += ct_str;
 		err_msg += ") in request ClassAd";
 		return sendErrorReply( s, cmd_str, CA_INVALID_REQUEST,
-							   err_msg.Value() );
+							   err_msg.c_str() );
 		break;
 	}
 	return FALSE;
@@ -2302,21 +2222,21 @@ caRequestClaim( Stream *s, char* cmd_str, ClassAd* req_ad )
 int
 caLocateStarter( Stream *s, char* cmd_str, ClassAd* req_ad )
 {
-	char* global_job_id = NULL;
-	char* claimid = NULL;
-	char* schedd_addr = NULL;
+	std::string global_job_id;
+	std::string claimid;
+	std::string schedd_addr;
 	Claim* claim = NULL;
 	int rval = TRUE;
 	ClassAd reply;
 	std::string startd_sends_alives;
 
-	req_ad->LookupString(ATTR_CLAIM_ID, &claimid);
-	req_ad->LookupString(ATTR_GLOBAL_JOB_ID, &global_job_id);
-	req_ad->LookupString(ATTR_SCHEDD_IP_ADDR, &schedd_addr);
-	claim = resmgr->getClaimByGlobalJobIdAndId(global_job_id, claimid);
+	req_ad->LookupString(ATTR_CLAIM_ID, claimid);
+	req_ad->LookupString(ATTR_GLOBAL_JOB_ID, global_job_id);
+	req_ad->LookupString(ATTR_SCHEDD_IP_ADDR, schedd_addr);
+	claim = resmgr->getClaimByGlobalJobIdAndId(global_job_id.c_str(), claimid.c_str());
 
 	if( ! claim ) {
-		MyString err_msg = ATTR_CLAIM_ID;
+		std::string err_msg = ATTR_CLAIM_ID;
 		err_msg += " (";
 		err_msg += claimid;
 		err_msg += ") and ";
@@ -2324,7 +2244,7 @@ caLocateStarter( Stream *s, char* cmd_str, ClassAd* req_ad )
 		err_msg += " ( ";
 		err_msg += global_job_id;
 		err_msg += " ) not found";
-		sendErrorReply( s, cmd_str, CA_FAILURE, err_msg.Value() );
+		sendErrorReply( s, cmd_str, CA_FAILURE, err_msg.c_str() );
 		rval = FALSE;
 		goto cleanup;
 	}
@@ -2333,34 +2253,34 @@ caLocateStarter( Stream *s, char* cmd_str, ClassAd* req_ad )
 		// then we _must_ be passed the address of the schedd
 		// since it likely changed.
 	param( startd_sends_alives, "STARTD_SENDS_ALIVES", "peer" );
-	if ( (!schedd_addr) && 
+	if ( (schedd_addr.empty()) && 
 		 strcasecmp( startd_sends_alives.c_str(), "false" ) )
 	{
-		MyString err_msg;
-		err_msg.formatstr("Required %s, not found in request",
+		std::string err_msg;
+		formatstr(err_msg, "Required %s, not found in request",
 						ATTR_SCHEDD_IP_ADDR);
-		sendErrorReply( s, cmd_str, CA_FAILURE, err_msg.Value() );
+		sendErrorReply( s, cmd_str, CA_FAILURE, err_msg.c_str() );
 		rval = FALSE;
 		goto cleanup;
 	}
 
-	claim->publish(&reply, A_PUBLIC);
+	claim->publish(&reply);
 	if( ! claim->publishStarterAd(&reply) ) {
-		MyString err_msg = "No starter found for ";
+		std::string err_msg = "No starter found for ";
 		err_msg += ATTR_GLOBAL_JOB_ID;
 		err_msg += " (";
 		err_msg += global_job_id;
 		err_msg += ")";
-		sendErrorReply( s, cmd_str, CA_FAILURE, err_msg.Value() );
+		sendErrorReply( s, cmd_str, CA_FAILURE, err_msg.c_str() );
 		rval = FALSE;
 		goto cleanup;
 	}
 	
 		// if we are passed an updated schedd addr, stash it
-	if ( schedd_addr ) {
+	if ( ! schedd_addr.empty() ) {
 		Client *client = claim->client();
 		if ( client ) {
-			client->setaddr(schedd_addr);
+			client->setaddr(schedd_addr.c_str());
 		}
 	}
 
@@ -2374,9 +2294,6 @@ caLocateStarter( Stream *s, char* cmd_str, ClassAd* req_ad )
 	}
 
 cleanup:
-	if ( global_job_id ) free( global_job_id );
-	if ( claimid ) free( claimid );
-	if ( schedd_addr ) free( schedd_addr );
 
 	return rval;
 }
@@ -2410,7 +2327,7 @@ caUpdateMachineAd( Stream * s, char * c, ClassAd * ad ) {
 
 
 int
-command_classad_handler( Service*, int dc_cmd, Stream* s )
+command_classad_handler(int dc_cmd, Stream* s )
 {
 	int rval=0;
 	ClassAd ad;
@@ -2476,10 +2393,10 @@ command_classad_handler( Service*, int dc_cmd, Stream* s )
 	}
 	claim = resmgr->getClaimById( claim_id );
 	if( ! claim ) {
-		MyString err_msg = "ClaimID (";
+		std::string err_msg = "ClaimID (";
 		err_msg += claim_id;
 		err_msg += ") not found";
-		sendErrorReply( s, cmd_str, CA_FAILURE, err_msg.Value() );
+		sendErrorReply( s, cmd_str, CA_FAILURE, err_msg.c_str() );
 		free( claim_id );
 		free( cmd_str );
 		return FALSE;
@@ -2489,10 +2406,10 @@ command_classad_handler( Service*, int dc_cmd, Stream* s )
 		// might be) is the same as the owner of the claim
 	const char* owner = rsock->getOwner();
 	if( ! claim->ownerMatches(owner) ) {
-		MyString err_msg = "User '";
+		std::string err_msg = "User '";
 		err_msg += owner;
 		err_msg += "' does not match the owner of this claim";
-		sendErrorReply( s, cmd_str, CA_NOT_AUTHORIZED, err_msg.Value() ); 
+		sendErrorReply( s, cmd_str, CA_NOT_AUTHORIZED, err_msg.c_str() ); 
 		free( claim_id );
 		free( cmd_str );
 		return FALSE;
@@ -2505,13 +2422,13 @@ command_classad_handler( Service*, int dc_cmd, Stream* s )
 	if( tmp ) {
 		if( strcmp(tmp, owner) ) {
 				// they're different!
-			MyString err_msg = ATTR_OWNER;
+			std::string err_msg = ATTR_OWNER;
 			err_msg += " specified in ClassAd as '";
 			err_msg += tmp;
 			err_msg += "' yet request sent by user '";
 			err_msg += owner;
 			err_msg += "', possible security attack, request refused!";
-			sendErrorReply( s, cmd_str, CA_FAILURE, err_msg.Value() );
+			sendErrorReply( s, cmd_str, CA_FAILURE, err_msg.c_str() );
 			free( claim_id );
 			free( cmd_str );
 			free( tmp );
@@ -2520,11 +2437,7 @@ command_classad_handler( Service*, int dc_cmd, Stream* s )
 		free( tmp );
 	} else {
 			// ATTR_OWNER not defined, set it ourselves...
-		MyString line = ATTR_OWNER;
-		line += "=\"";
-		line += owner;
-		line += '"';
-		ad.Insert( line.Value() );
+		ad.Assign( ATTR_OWNER, owner );
 	}
  
 
@@ -2569,7 +2482,7 @@ command_classad_handler( Service*, int dc_cmd, Stream* s )
 }
 
 int
-command_drain_jobs( Service*, int /*dc_cmd*/, Stream* s )
+command_drain_jobs(int /*dc_cmd*/, Stream* s )
 {
 	ClassAd ad;
 
@@ -2589,8 +2502,19 @@ command_drain_jobs( Service*, int /*dc_cmd*/, Stream* s )
 	int how_fast = DRAIN_GRACEFUL;
 	ad.LookupInteger(ATTR_HOW_FAST,how_fast);
 
-	bool resume_on_completion = false;
-	ad.LookupBool(ATTR_RESUME_ON_COMPLETION,resume_on_completion);
+	int on_completion = DRAIN_NOTHING_ON_COMPLETION;
+	ad.LookupInteger(ATTR_RESUME_ON_COMPLETION,on_completion);
+
+	// get the drain reason out of the command. if no reason supplied, 
+	// assume that the command is coming from the Defrag daemon unless the peer version is 8.9.12 or later
+	// an 8.9.12 defrag will never send an empty reason, so the caller must be a tool
+	std::string reason;
+	if ( ! ad.LookupString(ATTR_DRAIN_REASON, reason)) {
+		reason = "Defrag";
+		if (s->get_peer_version() && s->get_peer_version()->built_since_version(8,9,12)) {
+			reason = "by command";
+		}
+	}
 
 	ExprTree *check_expr = ad.LookupExpr( ATTR_CHECK_EXPR );
 	ExprTree *start_expr = ad.LookupExpr( ATTR_START_EXPR );
@@ -2598,7 +2522,7 @@ command_drain_jobs( Service*, int /*dc_cmd*/, Stream* s )
 	std::string new_request_id;
 	std::string error_msg;
 	int error_code = 0;
-	bool ok = resmgr->startDraining(how_fast,resume_on_completion,check_expr,start_expr,new_request_id,error_msg,error_code);
+	bool ok = resmgr->startDraining(how_fast,reason,on_completion,check_expr,start_expr,new_request_id,error_msg,error_code);
 	if( !ok ) {
 		dprintf(D_ALWAYS,"Failed to start draining, error code %d: %s\n",error_code,error_msg.c_str());
 	}
@@ -2621,7 +2545,7 @@ command_drain_jobs( Service*, int /*dc_cmd*/, Stream* s )
 }
 
 int
-command_cancel_drain_jobs( Service*, int /*dc_cmd*/, Stream* s )
+command_cancel_drain_jobs(int /*dc_cmd*/, Stream* s )
 {
 	ClassAd ad;
 
@@ -2664,7 +2588,7 @@ command_cancel_drain_jobs( Service*, int /*dc_cmd*/, Stream* s )
 }
 
 int
-command_coalesce_slots( Service *, int, Stream * stream ) {
+command_coalesce_slots(int, Stream * stream ) {
 	Sock * sock = (Sock *)stream;
 	ClassAd commandAd;
 	// This becomes owned by the new slot's claim.
@@ -2680,6 +2604,7 @@ command_coalesce_slots( Service *, int, Stream * stream ) {
 
 	if(! getClassAd( sock, commandAd )) {
 		dprintf( D_ALWAYS, "command_coalesce_slots(): failed to get command ad\n" );
+		delete requestAd;
 		return FALSE;
 	}
 
@@ -2822,18 +2747,21 @@ command_coalesce_slots( Service *, int, Stream * stream ) {
 
 		// If a slot has been preempted, don't coalesce it.
 		Resource * r = resmgr->get_by_cur_id( claimID );
-		dprintf( D_ALWAYS, "command_coalesce_slots(): coalescing %s...\n", r->r_id_str );
+		if (r) {
+			dprintf( D_ALWAYS, "command_coalesce_slots(): coalescing %s...\n", r->r_id_str );
 
 		// Despite appearances, this also transfers the nonfungible resources.
-		*(parent->r_attr) += *(r->r_attr);
-		*(r->r_attr) -= *(r->r_attr);
+			(r->r_attr)->unbind_DevIds(r->r_id, r->r_sub_id);
+			*(parent->r_attr) += *(r->r_attr);
+			*(r->r_attr) -= *(r->r_attr);
 
-		// Destroy the old slot.
-		r->kill_claim();
+			// Destroy the old slot.
+			r->kill_claim();
+		}
 	}
 
 	// We just updated the partitionable slot's resources...
-	parent->refresh_classad( A_PUBLIC );
+	parent->refresh_classad_resources();
 
 	Claim * leftoverClaim = NULL;
 	dprintf( D_ALWAYS, "command_coalesce_slots(): creating coalesced slot...\n" );
@@ -2865,12 +2793,12 @@ command_coalesce_slots( Service *, int, Stream * stream ) {
 
 	// Sadly, launching a starter requires us to do this.
 	ASSERT( sock->peer_addr().is_valid() );
-	MyString hostname = get_full_hostname( sock->peer_addr() );
-	if(! hostname.IsEmpty() ) {
-		coalescedSlot->r_cur->client()->sethost( hostname.Value() );
+	std::string hostname = get_full_hostname( sock->peer_addr() );
+	if(! hostname.empty() ) {
+		coalescedSlot->r_cur->client()->sethost( hostname.c_str() );
 	} else {
-		MyString ip = sock->peer_addr().to_ip_string();
-		coalescedSlot->r_cur->client()->sethost( ip.Value() );
+		std::string ip = sock->peer_addr().to_ip_string();
+		coalescedSlot->r_cur->client()->sethost( ip.c_str() );
 	}
 
 	// We'e ignoring consumption policy here.  (See request_claim().)  This
@@ -2883,8 +2811,8 @@ command_coalesce_slots( Service *, int, Stream * stream ) {
 
 	// The coalesced slot is born claimed.
 	coalescedSlot->change_state( claimed_state );
-	coalescedSlot->refresh_classad( A_PUBLIC );
-	parent->refresh_classad( A_PUBLIC );
+	coalescedSlot->refresh_classad_resources();
+	parent->refresh_classad_resources();
 
 	dprintf( D_ALWAYS, "command_coalesce_slots(): coalescing complete, sending reply\n" );
 

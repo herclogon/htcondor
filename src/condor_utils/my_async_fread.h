@@ -123,6 +123,7 @@ public:
 	MyStringAioSource(MyAsyncFileReader& _aio) : aio(_aio) {}
 	virtual ~MyStringAioSource() {};
 	virtual bool readLine(MyString & str, bool append = false);
+	virtual bool readLine(std::string & str, bool append = false);
 	virtual bool isEof();
 	bool allDataIsAvailable(); // becomes true once EOF has been buffered.
 
@@ -202,11 +203,11 @@ public:
 		return (char*)ptr;
 	}
 
-	size_t capacity() { return cballoc; }
+	size_t capacity() const { return cballoc; }
 	// buffers are idle when the have no data, and no pending reads
-	bool idle() { return (cbdata == 0) && (cbpending == 0); }
-	bool pending() { return cbpending != 0; }
-	bool has_valid_data() { return (cbdata > 0) && (cbpending == 0); }
+	bool idle() const { return (cbdata == 0) && (cbpending == 0); }
+	bool pending() const { return cbpending != 0; }
+	bool has_valid_data() const { return (cbdata > 0) && (cbpending == 0); }
 
 	// set pending data size, we do this when the buffer is queued for async io to indicate
 	// that we dont' yet have data, but that the buffer is not free for re-use yet either
@@ -237,7 +238,7 @@ public:
 		}
 		return NULL;
 	}
-	size_t datasize() { return ((ssize_t)cbdata >= 0) ? cbdata : 0; }
+	size_t datasize() const { return ((ssize_t)cbdata >= 0) ? cbdata : 0; }
 
 	int use_data(int cb) {
 		ASSERT(cb >= 0);
@@ -401,7 +402,7 @@ public:
 	MyStringAioSource& output() { return src; }
 
 	// return the stats for the reader
-	void get_stats(int & reads, int & in_progress) { reads = total_reads; in_progress = total_inprogress; }
+	void get_stats(int & reads, int & in_progress) const { reads = total_reads; in_progress = total_inprogress; }
 	// last status return from aio_error, use for debugging.
 	int current_status() const { return status; }
 

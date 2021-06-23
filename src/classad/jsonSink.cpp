@@ -30,10 +30,16 @@ using namespace std;
 namespace classad {
 
 ClassAdJsonUnParser::
-ClassAdJsonUnParser()
+ClassAdJsonUnParser() : ClassAdJsonUnParser(false)
+{
+}
+
+ClassAdJsonUnParser::
+ClassAdJsonUnParser(bool oneline)
 {
 	m_indentLevel = 0;
 	m_indentIncrement = 2;
+	m_oneline = oneline;
 }
 
 
@@ -98,7 +104,7 @@ Unparse( string &buffer, const Value &val )
 			return;
 		}
 		case Value::BOOLEAN_VALUE: {
-			bool b;
+			bool b = false;
 			val.IsBooleanValue( b );
 			buffer += b ? "true" : "false";
 			return;
@@ -135,6 +141,7 @@ Unparse( string &buffer, const Value &val )
 	  
 			return;
 		}
+		case Value::SCLASSAD_VALUE:
 		case Value::CLASSAD_VALUE: {
 			const ClassAd *ad = NULL;
 			val.IsClassAdValue( ad );
@@ -212,11 +219,17 @@ Unparse( string &buffer, const ExprTree *tree )
 				if ( itr != exprs.begin() ) {
 					buffer += ",";
 				}
-				buffer += "\n" + string( m_indentLevel, ' ' );
+				if ( !m_oneline ) {
+					buffer += "\n" + string( m_indentLevel, ' ' );
+				}
 				Unparse( buffer, *itr );
 			}
 			m_indentLevel -= m_indentIncrement;
-			buffer += "\n" + string( m_indentLevel, ' ' ) + "]";
+			if ( m_oneline ) {
+				buffer += "]";
+			} else {
+				buffer += "\n" + string( m_indentLevel, ' ' ) + "]";
+			}
 			return;
 		}
 		
@@ -315,13 +328,21 @@ UnparseAuxClassAd( std::string &buffer,
 		if ( itr != attrs.begin() ) {
 			buffer += ",";
 		}
-		buffer += "\n" + string( m_indentLevel, ' ' ) + "\"";
+		if ( m_oneline ) {
+			buffer += "\"";
+		} else {
+			buffer += "\n" + string( m_indentLevel, ' ' ) + "\"";
+		}
 		UnparseAuxEscapeString( buffer, itr->first );
 		buffer += "\": ";
 		Unparse( buffer, itr->second );
 	}
 	m_indentLevel -= m_indentIncrement;
-	buffer += "\n" + string( m_indentLevel, ' ' ) + "}";
+	if ( m_oneline ) {
+		buffer += "}";
+	} else {
+		buffer += "\n" + string( m_indentLevel, ' ' ) + "}";
+	}
 }
 
 } // classad

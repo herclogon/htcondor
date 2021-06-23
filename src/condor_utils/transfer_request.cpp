@@ -19,7 +19,6 @@
 
 #include "condor_common.h"
 #include "condor_debug.h"
-#include "MyString.h"
 #include "simplelist.h"
 #include "condor_classad.h"
 #include "condor_attributes.h"
@@ -164,7 +163,7 @@ TransferRequest::get_procids(void)
 void
 TransferRequest::dprintf(unsigned int lvl)
 {
-	MyString pv;
+	std::string pv;
 
 	ASSERT(m_ip != NULL);
 
@@ -174,7 +173,7 @@ TransferRequest::dprintf(unsigned int lvl)
 	::dprintf(lvl, "\tProtocol Version: %d\n", get_protocol_version());
 	::dprintf(lvl, "\tServer Mode: %u\n", get_transfer_service());
 	::dprintf(lvl, "\tNum Transfers: %d\n", get_num_transfers());
-	::dprintf(lvl, "\tPeer Version: %s\n", pv.Value());
+	::dprintf(lvl, "\tPeer Version: %s\n", pv.c_str());
 }
 
 void
@@ -198,33 +197,24 @@ TransferRequest::get_num_transfers(void)
 }
 
 void
-TransferRequest::set_transfer_service(MyString &mode)
+TransferRequest::set_transfer_service(const std::string &mode)
 {
-	ASSERT(m_ip != NULL);
-
-	set_transfer_service(mode.Value());
-}
-
-void
-TransferRequest::set_transfer_service(const char *mode)
-{
-	ASSERT(m_ip != NULL);
-
 	m_ip->Assign( ATTR_IP_TRANSFER_SERVICE, mode );
 }
 
+#if 0
 void
 TransferRequest::set_transfer_service(TreqMode  /*mode*/)
 {
 	// XXX TODO
 }
+#endif
 
 
 TreqMode
 TransferRequest::get_transfer_service(void)
 {
-	MyString mode;
-	MyString tmp;
+	std::string mode;
 
 	ASSERT(m_ip != NULL);
 
@@ -315,29 +305,18 @@ TransferRequest::get_used_constraint(void)
 }
 
 void
-TransferRequest::set_peer_version(MyString &pv)
+TransferRequest::set_peer_version(const std::string &pv)
 {
 	ASSERT(m_ip != NULL);
 
 	m_ip->Assign( ATTR_IP_PEER_VERSION, pv );
 }
 
-void
-TransferRequest::set_peer_version(char *pv)
-{
-	MyString str;
-	ASSERT(m_ip != NULL);
-
-	str = pv;
-
-	set_peer_version(str);
-}
-
 // This will make a copy when you assign the return value to something.
-MyString
+std::string
 TransferRequest::get_peer_version(void)
 {
-	MyString pv;
+	std::string pv;
 
 	ASSERT(m_ip != NULL);
 
@@ -356,24 +335,24 @@ TransferRequest::todo_tasks(void)
 }
 
 void
-TransferRequest::set_capability(MyString &capability)
+TransferRequest::set_capability(const std::string &capability)
 {
 	m_cap = capability;
 }
 
-MyString
+const std::string&
 TransferRequest::get_capability()
 {
 	return m_cap;
 }
 
 void
-TransferRequest::set_rejected_reason(MyString &reason)
+TransferRequest::set_rejected_reason(const std::string &reason)
 {
 	m_rejected_reason = reason;
 }
 
-MyString
+const std::string&
 TransferRequest::get_rejected_reason()
 {
 	return m_rejected_reason;
@@ -386,13 +365,13 @@ TransferRequest::set_rejected(bool val)
 }
 
 bool 
-TransferRequest::get_rejected(void)
+TransferRequest::get_rejected(void) const
 {
 	return m_rejected;
 }
 
 void 
-TransferRequest::set_pre_push_callback(MyString desc, 
+TransferRequest::set_pre_push_callback(std::string desc, 
 	TreqPrePushCallback callback, Service *base)
 {
 	m_pre_push_func_desc = desc;
@@ -408,7 +387,7 @@ TransferRequest::call_pre_push_callback(TransferRequest *treq,
 }
 
 void
-TransferRequest::set_post_push_callback(MyString desc, 
+TransferRequest::set_post_push_callback(std::string desc, 
 	TreqPostPushCallback callback, Service *base)
 {
 	m_post_push_func_desc = desc;
@@ -424,7 +403,7 @@ TransferRequest::call_post_push_callback(TransferRequest *treq,
 }
 
 void 
-TransferRequest::set_update_callback(MyString desc, 
+TransferRequest::set_update_callback(std::string desc, 
 	TreqUpdateCallback callback, Service *base)
 {
 	m_update_func_desc = desc;
@@ -440,7 +419,7 @@ TransferRequest::call_update_callback(TransferRequest *treq,
 }
 
 void 
-TransferRequest::set_reaper_callback(MyString desc, 
+TransferRequest::set_reaper_callback(std::string desc, 
 	TreqReaperCallback callback, Service *base)
 {
 	m_reaper_func_desc = desc;
@@ -485,7 +464,7 @@ TransferRequest::put(Stream *sock)
 // utility functions for enum conversions.
 
 EncapMethod
-encap_method(MyString &line)
+encap_method(const std::string &line)
 {
 	if (line == "ENCAPSULATION_METHOD_OLD_CLASSADS") {
 		return ENCAP_METHOD_OLD_CLASSADS;
@@ -495,9 +474,9 @@ encap_method(MyString &line)
 }
 
 TreqMode
-transfer_mode(MyString mode)
+transfer_mode(std::string mode)
 {
-	return transfer_mode(mode.Value());
+	return transfer_mode(mode.c_str());
 }
 
 TreqMode

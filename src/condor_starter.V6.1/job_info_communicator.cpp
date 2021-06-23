@@ -26,14 +26,13 @@
 #include "condor_config.h"
 #include "domain_tools.h"
 #include "basename.h"
-#include "../condor_privsep/condor_privsep.h"
 #include "condor_vm_universe_types.h"
 #include "hook_utils.h"
 #include "classad_visa.h"
 #include "subsystem_info.h"
 
 
-extern CStarter *Starter;
+extern Starter *Starter;
 
 
 JobInfoCommunicator::JobInfoCommunicator()
@@ -54,6 +53,7 @@ JobInfoCommunicator::JobInfoCommunicator()
 	job_output_ad_file = NULL;
 	job_output_ad_is_stdout = false;
 	job_CredPath = NULL;
+	job_Krb5CCName = NULL;
 	requested_exit = false;
 	fast_exit = false;
 	graceful_exit = false;
@@ -106,6 +106,9 @@ JobInfoCommunicator::~JobInfoCommunicator()
 	}
 	if( job_CredPath ) {
 		free( job_CredPath );
+	}
+	if( job_Krb5CCName ) {
+		free( job_Krb5CCName );
 	}
 #if HAVE_JOB_HOOKS
     if (m_hook_mgr) {
@@ -239,28 +242,28 @@ JobInfoCommunicator::machClassAd( void )
 
 
 int
-JobInfoCommunicator::jobUniverse( void )
+JobInfoCommunicator::jobUniverse( void ) const
 {
 	return job_universe;
 }
 
 
 int
-JobInfoCommunicator::jobCluster( void )
+JobInfoCommunicator::jobCluster( void ) const
 {
 	return job_cluster;
 }
 
 
 int
-JobInfoCommunicator::jobProc( void )
+JobInfoCommunicator::jobProc( void ) const
 {
 	return job_proc;
 }
 
 
 int
-JobInfoCommunicator::jobSubproc( void )
+JobInfoCommunicator::jobSubproc( void ) const
 {
 	return job_subproc;
 }
@@ -400,6 +403,12 @@ JobInfoCommunicator::setOutputAdFile( const char* path )
 }
 
 void
+JobInfoCommunicator::setUpdateAdFile( const char* path )
+{
+	m_job_update_ad_file = path ? path : "";
+}
+
+void
 JobInfoCommunicator::setCredPath( const char* path )
 {
 	if( job_CredPath ) {
@@ -408,6 +417,14 @@ JobInfoCommunicator::setCredPath( const char* path )
 	job_CredPath = strdup( path );
 }
 
+void
+JobInfoCommunicator::setKrb5CCName( const char* path )
+{
+	if( job_Krb5CCName ) {
+		free( job_Krb5CCName );
+	}
+	job_Krb5CCName = strdup( path );
+}
 
 
 bool
@@ -446,31 +463,75 @@ JobInfoCommunicator::writeOutputAdFile( ClassAd* ad )
 }
 
 
+bool
+JobInfoCommunicator::writeUpdateAdFile( ClassAd* ad )
+{
+	if( m_job_update_ad_file.empty() ) {
+		return false;
+	}
+	std::string tmp_file = m_job_update_ad_file + ".tmp";
+
+	// TODO Write to temp file and rename
+	FILE* fp;
+	fp = safe_fopen_wrapper_follow( tmp_file.c_str(), "a" );
+	if( ! fp ) {
+		dprintf( D_ALWAYS, "Failed to open job update ClassAd "
+		         "\"%s\": %s (errno %d)\n", m_job_update_ad_file.c_str(),
+		         strerror(errno), errno );
+		return false;
+	} else {
+		dprintf( D_ALWAYS, "Writing job update ClassAd to \"%s\"\n",
+		         m_job_update_ad_file.c_str() );
+	}
+		// append a delimiter?
+	fPrintAd( fp, *ad );
+
+	fclose( fp );
+	if ( rename( tmp_file.c_str(), m_job_update_ad_file.c_str() ) < 0 ) {
+		dprintf( D_ALWAYS, "Failed to rename job update ClassAd "
+		         "\"%s\": %s (errno %d)\n", m_job_update_ad_file.c_str(),
+		         strerror(errno), errno );
+		unlink( tmp_file.c_str() );
+		return false;
+	}
+	return true;
+}
+
+
 // This has to be called after we know what the working directory is
 // going to be, so we can make sure this is a full path...
 void
 JobInfoCommunicator::initOutputAdFile( void )
 {
-	if( ! job_output_ad_file ) {
-		return;
+	if( job_output_ad_file ) {
+		if( job_output_ad_file[0] == '-' && job_output_ad_file[1] == '\0' ) {
+			job_output_ad_is_stdout = true;
+		} else if( ! fullpath(job_output_ad_file) ) {
+			std::string path = Starter->GetWorkingDir(0);
+			path += DIR_DELIM_CHAR;
+			path += job_output_ad_file;
+			free( job_output_ad_file );
+			job_output_ad_file = strdup( path.c_str() );
+		}
+		dprintf( D_ALWAYS, "Will write job output ClassAd to \"%s\"\n",
+		         job_output_ad_is_stdout ? "STDOUT" : job_output_ad_file );
 	}
-	if( job_output_ad_file[0] == '-' && job_output_ad_file[1] == '\0' ) {
-		job_output_ad_is_stdout = true;
-	} else if( ! fullpath(job_output_ad_file) ) {
-		MyString path = Starter->GetWorkingDir();
-		path += DIR_DELIM_CHAR;
-		path += job_output_ad_file;
-		free( job_output_ad_file );
-		job_output_ad_file = strdup( path.Value() );
+	if( ! m_job_update_ad_file.empty() ) {
+		if( ! fullpath(m_job_update_ad_file.c_str()) ) {
+			std::string path = Starter->GetWorkingDir(0);
+			path += DIR_DELIM_CHAR;
+			path += m_job_update_ad_file;
+			m_job_update_ad_file = path;
+		}
+		dprintf( D_ALWAYS, "Will write job update ClassAd to \"%s\"\n",
+		         m_job_update_ad_file.c_str() );
 	}
-	dprintf( D_ALWAYS, "Will write job output ClassAd to \"%s\"\n",
-			 job_output_ad_is_stdout ? "STDOUT" : job_output_ad_file );
 }
 
 
 
 bool
-JobInfoCommunicator::userPrivInitialized( void )
+JobInfoCommunicator::userPrivInitialized( void ) const
 {
 	return user_priv_is_initialized;
 }
@@ -581,14 +642,14 @@ JobInfoCommunicator::checkDedicatedExecuteAccounts( char const *name )
 	}
 
 		// force the matching of the whole string
-	MyString full_pattern;
-	full_pattern.formatstr("^%s$",pattern_string);
+	std::string full_pattern;
+	formatstr(full_pattern, "^%s$", pattern_string);
 
 	Regex re;
 	char const *errstr = NULL;
 	int erroffset = 0;
 
-	if( !re.compile( full_pattern.Value(), &errstr, &erroffset, 0 ) ) {
+	if( !re.compile( full_pattern.c_str(), &errstr, &erroffset, 0 ) ) {
 		EXCEPT("Invalid regular expression for %s (%s): %s",
 			   DEDICATED_EXECUTE_ACCOUNT_REGEXP,
 			   pattern_string,
@@ -611,7 +672,7 @@ JobInfoCommunicator::setExecuteAccountIsDedicated( char const *name )
 	}
 	else {
 		m_dedicated_execute_account_buf = name;
-		m_dedicated_execute_account = m_dedicated_execute_account_buf.Value();
+		m_dedicated_execute_account = m_dedicated_execute_account_buf.c_str();
 	}
 }
 
@@ -663,10 +724,10 @@ JobInfoCommunicator::initUserPrivWindows( void )
 			free(vm_jobs_as);
 		}
 #endif
-		MyString vm_type;
+		std::string vm_type;
 		job_ad->LookupString(ATTR_JOB_VM_TYPE, vm_type);
 
-		if( strcasecmp(vm_type.Value(), CONDOR_VM_UNIVERSE_VMWARE) == MATCH ) {
+		if( strcasecmp(vm_type.c_str(), CONDOR_VM_UNIVERSE_VMWARE) == MATCH ) {
 			name = my_username();
 			domain = my_domainname();
 		}
@@ -680,10 +741,10 @@ JobInfoCommunicator::initUserPrivWindows( void )
 	}
 
 	if ( !name ) {
-		MyString slotName = Starter->getMySlotName();
-		slotName.upper_case();
+		std::string slotName = Starter->getMySlotName();
+		upper_case(slotName);
 		slotName += "_USER";
-		char *run_jobs_as = param(slotName.Value());
+		char *run_jobs_as = param(slotName.c_str());
 		if (run_jobs_as) {		
 			getDomainAndName(run_jobs_as, domain, name);
 				/* 
@@ -711,10 +772,10 @@ JobInfoCommunicator::initUserPrivWindows( void )
 			init_priv_succeeded = false;			
 		} 
 		else {
-			MyString login_name;
+			std::string login_name;
 			joinDomainAndName(name, domain, login_name);
-			if( checkDedicatedExecuteAccounts( login_name.Value() ) ) {
-				setExecuteAccountIsDedicated( login_name.Value() );
+			if( checkDedicatedExecuteAccounts( login_name.c_str() ) ) {
+				setExecuteAccountIsDedicated( login_name.c_str() );
 			}
 		}
 
@@ -801,28 +862,28 @@ JobInfoCommunicator::checkForStarterDebugging( void )
 void
 JobInfoCommunicator::writeExecutionVisa( ClassAd& visa_ad )
 {
-	int value;
-	if (!job_ad->EvalBool(ATTR_WANT_STARTER_EXECUTION_VISA, NULL, value) ||
+	bool value;
+	if (!job_ad->LookupBool(ATTR_WANT_STARTER_EXECUTION_VISA, value) ||
 	    !value)
 	{
 		return;
 	}
-	MyString iwd;
+	std::string iwd;
 	if (!job_ad->LookupString(ATTR_JOB_IWD, iwd)) {
 		dprintf(D_ALWAYS,
 		        "writeExecutionVisa error: no IWD in job ad!\n");
 		return;
 	}
 	priv_state priv = set_user_priv();
-	MyString filename;
+	std::string filename;
 	bool ok = classad_visa_write(&visa_ad,
 	                             get_mySubSystem()->getName(),
 	                             daemonCore->InfoCommandSinfulString(),
-	                             iwd.Value(),
+	                             iwd.c_str(),
 	                             &filename);
 	set_priv(priv);
 	if (ok) {
-		addToOutputFiles(filename.Value());
+		addToOutputFiles(filename.c_str());
 	}
 }
 
@@ -934,7 +995,7 @@ JobInfoCommunicator::periodicJobUpdate(ClassAd* update_ad, bool)
 
 
 const char*
-JobInfoCommunicator::getExitReasonString( void )
+JobInfoCommunicator::getExitReasonString( void ) const
 {
 	if (requested_exit == true) {
 		if (had_hold) {
@@ -947,3 +1008,6 @@ JobInfoCommunicator::getExitReasonString( void )
 	}
 	return "exit";
 }
+
+
+void JobInfoCommunicator::setJobFailed( void ) { }

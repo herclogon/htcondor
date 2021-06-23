@@ -13,6 +13,8 @@
 #include "classad_wrapper.h"
 
 #include "module_lock.h"
+#include "htcondor.h"
+#include "daemon_location.h"
 
 using namespace boost::python;
 
@@ -27,7 +29,7 @@ quote_classads_string(const std::string &input)
     classad_shared_ptr<classad::ExprTree> expr(classad::Literal::MakeLiteral(val));
     if (!expr.get())
     {
-        THROW_EX(MemoryError, "Failed to allocate a new ClassAds expression.");
+        THROW_EX(HTCondorInternalError, "Failed to allocate a new ClassAds expression.");
     }
     classad::ClassAdUnParser sink;
     std::string result;
@@ -58,16 +60,15 @@ AdTypes convert_to_ad_type(daemon_t d_type)
         break;
     case DT_GENERIC:
         ad_type = GENERIC_AD;
-		break;
+        break;
     case DT_HAD:
         ad_type = HAD_AD;
-		break;
+        break;
     case DT_CREDD:
         ad_type = CREDD_AD;
         break;
     default:
-        PyErr_SetString(PyExc_ValueError, "Unknown daemon type.");
-        throw_error_already_set();
+        THROW_EX(HTCondorEnumError, "Unknown daemon type.");
     }
     return ad_type;
 }
@@ -77,10 +78,20 @@ struct Collector {
     Collector(boost::python::object pool = boost::python::object())
       : m_collectors(NULL), m_default(false)
     {
-        if (pool.ptr() == Py_None)
+        std::string addr, version;
+        int rv = construct_for_location(pool, DT_COLLECTOR, addr, version);
+        if (rv == -2) { boost::python::throw_error_already_set(); } // pool was an invalid classad or DaemonLocation
+        else if (rv == -1) { PyErr_Clear(); } // pool was not a classad or DaemonLocation, just fall thorough
+
+        if (rv == 0) // pool is None
         {
             m_collectors = CollectorList::create();
             m_default = true;
+        }
+        else if (rv == 1)
+        {
+             // pool is actually a location ad or DaemonLocation, so addr was set
+             m_collectors = CollectorList::create(addr.c_str());
         }
         else if (PyBytes_Check(pool.ptr()) || PyUnicode_Check(pool.ptr()))
         {
@@ -97,6 +108,7 @@ struct Collector {
         }
         else
         {
+            PyErr_Clear();
             StringList collector_list;
             boost::python::object my_iter = pool.attr("__iter__")();
             if (!PyIter_Check(my_iter.ptr())) {
@@ -133,13 +145,19 @@ struct Collector {
         }
         if (!m_collectors)
         {
-            THROW_EX(ValueError, "No collector specified");
+            // All of the above code paths set m_collectors.
+            THROW_EX(HTCondorInternalError, "No collector specified");
         }
     }
 
     ~Collector()
     {
         if (m_collectors) delete m_collectors;
+    }
+
+    boost::python::object location() const {
+		// PRAGMA_REMIND("TODO: handle the case of a non-default collector list")
+        return boost::python::object();
     }
 
     boost::python::object directquery(daemon_t d_type, const std::string &name="", boost::python::list attrs=boost::python::list(), const std::string &statistics="")
@@ -162,7 +180,7 @@ struct Collector {
         boost::python::list attrlist;
         attrlist.append("MyAddress");
         attrlist.append("AddressV1");
-        attrlist.append("CondorVersion");
+        attrlist.append(ATTR_CONDOR_VERSION);
         attrlist.append("CondorPlatform");
         attrlist.append("Name");
         attrlist.append("Machine");
@@ -176,7 +194,7 @@ struct Collector {
         boost::python::list attrlist;
         attrlist.append("MyAddress");
         attrlist.append("AddressV1");
-        attrlist.append("CondorVersion");
+        attrlist.append(ATTR_CONDOR_VERSION);
         attrlist.append("CondorPlatform");
         attrlist.append("Name");
         attrlist.append("Machine");
@@ -184,8 +202,7 @@ struct Collector {
         if (py_len(result) >= 1) {
             return result[0];
         }
-        PyErr_SetString(PyExc_ValueError, "Unable to find daemon.");
-        throw_error_already_set();
+        THROW_EX(HTCondorLocateError, "Unable to find daemon.");
         return object();
     }
 
@@ -198,8 +215,7 @@ struct Collector {
             if (py_len(result) >= 1) {
                 return result[0];
             }
-            PyErr_SetString(PyExc_ValueError, "Unable to find daemon.");
-            throw_error_already_set();
+            THROW_EX(HTCondorLocateError, "Unable to find daemon.");
         }
 
         Daemon my_daemon( d_type, 0, 0 );
@@ -207,70 +223,62 @@ struct Collector {
         boost::shared_ptr<ClassAdWrapper> wrapper(new ClassAdWrapper());
         if (my_daemon.locate())
         {
-			/***  Note: calls to Daemon::locate() cannot invoke daemonAd() anymore.
+            /***  Note: calls to Daemon::locate() cannot invoke daemonAd() anymore.
              *** classad::ClassAd *daemonAd;
              *** if ((daemonAd = my_daemon.daemonAd()))
              *** {
              ***   wrapper->CopyFrom(*daemonAd);
              *** }
              *** else
-			 ***/
+             ***/
             {
                 std::string addr = my_daemon.addr();
                 if (!my_daemon.addr() || !wrapper->InsertAttr(ATTR_MY_ADDRESS, addr))
                 {
-                    PyErr_SetString(PyExc_RuntimeError, "Unable to locate daemon address.");
-                    throw_error_already_set();
+                    THROW_EX(HTCondorInternalError, "Unable to locate daemon address.");
                 }
                 std::string name = my_daemon.name() ? my_daemon.name() : "Unknown";
                 if (!wrapper->InsertAttr(ATTR_NAME, name))
                 {
-                    PyErr_SetString(PyExc_RuntimeError, "Unable to insert daemon name.");
-                    throw_error_already_set();
+                    THROW_EX(HTCondorInternalError, "Unable to insert daemon name.");
                 }
                 std::string hostname = my_daemon.fullHostname() ? my_daemon.fullHostname() : "Unknown";
                 if (!wrapper->InsertAttr(ATTR_MACHINE, hostname))
                 {
-                    PyErr_SetString(PyExc_RuntimeError, "Unable to insert daemon hostname.");
-                    throw_error_already_set();
+                    THROW_EX(HTCondorInternalError, "Unable to insert daemon hostname.");
                 }
                 std::string version = my_daemon.version() ? my_daemon.version() : "";
                 if (!wrapper->InsertAttr(ATTR_VERSION, version))
                 {
-                    PyErr_SetString(PyExc_RuntimeError, "Unable to insert daemon version.");
-                    throw_error_already_set();
+                    THROW_EX(HTCondorInternalError, "Unable to insert daemon version.");
                 }
                 const char * my_type = AdTypeToString(convert_to_ad_type(d_type));
                 if (!my_type)
                 {
-                    PyErr_SetString(PyExc_ValueError, "Unable to determined daemon type.");
-                    throw_error_already_set();
+                    THROW_EX(HTCondorEnumError, "Unable to determined daemon type.");
                 }
                 std::string my_type_str = my_type;
                 if (!wrapper->InsertAttr(ATTR_MY_TYPE, my_type_str))
                 {
-                    PyErr_SetString(PyExc_RuntimeError, "Unable to insert daemon type.");
-                    throw_error_already_set();
+                    THROW_EX(HTCondorInternalError, "Unable to insert daemon type.");
                 }
                 std::string cversion = CondorVersion(); std::string platform = CondorPlatform();
                 if (!wrapper->InsertAttr(ATTR_VERSION, cversion) || !wrapper->InsertAttr(ATTR_PLATFORM, platform))
                 {
-                    PyErr_SetString(PyExc_RuntimeError, "Unable to insert HTCondor version.");
-                    throw_error_already_set();
+                    THROW_EX(HTCondorInternalError, "Unable to insert HTCondor version.");
                 }
             }
         }
         else
         {
-            PyErr_SetString(PyExc_RuntimeError, "Unable to locate local daemon");
-            boost::python::throw_error_already_set();
+            THROW_EX(HTCondorLocateError, "Unable to locate local daemon");
         }
         return boost::python::object(wrapper);
     }
 
 
     // TODO: this has crappy error handling when there are multiple collectors.
-    void advertise(list ads, const std::string &command_str="UPDATE_AD_GENERIC", bool use_tcp=false)
+    void advertise(list ads, const std::string &command_str="UPDATE_AD_GENERIC", bool use_tcp=true)
     {
         m_collectors->rewind();
         Daemon *collector;
@@ -279,25 +287,23 @@ struct Collector {
         int command = getCollectorCommandNum(command_str.c_str());
         if (command == -1)
         {
-            PyErr_SetString(PyExc_ValueError, ("Invalid command " + command_str).c_str());
-            throw_error_already_set();
+            THROW_EX(HTCondorEnumError, ("Invalid command " + command_str).c_str());
         }
 
         if (command == UPDATE_STARTD_AD_WITH_ACK)
         {
-            PyErr_SetString(PyExc_NotImplementedError, "Startd-with-ack protocol is not implemented at this time.");
+            THROW_EX(NotImplementedError, "Startd-with-ack protocol is not implemented at this time.");
         }
 
         int list_len = py_len(ads);
         if (!list_len)
             return;
 
-        compat_classad::ClassAd ad;
+        ClassAd ad;
         while (m_collectors->next(collector))
         {
             if(!collector->locate()) {
-                PyErr_SetString(PyExc_ValueError, "Unable to locate collector.");
-                throw_error_already_set();
+                THROW_EX(HTCondorLocateError, "Unable to locate collector.");
             }
             int list_len = py_len(ads);
             sock.reset();
@@ -328,8 +334,7 @@ struct Collector {
                 }
                 }
                 if (result != 2) {
-                    PyErr_SetString(PyExc_ValueError, "Failed to advertise to collector");
-                    throw_error_already_set();
+                    THROW_EX(HTCondorIOError, "Failed to advertise to collector");
                 }
             }
             sock->encode();
@@ -343,18 +348,9 @@ private:
     object query_internal(AdTypes ad_type, boost::python::object constraint_obj, boost::python::list attrs, const std::string &statistics, std::string locationName)
     {
         std::string constraint;
-        extract<std::string> constraint_extract(constraint_obj);
-        if (constraint_extract.check())
-        {
-            constraint = constraint_extract();
+        if ( ! convert_python_to_constraint(constraint_obj, constraint, true, NULL)) {
+            THROW_EX(HTCondorValueError, "Invalid constraint.");
         }
-        else
-        {
-            classad::ClassAdUnParser printer;
-            classad_shared_ptr<classad::ExprTree> expr(convert_python_to_exprtree(constraint_obj));
-            printer.Unparse(constraint, expr.get());
-        }
-
 
         CondorQuery query(ad_type);
         if (constraint.length())
@@ -364,14 +360,12 @@ private:
         if (statistics.size())
         {
             std::string result = quote_classads_string(statistics);
-            result = "STATISTICS_TO_PUBLISH = " + result;
-            query.addExtraAttribute(result.c_str());
+            query.addExtraAttribute("STATISTICS_TO_PUBLISH", result.c_str());
         }
         if (locationName.size())
         {
             std::string result = quote_classads_string(locationName);
-            result = "LocationQuery = " + result;
-            query.addExtraAttribute(result.c_str());
+            query.addExtraAttribute(ATTR_LOCATION_QUERY, result.c_str());
         }
 
         int len_attrs = py_len(attrs);
@@ -398,27 +392,21 @@ private:
         {
         case Q_OK:
             break;
-        case Q_INVALID_CATEGORY:
-            PyErr_SetString(PyExc_RuntimeError, "Category not supported by query type.");
-            boost::python::throw_error_already_set();
-        case Q_MEMORY_ERROR:
-            PyErr_SetString(PyExc_MemoryError, "Memory allocation error.");
-            boost::python::throw_error_already_set();
-        case Q_PARSE_ERROR:
-            PyErr_SetString(PyExc_SyntaxError, "Query constraints could not be parsed.");
-            boost::python::throw_error_already_set();
+
+        // We think that these can't happen.
+        // case Q_INVALID_CATEGORY:
+        // case Q_MEMORY_ERROR:
+        // case Q_PARSE_ERROR:
+
         case Q_COMMUNICATION_ERROR:
-            PyErr_SetString(PyExc_IOError, "Failed communication with collector.");
-            boost::python::throw_error_already_set();
+            THROW_EX(HTCondorIOError, "Failed communication with collector.");
         case Q_INVALID_QUERY:
-            PyErr_SetString(PyExc_RuntimeError, "Invalid query.");
-            boost::python::throw_error_already_set();
+            THROW_EX(HTCondorIOError, "Invalid query.");
         case Q_NO_COLLECTOR_HOST:
-            PyErr_SetString(PyExc_RuntimeError, "Unable to determine collector host.");
-            boost::python::throw_error_already_set();
+            THROW_EX(HTCondorLocateError, "Unable to determine collector host.");
+
         default:
-            PyErr_SetString(PyExc_RuntimeError, "Unknown error from collector query.");
-            boost::python::throw_error_already_set();
+            THROW_EX(HTCondorInternalError, "Unknown error from collector query.");
         }
 
         list retval;
@@ -447,16 +435,45 @@ BOOST_PYTHON_MEMBER_FUNCTION_OVERLOADS(locate_overloads, locate, 1, 2);
 
 void export_collector()
 {
-    class_<Collector>("Collector", "Client-side operations for the HTCondor collector")
-        .def(init<boost::python::object>(":param pool: Name of collector to query; if not specified, uses the local one."))
+    class_<Collector>("Collector",
+            R"C0ND0R(
+            Client object for a remote *condor_collector*.
+            The :class:`Collector` can be used to:
+
+            * Locate a daemon.
+            * Query the *condor_collector* for one or more specific ClassAds.
+            * Advertise a new ad to the *condor_collector*.
+            )C0ND0R",
+        init<boost::python::object>(
+            boost::python::args("self", "pool"),
+            R"C0ND0R(
+            :param pool: A ``host:port`` pair specified for the remote collector
+              (or a list of pairs for HA setups). If omitted, the value of
+              configuration parameter ``COLLECTOR_HOST`` is used.
+            :type pool: str or list[str]
+            )C0ND0R"))
+        .def(init<>(boost::python::args("self")))
+        .add_property("location", &Collector::location,
+            R"C0ND0R(
+            The collector to query.  None indicates use the default collector list specified in :macro:`COLLECTOR_HOST`
+            :rtype: None or :class:`~htcondor.DaemonLocation`
+            )C0ND0R") // PRAGMA_REMIND("TODO: remove this or handle a list of collectors")
         .def("query", &Collector::query, query_overloads(
-            "Query the contents of a collector.\n"
-            ":param ad_type: Type of ad to return from the AdTypes enum; if not specified, uses ANY_AD.\n"
-            ":param constraint: A constraint for the ad query; defaults to true.\n"
-            ":param projection: A list of attributes; if specified, the returned ads will be "
-            "projected along these attributes.\n"
-            ":param statistics: A list of additional statistics to return, if the remote daemon has any.\n"
-            ":return: A list of ads in the collector matching the constraint.",
+            R"C0ND0R(
+            Query the contents of a condor_collector daemon. Returns a list of ClassAds that match the constraint parameter.
+
+            :param ad_type: The type of ClassAd to return. If not specified, the type will be ANY_AD.
+            :type ad_type: :class:`AdTypes`
+            :param constraint: A constraint for the collector query; only ads matching this constraint are returned.
+                If not specified, all matching ads of the given type are returned.
+            :type constraint: str or :class:`~classad.ExprTree`
+            :param projection: A list of attributes to use for the projection.  Only these attributes, plus a few server-managed,
+                are returned in each :class:`~classad.ClassAd`.
+            :type projection: list[str]
+            :param list[str] statistics: Statistics attributes to include, if they exist for the specified daemon.
+            :return: A list of matching ads.
+            :rtype: list[:class:`~classad.ClassAd`]
+            )C0ND0R",
 #if BOOST_VERSION < 103400
             (boost::python::arg("ad_type")=ANY_AD, boost::python::arg("constraint")="", boost::python::arg("projection")=boost::python::list(), boost::python::arg("statistics")="")
 #else
@@ -464,14 +481,20 @@ void export_collector()
 #endif
              ))
         .def("directQuery", &Collector::directquery, directquery_overloads(
-            "Query a given daemon directly instead of returning a collector ad.\n"
-            "This may return more up-to-date or detailed information than what is in the collector.\n"
-            ":param daemon_type: Type of daemon; must be from the DaemonTypes enum.\n"
-            ":param name: Name of daemon to locate.  If not specified, it searches for the local daemon.\n"
-            ":param projection: A list of attributes; if specified, the returned ads will be "
-            "projected along these attributes.\n"
-            ":param statistics: A list of additional statistics to return, if the remote daemon has any.\n"
-            ":return: The ad of the matching daemon, from the daemon itself.\n",
+            R"C0ND0R(
+            Query the specified daemon directly for a ClassAd, instead of using the ClassAd from the *condor_collector* daemon.
+            Requires the client library to first locate the daemon in the collector, then querying the remote daemon.
+
+            :param daemon_type: Specifies the type of the remote daemon to query.
+            :type daemon_type: :class:`DaemonTypes`
+            :param str name: Specifies the daemon's name. If not specified, the local daemon is used.
+            :param projection: is a list of attributes requested, to obtain only a subset of the attributes from the daemon's :class:`~classad.ClassAd`.
+            :type projection: list[str]
+            :param statistics: Statistics attributes to include, if they exist for the specified daemon.
+            :type statistics: str
+            :return: The ad of the specified daemon.
+            :rtype: :class:`~classad.ClassAd`
+            )C0ND0R",
 #if BOOST_VERSION < 103400
             (boost::python::arg("daemon_type"), boost::python::arg("name")="", boost::python::arg("projection")=boost::python::list(), boost::python::arg("statistics")="")
 #else
@@ -479,19 +502,38 @@ void export_collector()
 #endif
             ))
         .def("locate", &Collector::locate, locate_overloads(
-            "Query the collector for a particular daemon.\n"
-            ":param daemon_type: Type of daemon; must be from the DaemonTypes enum.\n"
-            ":param name: Name of daemon to locate.  If not specified, it searches for the local daemon.\n"
-            ":return: The ad of the corresponding daemon."))
+            (boost::python::arg("self"), boost::python::arg("daemon_type"), boost::python::arg("name")),
+            R"C0ND0R(
+            Query the *condor_collector* for a particular daemon.
+
+            :param daemon_type: The type of daemon to locate.
+            :type daemon_type: :class:`DaemonTypes`
+            :param str name: The name of daemon to locate. If not specified, it searches for the local daemon.
+            :return: a minimal ClassAd of the requested daemon, sufficient only to contact the daemon;
+                typically, this limits to the ``MyAddress`` attribute.
+            :rtype: :class:`~classad.ClassAd`
+            )C0ND0R"))
         .def("locateAll", &Collector::locateAll,
-            "Query the collector for all ads of a particular type.\n"
-            ":param daemon_type: Type of daemon; must be from the DaemonTypes enum.\n"
-            ":return: A list of matching ads.")
+            R"C0ND0R(
+            Query the condor_collector daemon for all ClassAds of a particular type. Returns a list of matching ClassAds.
+
+            :param daemon_type: The type of daemon to locate.
+            :type daemon_type: :class:`DaemonTypes`
+            :return: Matching ClassAds
+            :rtype: list[:class:`~classad.ClassAd`]
+            )C0ND0R",
+            (boost::python::arg("self"), boost::python::arg("daemon_type")))
         .def("advertise", &Collector::advertise, advertise_overloads(
-            "Advertise a list of ClassAds into the collector.\n"
-            ":param ad_list: A list of ClassAds.\n"
-            ":param command: A command for the collector; defaults to UPDATE_AD_GENERIC;"
-            " other commands, such as UPDATE_STARTD_AD, may require reduced authorization levels.\n"
-            ":param use_tcp: When set to true, updates are sent via TCP."))
+            (boost::python::arg("self"), boost::python::arg("ad_list"), boost::python::arg("command")="UPDATE_AD_GENERIC", boost::python::arg("use_tcp")=true),
+            R"C0ND0R(
+            Advertise a list of ClassAds into the condor_collector.
+
+            :param ad_list: :class:`~classad.ClassAds` to advertise.
+            :type ad_list: list[:class:`~classad.ClassAds`]
+            :param str command: An advertise command for the remote *condor_collector*.
+                It defaults to ``UPDATE_AD_GENERIC``.
+                Other commands, such as ``UPDATE_STARTD_AD``, may require different authorization levels with the remote daemon.
+            :param bool use_tcp: When set to ``True``, updates are sent via TCP.  Defaults to ``True``.
+            )C0ND0R"))
         ;
 }

@@ -118,6 +118,13 @@ ModuleLock::acquire()
         SecMan::setPoolPassword(p);
     }
 
+    p = SecManWrapper::getThreadLocalToken();
+    m_restore_orig_token = p;
+    if (m_restore_orig_token) {
+        m_token_orig = SecMan::getToken();
+        SecMan::setToken(p);
+    }
+
     p = SecManWrapper::getThreadLocalGSICred();
     m_restore_orig_proxy = p!=NULL;
     if (m_restore_orig_proxy) {
@@ -134,6 +141,13 @@ ModuleLock::acquire()
 ModuleLock::~ModuleLock()
 {
     release();
+}
+
+void ModuleLock::useFamilySession(const std::string & sess)
+{
+	if (! sess.empty()) {
+		SecManWrapper::setFamilySession(sess);
+	}
 }
 
 void
@@ -161,6 +175,12 @@ ModuleLock::release()
     m_restore_orig_password = false;
     m_password_orig = "";
 
+    if (m_restore_orig_token) {
+        SecMan::setToken(m_token_orig);
+    }
+    m_restore_orig_token = false;
+    m_token_orig = "";
+
     if (m_restore_orig_tag) {
         SecMan::setTag(m_tag_orig);
     }
@@ -173,9 +193,9 @@ ModuleLock::release()
 
     if (m_release_gil && m_owned)
     {
+        m_owned = false;
         MODULE_LOCK_MUTEX_UNLOCK(&m_mutex);
         PyEval_RestoreThread(m_save);
-        m_owned = false;
     }
 }
 

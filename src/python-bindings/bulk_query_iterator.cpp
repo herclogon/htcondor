@@ -9,7 +9,7 @@
 
 #include "old_boost.h"
 #include "query_iterator.h"
-
+#include "htcondor.h"
 
 struct BulkQueryIterator
 {
@@ -27,7 +27,7 @@ public:
         }
         if (!py_hasattr(input, "__iter__"))
         {
-            THROW_EX(ValueError, "Unable to iterate over query object.")
+            THROW_EX(HTCondorTypeError, "Unable to iterate over query object.")
         }
         boost::python::object iterable = input.attr("__iter__")();
 
@@ -53,7 +53,7 @@ public:
                 }
                 else
                 {
-                    THROW_EX(ValueError, "Unable to iterate through input.");
+                    THROW_EX(HTCondorTypeError, "Unable to iterate through input.");
                 }
             }
             catch (const boost::python::error_already_set&)
@@ -116,12 +116,13 @@ public:
 
         if (m_selector.timed_out())
         {
-            THROW_EX(RuntimeError, "Timeout when waiting for remote host");
+            THROW_EX(HTCondorIOError, "Timeout when waiting for remote host");
         }
 
         if (m_selector.failed())
         {
-            THROW_EX(RuntimeError, "select() failed.");
+            // FIXME: if m_selector has an errno and/or errstr, set it here.
+            THROW_EX(HTCondorInternalError, "select() failed.");
         }
 
         boost::python::object queryit;
@@ -146,7 +147,7 @@ public:
             return queryit;
         }
         if (!m_count) {THROW_EX(StopIteration, "All ads are processed");}
-        THROW_EX(RuntimeError, "Logic error in poll implementation.");
+        THROW_EX(HTCondorInternalError, "Logic error in poll implementation.");
         return queryit;
     }
 
@@ -172,15 +173,30 @@ export_query_iterator()
 {
     boost::python::register_ptr_to_python<boost::shared_ptr<BulkQueryIterator> >();
 
-    boost::python::class_<BulkQueryIterator>("BulkQueryIterator", "A bulk interface for schedd queryies.", boost::python::no_init)
+    boost::python::class_<BulkQueryIterator>("BulkQueryIterator",
+            R"C0ND0R(
+            Returned by :func:`poll`, this iterator produces a sequence of :class:`QueryIterator`
+            objects that have ads ready to be read in a non-blocking manner.
+
+            Once there are no additional available iterators, :func:`poll` must be called again.
+            )C0ND0R",
+            boost::python::no_init)
         .def("__iter__", &BulkQueryIterator::pass_through)
         .def(NEXT_FN, &BulkQueryIterator::next, "Return the next ready QueryIterator object.\n")
         ;
 
     boost::python::def("poll", pollAllAds,
-        "Returns a BulkQueryIterator object for performing queries concurrently.\n"
-        ":param queries: A list of query objects to monitor.\n"
-        ":param timeout_ms: The timeout, in ms, for polling the queries.",
+        R"C0ND0R(
+        Wait on the results of multiple query iterators.
+
+        This function returns an iterator which yields the next ready query iterator.
+        The returned iterator stops when all results have been consumed for all iterators.
+
+        :param active_queries: Query iterators as returned by xquery().
+        :type active_queries: list[:class:`QueryIterator`]
+        :return: An iterator producing the ready :class:`QueryIterator`.
+        :rtype: :class:`BulkQueryIterator`
+        )C0ND0R",
         (boost::python::arg("queries"), boost::python::arg("timeout_ms")=20*1000)
     );
 }

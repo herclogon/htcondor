@@ -19,7 +19,6 @@
 
 #include "condor_common.h"
 #include "condor_debug.h"
-#include "MyString.h"
 #include "proc.h"
 #include "condor_classad.h"
 #include "condor_attributes.h"
@@ -28,6 +27,7 @@
 #include "filename_tools.h"
 #include "string_list.h"
 #include "classad/classad_distribution.h"
+#include "condor_config.h"
 
 #include "submit_job.h"
 
@@ -56,7 +56,7 @@ bool VanillaToGrid::vanillaToGrid(classad::ClassAd * ad, int target_universe, co
 		side
 	*/
 
-	MyString remoteattr;
+	std::string remoteattr;
 	remoteattr = "Remote_";
 	remoteattr += ATTR_JOB_UNIVERSE;
 
@@ -69,11 +69,13 @@ bool VanillaToGrid::vanillaToGrid(classad::ClassAd * ad, int target_universe, co
 	ad->Delete(ATTR_BUFFER_SIZE);
 	ad->Delete(ATTR_BUFFER_SIZE);
 	ad->Delete("CondorPlatform"); // TODO: Find #define
-	ad->Delete("CondorVersion");  // TODO: Find #define
+	ad->Delete(ATTR_CONDOR_VERSION);  // TODO: Find #define
 	ad->Delete(ATTR_CORE_SIZE);
 	ad->Delete(ATTR_GLOBAL_JOB_ID); // Store in different ATTR here?
 	//ad->Delete(ATTR_OWNER); // How does schedd filter?
-	ad->Delete(ATTR_USER); // Schedd will set this with the proper UID_DOMAIN
+		// User may be from non-default UID_DOMAIN; if so, we want to keep this
+		// for the grid job.
+	// ad->Delete(ATTR_USER); // Schedd will set this with the proper UID_DOMAIN.
 	ad->Delete(ATTR_Q_DATE);
 	ad->Delete(ATTR_JOB_REMOTE_WALL_CLOCK);
 	ad->Delete(ATTR_SERVER_TIME);
@@ -100,8 +102,6 @@ bool VanillaToGrid::vanillaToGrid(classad::ClassAd * ad, int target_universe, co
 	ad->InsertAttr(ATTR_JOB_REMOTE_SYS_CPU, 0.0);
 	ad->InsertAttr(ATTR_JOB_EXIT_STATUS, 0);
 	ad->InsertAttr(ATTR_COMPLETION_DATE, 0);
-	ad->InsertAttr(ATTR_JOB_LOCAL_SYS_CPU, 0.0);
-	ad->InsertAttr(ATTR_JOB_LOCAL_USER_CPU, 0.0);
 	ad->InsertAttr(ATTR_NUM_CKPTS, 0);
 	ad->InsertAttr(ATTR_NUM_RESTARTS, 0);
 	ad->InsertAttr(ATTR_NUM_SYSTEM_HOLDS, 0);
@@ -130,7 +130,7 @@ bool VanillaToGrid::vanillaToGrid(classad::ClassAd * ad, int target_universe, co
 	}
 
 	ad->InsertAttr(ATTR_JOB_UNIVERSE, target_universe);
-	ad->Insert(remoteattr.Value(), olduniv);
+	ad->Insert(remoteattr, olduniv);
 		// olduniv is now controlled by ClassAd
 
 	if( target_universe == CONDOR_UNIVERSE_GRID ) {
@@ -153,7 +153,7 @@ bool VanillaToGrid::vanillaToGrid(classad::ClassAd * ad, int target_universe, co
 		std::string remaps;
 		ad->EvaluateAttrString(ATTR_TRANSFER_OUTPUT_REMAPS,remaps);
 		if( !is_sandboxed && remaps.size() ) {
-			MyString remap_filename;
+			std::string remap_filename;
 			std::string filename,filenames;
 
 				// Don't need the remaps in the grid copy of the ad.
@@ -161,13 +161,13 @@ bool VanillaToGrid::vanillaToGrid(classad::ClassAd * ad, int target_universe, co
 
 			if( ad->EvaluateAttrString(ATTR_JOB_OUTPUT,filename) ) {
 				if( filename_remap_find(remaps.c_str(),filename.c_str(),remap_filename) ) {
-					ad->InsertAttr(ATTR_JOB_OUTPUT,remap_filename.Value());
+					ad->InsertAttr(ATTR_JOB_OUTPUT,remap_filename.c_str());
 				}
 			}
 
 			if( ad->EvaluateAttrString(ATTR_JOB_ERROR,filename) ) {
 				if( filename_remap_find(remaps.c_str(),filename.c_str(),remap_filename) ) {
-					ad->InsertAttr(ATTR_JOB_ERROR,remap_filename.Value());
+					ad->InsertAttr(ATTR_JOB_ERROR,remap_filename.c_str());
 				}
 			}
 
@@ -184,7 +184,7 @@ bool VanillaToGrid::vanillaToGrid(classad::ClassAd * ad, int target_universe, co
 				while( (fname=output_files.next()) ) {
 					if( filename_remap_find(remaps.c_str(),fname,remap_filename) )
 						{
-							new_list.append(remap_filename.Value());
+							new_list.append(remap_filename.c_str());
 						}
 					else {
 						new_list.append(fname);
@@ -308,12 +308,15 @@ bool update_job_status( classad::ClassAd const & orig, classad::ClassAd & newgri
 		ATTR_JOB_CURRENT_START_DATE,
 		ATTR_JOB_CURRENT_START_EXECUTING_DATE,
 		ATTR_JOB_LAST_START_DATE,
-		ATTR_JOB_LOCAL_SYS_CPU,
-		ATTR_JOB_LOCAL_USER_CPU,
+		ATTR_SHADOW_BIRTHDATE,
 		ATTR_JOB_REMOTE_SYS_CPU,
 		ATTR_JOB_REMOTE_USER_CPU,
 		ATTR_NUM_CKPTS,
 		ATTR_NUM_GLOBUS_SUBMITS,
+		ATTR_NUM_JOB_STARTS,
+		ATTR_NUM_JOB_RECONNECTS,
+		ATTR_NUM_SHADOW_EXCEPTIONS,
+		ATTR_NUM_SHADOW_STARTS,
 		ATTR_NUM_MATCHES,
 		ATTR_NUM_RESTARTS,
 		ATTR_JOB_REMOTE_WALL_CLOCK,
@@ -324,7 +327,7 @@ bool update_job_status( classad::ClassAd const & orig, classad::ClassAd & newgri
 		ATTR_RESIDENT_SET_SIZE,
 		ATTR_PROPORTIONAL_SET_SIZE,
 		ATTR_DISK_USAGE,
-		ATTR_SHADOW_BIRTHDATE,
+		ATTR_SCRATCH_DIR_FILE_COUNT,
 		ATTR_SPOOLED_OUTPUT_FILES,
 		NULL };		// list must end with a NULL
 		// ATTR_JOB_STATUS
@@ -407,6 +410,33 @@ bool update_job_status( classad::ClassAd const & orig, classad::ClassAd & newgri
 			if( newgridexpr != NULL && (origexpr == NULL || ! (*origexpr == *newgridexpr) ) ) {
 				classad::ExprTree * toinsert = newgridexpr->Copy(); 
 				update.Insert(attr, toinsert);
+			}
+		}
+	}
+
+	std::string chirp_prefix;
+	param(chirp_prefix, "CHIRP_DELAYED_UPDATE_PREFIX");
+	if (chirp_prefix == "Chirp*") {
+		for ( auto attr_it = newgrid.begin(); attr_it != newgrid.end(); attr_it++ ) {
+			if ( ! strncasecmp(attr_it->first.c_str(), "Chirp", 5) ) {
+				classad::ExprTree *old_expr = orig.Lookup(attr_it->first);
+				classad::ExprTree *new_expr = attr_it->second;
+				if ( old_expr == NULL || !(*old_expr == *new_expr) ) {
+					update.Insert( attr_it->first, new_expr->Copy() );
+				}
+			}
+		}
+	} else if (!chirp_prefix.empty()) {
+		// TODO cache the StringList
+		StringList prefix_list;
+		prefix_list.initializeFromString(chirp_prefix.c_str());
+		for ( auto attr_it = newgrid.begin(); attr_it != newgrid.end(); attr_it++ ) {
+			if ( prefix_list.contains_anycase_withwildcard(attr_it->first.c_str()) ) {
+				classad::ExprTree *old_expr = orig.Lookup(attr_it->first);
+				classad::ExprTree *new_expr = attr_it->second;
+				if ( old_expr == NULL || !(*old_expr == *new_expr) ) {
+					update.Insert( attr_it->first, new_expr->Copy() );
+				}
 			}
 		}
 	}

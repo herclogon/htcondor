@@ -37,6 +37,13 @@
 #include "daemon_command.h"
 
 
+// For AES (and newer).
+#define GENERATED_KEY_LENGTH_V9  32
+
+// For BLOWFISH and 3DES
+#define GENERATED_KEY_LENGTH_OLD 24
+
+
 static unsigned int ZZZZZ = 0;
 static int ZZZ_always_increase() {
 	return ZZZZZ++;
@@ -446,7 +453,36 @@ DaemonCommandProtocol::CommandProtocolResult DaemonCommandProtocol::AcceptUDPReq
 			SecMan::sec_feat_act will_enable_encryption = m_sec_man->sec_lookup_feat_act(*session->policy(), ATTR_SEC_ENCRYPTION);
 			bool turn_encryption_on = will_enable_encryption == SecMan::SEC_FEAT_ACT_YES;
 
-			if (!m_sock->set_crypto_key(turn_encryption_on, session->key())) {
+			KeyInfo* key_to_use;
+			KeyInfo* fallback_key;
+
+			// There's no AES support for UDP, so fall back to
+			// BLOWFISH (default) or 3DES if specified.  3DES would
+			// be preferred in FIPS mode.
+			std::string fallback_method_str = "BLOWFISH";
+			Protocol fallback_method = CONDOR_BLOWFISH;
+			if (param_boolean("FIPS", false)) {
+				fallback_method_str = "3DES";
+				fallback_method = CONDOR_3DES;
+			}
+			dprintf(D_SECURITY|D_VERBOSE, "SESSION: fallback crypto method would be %s.\n", fallback_method_str.c_str());
+
+			key_to_use = session->key();
+			fallback_key = session->key(fallback_method);
+
+			dprintf(D_NETWORK|D_VERBOSE, "UDP: server normal key (proto %i): %p\n", key_to_use->getProtocol(), key_to_use);
+			dprintf(D_NETWORK|D_VERBOSE, "UDP: server %s key (proto %i): %p\n",
+				fallback_method_str.c_str(),
+				(fallback_key ? fallback_key->getProtocol() : 0), fallback_key);
+			dprintf(D_NETWORK|D_VERBOSE, "UDP: server m_is_tcp: 0\n");
+
+			// this is UDP.  if we were going to use AES, use fallback instead (if it exists)
+			if((key_to_use->getProtocol() == CONDOR_AESGCM) && (fallback_key)) {
+				dprintf(D_NETWORK, "UDP: SWITCHING FROM AES TO %s.\n", fallback_method_str.c_str());
+				key_to_use = fallback_key;
+			}
+
+			if (!m_sock->set_crypto_key(turn_encryption_on, key_to_use)) {
 				dprintf (D_ALWAYS, "DC_AUTHENTICATE: unable to turn on encryption for session %s, failing; this session was requested by %s with return address %s\n",sess_id, m_sock->peer_description(), return_address_ss ? return_address_ss : "(none)");
 				if( return_address_ss ) {
 					free( return_address_ss );
@@ -501,9 +537,12 @@ DaemonCommandProtocol::CommandProtocolResult DaemonCommandProtocol::ReadHeader()
 		// a daemoncore command int!  [not ever likely, since CEDAR ints are
 		// exapanded out to 8 bytes]  Still, in a perfect world we would replace
 		// with a more foolproof method.
+		// Note: We no longer support soap, but this peek is part of the
+		//   code below that checks if this is a command that shared port
+		//   should transparently hand off to the collector.
 	char tmpbuf[6];
 	memset(tmpbuf,0,sizeof(tmpbuf));
-	if ( m_is_tcp ) {
+	if ( m_is_tcp && daemonCore->HandleUnregistered() ) {
 			// TODO Should we be ignoring the return value of condor_read?
 		condor_read(m_sock->peer_description(), m_sock->get_file_desc(),
 			tmpbuf, sizeof(tmpbuf) - 1, 1, MSG_PEEK);
@@ -756,6 +795,30 @@ DaemonCommandProtocol::CommandProtocolResult DaemonCommandProtocol::ReadCommand(
 
 				session->renewLease();
 
+				// If the session has multiple crypto methods, we need to
+				// figure out which one to use.
+				// If the client's resume session ad gives a crypto method
+				// list, use the first entry in it.
+				// Otherwise, the client is 8.9, so if we have a list, use
+				// the first entry that's BLOWFISH or 3DES.
+				// Whichever one we use, set it as the preferred method
+				// for the session, in case we need to connect to our
+				// peer in the future.
+				std::string session_crypto_methods;
+				session->policy()->LookupString(ATTR_SEC_CRYPTO_METHODS, session_crypto_methods);
+				if (session_crypto_methods.find(',') != std::string::npos) {
+					std::string client_crypto_methods;
+					Protocol active_crypto = CONDOR_NO_PROTOCOL;
+					if (m_auth_info.LookupString(ATTR_SEC_CRYPTO_METHODS, client_crypto_methods)) {
+						active_crypto = SecMan::getCryptProtocolNameToEnum(client_crypto_methods.c_str());
+					} else {
+						std::string pick_crypto;
+						pick_crypto = SecMan::getPreferredOldCryptProtocol(session_crypto_methods);
+						active_crypto = SecMan::getCryptProtocolNameToEnum(pick_crypto.c_str());
+					}
+					session->setPreferredProtocol(active_crypto);
+				}
+
 				if (session->key()) {
 					// copy this to the HandleReq() scope
 					m_key = new KeyInfo(*session->key());
@@ -871,7 +934,7 @@ DaemonCommandProtocol::CommandProtocolResult DaemonCommandProtocol::ReadCommand(
 					// generate a unique ID.
 					std::string tmpStr;
 					formatstr( tmpStr, "%s:%i:%i:%i",
-									get_local_hostname().Value(), daemonCore->mypid,
+									get_local_hostname().c_str(), daemonCore->mypid,
 							 (int)time(0), ZZZ_always_increase() );
 					assert (m_sid == NULL);
 					m_sid = strdup(tmpStr.c_str());
@@ -885,14 +948,14 @@ DaemonCommandProtocol::CommandProtocolResult DaemonCommandProtocol::ReadCommand(
 							return CommandProtocolFinished;
 						}
 
-						unsigned char* rkey = Condor_Crypt_Base::randomKey(24);
-						unsigned char  rbuf[24];
+						unsigned char* rkey = Condor_Crypt_Base::randomKey(GENERATED_KEY_LENGTH_V9);
+						unsigned char  rbuf[GENERATED_KEY_LENGTH_V9];
 						if (rkey) {
-							memcpy (rbuf, rkey, 24);
+							memcpy (rbuf, rkey, GENERATED_KEY_LENGTH_V9);
 							// this was malloced in randomKey
 							free (rkey);
 						} else {
-							memset (rbuf, 0, 24);
+							memset (rbuf, 0, GENERATED_KEY_LENGTH_V9);
 							dprintf ( D_ALWAYS, "DC_AUTHENTICATE: unable to generate key for request from %s - no crypto available!\n", m_sock->peer_description() );							
 							free( crypto_method );
 							crypto_method = NULL;
@@ -900,19 +963,24 @@ DaemonCommandProtocol::CommandProtocolResult DaemonCommandProtocol::ReadCommand(
 							return CommandProtocolFinished;
 						}
 
-						switch (toupper(crypto_method[0])) {
-							case 'B': // blowfish
+						Protocol method = SecMan::getCryptProtocolNameToEnum(crypto_method);
+						switch (method) {
+							case CONDOR_BLOWFISH:
 								dprintf (D_SECURITY, "DC_AUTHENTICATE: generating BLOWFISH key for session %s...\n", m_sid);
-								m_key = new KeyInfo(rbuf, 24, CONDOR_BLOWFISH);
+								m_key = new KeyInfo(rbuf, GENERATED_KEY_LENGTH_OLD, CONDOR_BLOWFISH, 0);
 								break;
-							case '3': // 3des
-							case 'T': // Tripledes
+							case CONDOR_3DES:
 								dprintf (D_SECURITY, "DC_AUTHENTICATE: generating 3DES key for session %s...\n", m_sid);
-								m_key = new KeyInfo(rbuf, 24, CONDOR_3DES);
+								m_key = new KeyInfo(rbuf, GENERATED_KEY_LENGTH_OLD, CONDOR_3DES, 0);
+								break;
+							case CONDOR_AESGCM: {
+								dprintf (D_SECURITY, "DC_AUTHENTICATE: generating AES-GCM key for session %s...\n", m_sid);
+								m_key = new KeyInfo(rbuf, GENERATED_KEY_LENGTH_V9, CONDOR_AESGCM, 0);
+								}
 								break;
 							default:
 								dprintf (D_SECURITY, "DC_AUTHENTICATE: generating RANDOM key for session %s...\n", m_sid);
-								m_key = new KeyInfo(rbuf, 24);
+								m_key = new KeyInfo(rbuf, GENERATED_KEY_LENGTH_OLD, CONDOR_NO_PROTOCOL, 0);
 								break;
 						}
 
@@ -925,6 +993,12 @@ DaemonCommandProtocol::CommandProtocolResult DaemonCommandProtocol::ReadCommand(
 						}
 
 						m_sec_man->key_printf (D_SECURITY, m_key);
+
+						// Update the session policy to reflect the
+						// crypto method we're using
+						m_policy->Assign(ATTR_SEC_CRYPTO_METHODS, SecMan::getCryptProtocolEnumToName(method));
+					} else {
+						m_policy->Delete(ATTR_SEC_CRYPTO_METHODS);
 					}
 
 					m_new_session = true;
@@ -1032,6 +1106,8 @@ DaemonCommandProtocol::CommandProtocolResult DaemonCommandProtocol::ReadCommand(
 		} // end !using_cookie
 	} // end DC_AUTHENTICATE
 
+	dprintf( D_DAEMONCORE, "DAEMONCORE: Leaving ReadCommand(m_req==%i)\n", m_req);
+
 	// This path means they were using "old-school" commands.  No DC_AUTHENTICATE,
 	// just raw command numbers.  We still want to do IPVerify on these however, so
 	// skip all the Authentication and Crypto and go straight to that phase.
@@ -1071,6 +1147,7 @@ DaemonCommandProtocol::CommandProtocolResult DaemonCommandProtocol::Authenticate
 	m_sock->setAuthenticationMethodsTried(auth_methods);
 
 	char *method_used = NULL;
+	m_sock->setPolicyAd(*m_policy);
 	int auth_success = m_sock->authenticate(m_key, auth_methods, m_errstack, auth_timeout, m_nonblocking, &method_used);
 	m_sock->getPolicyAd(*m_policy);
 	free( auth_methods );
@@ -1168,28 +1245,10 @@ DaemonCommandProtocol::CommandProtocolResult DaemonCommandProtocol::EnableCrypto
 {
 	dprintf( D_DAEMONCORE, "DAEMONCORE: EnableCrypto()\n");
 
-	if (m_will_enable_integrity == SecMan::SEC_FEAT_ACT_YES) {
-
-		if (!m_key) {
-			// uhm, there should be a key here!
-			m_result = FALSE;
-			return CommandProtocolFinished;
-		}
-
-		m_sock->decode();
-		if (!m_sock->set_MD_mode(MD_ALWAYS_ON, m_key)) {
-			dprintf (D_ALWAYS, "DC_AUTHENTICATE: unable to turn on message authenticator, failing request from %s.\n", m_sock->peer_description());
-			m_result = FALSE;
-			return CommandProtocolFinished;
-		} else {
-			dprintf (D_SECURITY, "DC_AUTHENTICATE: message authenticator enabled with key id %s.\n", m_sid);
-			m_sec_man->key_printf (D_SECURITY, m_key);
-		}
-	} else {
-		m_sock->set_MD_mode(MD_OFF, m_key);
-	}
-
-
+	// We must configure encryption before integrity on the socket
+	// when using AES over TCP. If we do integrity first, then ReliSock
+	// will initialize an MD5 context and then tear it down when it
+	// learns it's doing AES. This breaks FIPS compliance.
 	if (m_will_enable_encryption == SecMan::SEC_FEAT_ACT_YES) {
 
 		if (!m_key) {
@@ -1208,6 +1267,38 @@ DaemonCommandProtocol::CommandProtocolResult DaemonCommandProtocol::EnableCrypto
 		}
 	} else {
 		m_sock->set_crypto_key(false, m_key);
+	}
+
+	if (m_will_enable_integrity == SecMan::SEC_FEAT_ACT_YES) {
+
+		if (!m_key) {
+			// uhm, there should be a key here!
+			m_result = FALSE;
+			return CommandProtocolFinished;
+		}
+
+		m_sock->decode();
+
+		// if the encryption method is AES, we don't actually want to enable the MAC
+		// here as that instantiates an MD5 object which will cause FIPS to blow up.
+		bool result;
+		if(m_key->getProtocol() != CONDOR_AESGCM) {
+			result = m_sock->set_MD_mode(MD_ALWAYS_ON, m_key);
+		} else {
+			dprintf(D_SECURITY|D_VERBOSE, "SECMAN: because protocal is AES, not using other MAC.\n");
+			result = m_sock->set_MD_mode(MD_OFF, m_key);
+		}
+
+		if (!result) {
+			dprintf (D_ALWAYS, "DC_AUTHENTICATE: unable to turn on message authenticator, failing request from %s.\n", m_sock->peer_description());
+			m_result = FALSE;
+			return CommandProtocolFinished;
+		} else {
+			dprintf (D_SECURITY, "DC_AUTHENTICATE: message authenticator enabled with key id %s.\n", m_sid);
+			m_sec_man->key_printf (D_SECURITY, m_key);
+		}
+	} else {
+		m_sock->set_MD_mode(MD_OFF, m_key);
 	}
 
 	m_state = CommandProtocolVerifyCommand;
@@ -1369,11 +1460,92 @@ DaemonCommandProtocol::CommandProtocolResult DaemonCommandProtocol::VerifyComman
 			m_perm = USER_AUTH_FAILURE;
 		}
 		else {
-			m_perm = daemonCore->Verify(
-						  command_desc.c_str(),
-						  m_comTable[m_cmd_index].perm,
-						  m_sock->peer_addr(),
-						  m_user.c_str() );
+				// Authentication methods can limit the authorizations associated with
+				// a given identity (at time of coding, only TOKEN does this); apply
+				// these limits if present.
+			std::string authz_policy;
+			bool can_attempt = true;
+			if (m_policy && m_policy->EvaluateAttrString(ATTR_SEC_LIMIT_AUTHORIZATION, authz_policy)) {
+				StringList authz_limits(authz_policy.c_str());
+				authz_limits.rewind();
+				const char *perm_cstr = PermString(m_comTable[m_cmd_index].perm);
+				const char *authz_name;
+				bool found_limit = false;
+				while ( (authz_name = authz_limits.next()) ) {
+					if (!strcmp(perm_cstr, authz_name)) {
+						found_limit = true;
+						break;
+					}
+				}
+				bool has_allow_perm = !strcmp(perm_cstr, "ALLOW");
+					// If there was no match, iterate through the alternates table.
+				if (!found_limit && m_comTable[m_cmd_index].alternate_perm) {
+					for (auto perm : *m_comTable[m_cmd_index].alternate_perm) {
+						auto perm_cstr = PermString(perm);
+						const char *authz_name;
+						authz_limits.rewind();
+						has_allow_perm |= !strcmp(perm_cstr, "ALLOW");
+						while ( (authz_name = authz_limits.next()) ) {
+							dprintf(D_SECURITY, "Checking limit in token (%s) for permission %s\n", authz_name, perm_cstr);
+							if (!strcmp(perm_cstr, authz_name)) {
+								found_limit = true;
+								break;
+							}
+						}
+						if (found_limit) {break;}
+					}
+				}
+				if (!found_limit && !has_allow_perm) {
+					can_attempt = false;
+				}
+			}
+			if (can_attempt) {
+					// A bit redundant to have the outer conditional,
+					// but this gets the log verbosity right and has
+					// zero cost in the "normal" case with no alternate
+					// permissions.
+				if (m_comTable[m_cmd_index].alternate_perm) {
+					m_perm = daemonCore->Verify(
+						command_desc.c_str(),
+						m_comTable[m_cmd_index].perm,
+						m_sock->peer_addr(),
+						m_user.c_str(),
+						D_FULLDEBUG|D_SECURITY);
+						// Not allowed in the primary permission?  Try the alternates.
+					if (m_perm == USER_AUTH_FAILURE) {
+						for (auto perm : *m_comTable[m_cmd_index].alternate_perm) {
+							m_perm = daemonCore->Verify(
+								command_desc.c_str(),
+								perm,
+								m_sock->peer_addr(),
+								m_user.c_str(),
+								D_FULLDEBUG|D_SECURITY);
+							if (m_perm != USER_AUTH_FAILURE) {break;}
+						}
+							// Try it once again on the primary perm just to log
+							// things appropriately loudly.
+						if (m_perm == USER_AUTH_FAILURE) {
+							daemonCore->Verify(
+								command_desc.c_str(),
+								m_comTable[m_cmd_index].perm,
+								m_sock->peer_addr(),
+								m_user.c_str());
+						}
+					}
+				} else {
+					m_perm = daemonCore->Verify(
+						command_desc.c_str(),
+						m_comTable[m_cmd_index].perm,
+						m_sock->peer_addr(),
+						m_user.c_str() );
+				}
+			} else {
+				dprintf(D_ALWAYS, "DC_AUTHENTICATE: authentication of %s was successful but resulted in a limited authorization which did not include this command (%d %s), so aborting.\n",
+					m_sock->peer_description(),
+					m_req,
+					m_comTable[m_cmd_index].command_descrip);
+				m_perm = USER_AUTH_FAILURE;
+			}
 		}
 
 	} else {
@@ -1445,7 +1617,7 @@ DaemonCommandProtocol::CommandProtocolResult DaemonCommandProtocol::SendResponse
 		pa_ad.Assign(ATTR_SEC_SID, m_sid);
 
 		// other commands this session is good for
-		pa_ad.Assign(ATTR_SEC_VALID_COMMANDS, daemonCore->GetCommandsInAuthLevel(m_comTable[m_cmd_index].perm,m_sock->isMappedFQU()).Value());
+		pa_ad.Assign(ATTR_SEC_VALID_COMMANDS, daemonCore->GetCommandsInAuthLevel(m_comTable[m_cmd_index].perm,m_sock->isMappedFQU()));
 
 		// what happened with command authorization?
 		if(m_reqFound) {
@@ -1525,14 +1697,52 @@ DaemonCommandProtocol::CommandProtocolResult DaemonCommandProtocol::SendResponse
 		}
 
 
-		// add the key to the cache
+		// add the key(s) to the cache
+
+		// if this is AES, we'll also create a derived fallback key
+		// (for UDP), if fallback is allowed.
+		//
+		// BLOWFISH is default, 3DES would be preferred in FIPS mode.
+		std::string fallback_method_str = "BLOWFISH";
+		Protocol fallback_method = CONDOR_BLOWFISH;
+		if (param_boolean("FIPS", false)) {
+			fallback_method_str = "3DES";
+			fallback_method = CONDOR_3DES;
+		}
+		dprintf(D_SECURITY|D_VERBOSE, "SESSION: fallback crypto method would be %s.\n", fallback_method_str.c_str());
+
+		std::vector<KeyInfo*> keyvec;
+		dprintf(D_SECURITY|D_VERBOSE, "SESSION: server checking key type: %i\n", (m_key ? m_key->getProtocol() : -1));
+		if (m_key) {
+			// put the normal key into the vector
+			keyvec.push_back(new KeyInfo(*m_key));
+
+			// now see if we want to (and are allowed) to add a fallback key in addition to AES
+			if (m_key->getProtocol() == CONDOR_AESGCM) {
+				std::string all_methods;
+				if (m_policy->LookupString(ATTR_SEC_CRYPTO_METHODS_LIST, all_methods)) {
+					dprintf(D_SECURITY|D_VERBOSE, "SESSION: found list: %s.\n", all_methods.c_str());
+					StringList sl(all_methods.c_str());
+					if (sl.contains_anycase(fallback_method_str.c_str())) {
+						keyvec.push_back(new KeyInfo(m_key->getKeyData(), 24, fallback_method, 0));
+						dprintf(D_SECURITY, "SESSION: server duplicated AES to %s key for UDP.\n",
+							fallback_method_str.c_str());
+					} else {
+						dprintf(D_SECURITY, "SESSION: %s not allowed.  UDP will not work.\n",
+							fallback_method_str.c_str());
+					}
+				} else {
+					dprintf(D_ALWAYS, "SESSION: no crypto methods list\n");
+				}
+			}
+		}
 
 		// This is a session for incoming connections, so
 		// do not pass in m_sock->peer_addr() as addr,
 		// because then this key would get confused for an
 		// outgoing session to a daemon with that IP and
 		// port as its command socket.
-		KeyCacheEntry tmp_key(m_sid, NULL, m_key, m_policy, expiration_time, session_lease );
+		KeyCacheEntry tmp_key(m_sid, NULL, keyvec, m_policy, expiration_time, session_lease );
 		m_sec_man->session_cache->insert(tmp_key);
 		dprintf (D_SECURITY, "DC_AUTHENTICATE: added incoming session id %s to cache for %i seconds (lease is %ds, return address is %s).\n", m_sid, durint, session_lease, return_addr ? return_addr : "unknown");
 		if (IsDebugVerbose(D_SECURITY)) {

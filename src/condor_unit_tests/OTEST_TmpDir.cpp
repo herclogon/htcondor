@@ -77,7 +77,7 @@ static bool test_cd2maindir_error_good(void);
 static bool test_cd2maindir_error_bad(void);
 
 //Global variables
-static MyString 
+static std::string 
 	deep_dir,
 	deep_dir_long,
 	original_dir,
@@ -162,12 +162,10 @@ static void setup() {
 
 	if ( PATH_MAX >= 4096 ) {
 		long_dir_depth = 10;
-	} else {
-#if defined(AIX) || defined(Solaris)
-		long_dir_depth = 3;
-#else
+	} else if ( PATH_MAX > 1024 ) {
 		long_dir_depth = 4;
-#endif
+	} else {
+		long_dir_depth = 3;
 	}
 
 	//Get current working directory
@@ -176,7 +174,7 @@ static void setup() {
 	//Get parent directory
 	cut_assert_z( chdir("..") );
 	cut_assert_true( condor_getcwd(parent_dir) );
-	cut_assert_z( chdir(original_dir.Value()) );
+	cut_assert_z( chdir(original_dir.c_str()) );
 
 	//Create a long string
 	for(int i = 0; i < 256; i++) {
@@ -194,45 +192,45 @@ static void setup() {
 	non_existent[13] = '\0';
 	non_existent_file[25] = '\0';
 
-	cut_assert_true( tmp.formatstr("testtmp%d", getpid()) );
+	cut_assert_true( formatstr(tmp, "testtmp%d", getpid()) );
 	
 	//Get deep directories
 	for(int i = 0; i < 9; i++) {
-		cut_assert_true( deep_dir.formatstr_cat("%s%c", tmp.Value(),
+		cut_assert_true( formatstr_cat(deep_dir, "%s%c", tmp.c_str(),
 			DIR_DELIM_CHAR) );
 	}
-	cut_assert_true( deep_dir.formatstr_cat("%s", tmp.Value()) );
+	cut_assert_true( formatstr_cat(deep_dir, "%s", tmp.c_str()) );
 	
 	for(int i = 0; i < long_dir_depth - 1; i++) {
-		cut_assert_true( deep_dir_long.formatstr_cat("%s%c", long_dir,
+		cut_assert_true( formatstr_cat(deep_dir_long, "%s%c", long_dir,
 						 DIR_DELIM_CHAR) );
 	}
-	cut_assert_true( deep_dir_long.formatstr_cat("%s", long_dir) );
+	cut_assert_true( formatstr_cat(deep_dir_long, "%s", long_dir) );
 	
 	//Make some directories to test
 	for(int i = 0; i < 10; i++) {
-		cut_assert_z( mkdir(tmp.Value(), 0700) );
-		cut_assert_z( chdir(tmp.Value()) );
+		cut_assert_z( mkdir(tmp.c_str(), 0700) );
+		cut_assert_z( chdir(tmp.c_str()) );
 	}
-	cut_assert_z( chdir(original_dir.Value()) );
+	cut_assert_z( chdir(original_dir.c_str()) );
 
 	//Make some directories to test
 	for(int i = 0; i < long_dir_depth; i++) {
 		cut_assert_z( mkdir(long_dir, 0700) );
 		cut_assert_z( chdir(long_dir) );
 	}
-	cut_assert_z( chdir(original_dir.Value()) );
+	cut_assert_z( chdir(original_dir.c_str()) );
 }
 
 static void cleanup() {
 	
-	cut_assert_z( chdir(original_dir.Value()) );
-	cut_assert_z( chdir(deep_dir.Value()) );
+	cut_assert_z( chdir(original_dir.c_str()) );
+	cut_assert_z( chdir(deep_dir.c_str()) );
 
 	//Remove the directories
 	for(int i = 0; i < 10; i++) {
 		cut_assert_z( chdir("..") );
-		cut_assert_z( rmdir(tmp.Value()) );
+		cut_assert_z( rmdir(tmp.c_str()) );
 	}
 	
 	for(int i = 0; i < long_dir_depth; i++) {
@@ -256,10 +254,10 @@ static bool test_cd2tmpdir_null() {
 	emit_param("Error Message", "");
 	emit_output_expected_header();
 	emit_retval("TRUE");
-	emit_param("Temporary Working Directory", "\n\t\t%s", original_dir.Value());
+	emit_param("Temporary Working Directory", "\n\t\t%s", original_dir.c_str());
 	emit_param("Current Working Directory after delete", "\n\t\t%s",
-		original_dir.Value());
-	MyString temporary_dir, current_dir, err_msg;
+		original_dir.c_str());
+	std::string temporary_dir, current_dir, err_msg;
 	TmpDir* tmp_dir = new TmpDir();
 	bool ret_val = tmp_dir->Cd2TmpDir(NULL, err_msg);
 	condor_getcwd(temporary_dir);
@@ -268,9 +266,9 @@ static bool test_cd2tmpdir_null() {
 	emit_output_actual_header();
 	emit_retval("%s", tfstr(ret_val));
 	emit_param("Temporary Working Directory", "\n\t\t%s",
-		temporary_dir.Value());
+		temporary_dir.c_str());
 	emit_param("Current Working Directory after delete", "\n\t\t%s",
-		current_dir.Value());
+		current_dir.c_str());
 	if(!ret_val || temporary_dir != original_dir || 
 		current_dir != original_dir)
 	{
@@ -287,10 +285,10 @@ static bool test_cd2tmpdir_empty() {
 	emit_param("Error Message", "");
 	emit_output_expected_header();
 	emit_retval("TRUE");
-	emit_param("Temporary Working Directory", "\n\t\t%s", original_dir.Value());
+	emit_param("Temporary Working Directory", "\n\t\t%s", original_dir.c_str());
 	emit_param("Current Working Directory after delete", "\n\t\t%s",
-		original_dir.Value());
-	MyString temporary_dir, current_dir, err_msg;
+		original_dir.c_str());
+	std::string temporary_dir, current_dir, err_msg;
 	TmpDir* tmp_dir = new TmpDir();
 	bool ret_val = tmp_dir->Cd2TmpDir(empty, err_msg);
 	condor_getcwd(temporary_dir);
@@ -299,9 +297,9 @@ static bool test_cd2tmpdir_empty() {
 	emit_output_actual_header();
 	emit_retval("%s", tfstr(ret_val));
 	emit_param("Temporary Working Directory", "\n\t\t%s",
-		temporary_dir.Value());
+		temporary_dir.c_str());
 	emit_param("Current Working Directory after delete", "\n\t\t%s",
-		current_dir.Value());
+		current_dir.c_str());
 	if(!ret_val || temporary_dir != original_dir || 
 		current_dir != original_dir)
 	{
@@ -318,10 +316,10 @@ static bool test_cd2tmpdir_dot() {
 	emit_param("Error Message", "");
 	emit_output_expected_header();
 	emit_retval("TRUE");
-	emit_param("Temporary Working Directory", "\n\t\t%s", original_dir.Value());
+	emit_param("Temporary Working Directory", "\n\t\t%s", original_dir.c_str());
 	emit_param("Current Working Directory after delete", "\n\t\t%s",
-		original_dir.Value());
-	MyString temporary_dir, current_dir, err_msg;
+		original_dir.c_str());
+	std::string temporary_dir, current_dir, err_msg;
 	TmpDir* tmp_dir = new TmpDir();
 	bool ret_val = tmp_dir->Cd2TmpDir(dot, err_msg);
 	condor_getcwd(temporary_dir);
@@ -330,9 +328,9 @@ static bool test_cd2tmpdir_dot() {
 	emit_output_actual_header();
 	emit_retval("%s", tfstr(ret_val));
 	emit_param("Temporary Working Directory", "\n\t\t%s",
-		temporary_dir.Value());
+		temporary_dir.c_str());
 	emit_param("Current Working Directory after delete", "\n\t\t%s",
-		current_dir.Value());
+		current_dir.c_str());
 	if(!ret_val || temporary_dir != original_dir || 
 		current_dir != original_dir)
 	{
@@ -349,10 +347,10 @@ static bool test_cd2tmpdir_dot_dot() {
 	emit_param("Error Message", "");
 	emit_output_expected_header();
 	emit_retval("TRUE");
-	emit_param("Temporary Working Directory", "\n\t\t%s", parent_dir.Value());
+	emit_param("Temporary Working Directory", "\n\t\t%s", parent_dir.c_str());
 	emit_param("Current Working Directory after delete", "\n\t\t%s",
-		original_dir.Value());
-	MyString temporary_dir, current_dir, err_msg;
+		original_dir.c_str());
+	std::string temporary_dir, current_dir, err_msg;
 	TmpDir* tmp_dir = new TmpDir();
 	bool ret_val = tmp_dir->Cd2TmpDir(dotdot, err_msg);
 	condor_getcwd(temporary_dir);
@@ -361,9 +359,9 @@ static bool test_cd2tmpdir_dot_dot() {
 	emit_output_actual_header();
 	emit_retval("%s", tfstr(ret_val));
 	emit_param("Temporary Working Directory", "\n\t\t%s",
-		temporary_dir.Value());
+		temporary_dir.c_str());
 	emit_param("Current Working Directory after delete", "\n\t\t%s",
-		current_dir.Value());
+		current_dir.c_str());
 	if(!ret_val || temporary_dir != parent_dir || 
 		current_dir != original_dir)
 	{
@@ -376,29 +374,29 @@ static bool test_cd2tmpdir_dot_dot_back() {
 	emit_test("Test that Cd2TmpDir() returns true and changes the current "
 		"working directory to the current directory for a path that goes up a "
 		"directory and then back to the original directory.");
-	const char* basename = condor_basename(original_dir.Value());
-	MyString path;
-	path.formatstr("%s%c%s", dotdot, DIR_DELIM_CHAR, basename);
+	const char* basename = condor_basename(original_dir.c_str());
+	std::string path;
+	formatstr(path, "%s%c%s", dotdot, DIR_DELIM_CHAR, basename);
 	emit_input_header();
-	emit_param("Directory", "%s", path.Value());
+	emit_param("Directory", "%s", path.c_str());
 	emit_param("Error Message", "");
 	emit_output_expected_header();
 	emit_retval("TRUE");
-	emit_param("Temporary Working Directory", "\n\t\t%s", original_dir.Value());
+	emit_param("Temporary Working Directory", "\n\t\t%s", original_dir.c_str());
 	emit_param("Current Working Directory after delete", "\n\t\t%s",
-		original_dir.Value());
-	MyString temporary_dir, current_dir, err_msg;
+		original_dir.c_str());
+	std::string temporary_dir, current_dir, err_msg;
 	TmpDir* tmp_dir = new TmpDir();
-	bool ret_val = tmp_dir->Cd2TmpDir(path.Value(), err_msg);
+	bool ret_val = tmp_dir->Cd2TmpDir(path.c_str(), err_msg);
 	condor_getcwd(temporary_dir);
 	delete tmp_dir;
 	condor_getcwd(current_dir);
 	emit_output_actual_header();
 	emit_retval("%s", tfstr(ret_val));
 	emit_param("Temporary Working Directory", "\n\t\t%s",
-		temporary_dir.Value());
+		temporary_dir.c_str());
 	emit_param("Current Working Directory after delete", "\n\t\t%s",
-		current_dir.Value());
+		current_dir.c_str());
 	if(!ret_val || temporary_dir != original_dir || 
 		current_dir != original_dir)
 	{
@@ -423,8 +421,8 @@ static bool test_cd2tmpdir_temp_path() {
 	emit_retval("TRUE");
 	emit_param("Temporary Working Directory", "\n\t\t%s", path);
 	emit_param("Current Working Directory after delete", "\n\t\t%s",
-		original_dir.Value());
-	MyString temporary_dir, current_dir, err_msg;
+		original_dir.c_str());
+	std::string temporary_dir, current_dir, err_msg;
 	TmpDir* tmp_dir = new TmpDir();
 	bool ret_val = tmp_dir->Cd2TmpDir(path, err_msg);
 	condor_getcwd(temporary_dir);
@@ -433,9 +431,9 @@ static bool test_cd2tmpdir_temp_path() {
 	emit_output_actual_header();
 	emit_retval("%s", tfstr(ret_val));
 	emit_param("Temporary Working Directory", "\n\t\t%s",
-		temporary_dir.Value());
+		temporary_dir.c_str());
 	emit_param("Current Working Directory after delete", "\n\t\t%s",
-		current_dir.Value());
+		current_dir.c_str());
 #if defined(DARWIN)
 	// On Mac OS X, /tmp is a symlink to /private/tmp. So treat them the
 	// same for considering whether the test passes.
@@ -455,27 +453,27 @@ static bool test_cd2tmpdir_short() {
 	emit_test("Test that Cd2TmpDir() returns true and changes the current "
 		"working directory to a short directory that exists.");
 	emit_input_header();
-	emit_param("Directory", "%s", tmp.Value());
+	emit_param("Directory", "%s", tmp.c_str());
 	emit_param("Error Message", "");
-	MyString temporary_dir, current_dir, expect_dir, err_msg;
-	expect_dir.formatstr("%s%c%s", original_dir.Value(), DIR_DELIM_CHAR,
-		tmp.Value());
+	std::string temporary_dir, current_dir, expect_dir, err_msg;
+	formatstr(expect_dir, "%s%c%s", original_dir.c_str(), DIR_DELIM_CHAR,
+		tmp.c_str());
 	emit_output_expected_header();
 	emit_retval("TRUE");
-	emit_param("Temporary Working Directory", "\n\t\t%s", expect_dir.Value());
+	emit_param("Temporary Working Directory", "\n\t\t%s", expect_dir.c_str());
 	emit_param("Current Working Directory after delete", "\n\t\t%s",
-		original_dir.Value());
+		original_dir.c_str());
 	TmpDir* tmp_dir = new TmpDir();
-	bool ret_val = tmp_dir->Cd2TmpDir(tmp.Value(), err_msg);
+	bool ret_val = tmp_dir->Cd2TmpDir(tmp.c_str(), err_msg);
 	condor_getcwd(temporary_dir);
 	delete tmp_dir;
 	condor_getcwd(current_dir);
 	emit_output_actual_header();
 	emit_retval("%s", tfstr(ret_val));
 	emit_param("Temporary Working Directory", "\n\t\t%s",
-		temporary_dir.Value());
+		temporary_dir.c_str());
 	emit_param("Current Working Directory after delete", "\n\t\t%s",
-		current_dir.Value());
+		current_dir.c_str());
 	if(!ret_val || temporary_dir != expect_dir || current_dir != original_dir) {
 		FAIL;
 	}
@@ -488,14 +486,14 @@ static bool test_cd2tmpdir_long() {
 	emit_input_header();
 	emit_param("Directory", "%s", long_dir);
 	emit_param("Error Message", "");
-	MyString temporary_dir, current_dir, expect_dir, err_msg;
-	expect_dir.formatstr("%s%c%s", original_dir.Value(), DIR_DELIM_CHAR,
+	std::string temporary_dir, current_dir, expect_dir, err_msg;
+	formatstr(expect_dir, "%s%c%s", original_dir.c_str(), DIR_DELIM_CHAR,
 		long_dir);
 	emit_output_expected_header();
 	emit_retval("TRUE");
-	emit_param("Temporary Working Directory", "\n\t\t%s", expect_dir.Value());
+	emit_param("Temporary Working Directory", "\n\t\t%s", expect_dir.c_str());
 	emit_param("Current Working Directory after delete", "\n\t\t%s",
-		original_dir.Value());
+		original_dir.c_str());
 	TmpDir* tmp_dir = new TmpDir();
 	bool ret_val = tmp_dir->Cd2TmpDir(long_dir, err_msg);
 	condor_getcwd(temporary_dir);
@@ -504,9 +502,9 @@ static bool test_cd2tmpdir_long() {
 	emit_output_actual_header();
 	emit_retval("%s", tfstr(ret_val));
 	emit_param("Temporary Working Directory", "\n\t\t%s",
-		temporary_dir.Value());
+		temporary_dir.c_str());
 	emit_param("Current Working Directory after delete", "\n\t\t%s",
-		current_dir.Value());
+		current_dir.c_str());
 	if(!ret_val || temporary_dir != expect_dir || current_dir != original_dir) {
 		FAIL;
 	}
@@ -517,27 +515,27 @@ static bool test_cd2tmpdir_deep_short() {
 	emit_test("Test that Cd2TmpDir() returns true and changes the current "
 		"working directory to a short deep directory that exists.");
 	emit_input_header();
-	emit_param("Directory", "%s", deep_dir.Value());
+	emit_param("Directory", "%s", deep_dir.c_str());
 	emit_param("Error Message", "");
-	MyString temporary_dir, current_dir, expect_dir, err_msg;
-	expect_dir.formatstr("%s%c%s", original_dir.Value(), DIR_DELIM_CHAR,
-		deep_dir.Value());
+	std::string temporary_dir, current_dir, expect_dir, err_msg;
+	formatstr(expect_dir, "%s%c%s", original_dir.c_str(), DIR_DELIM_CHAR,
+		deep_dir.c_str());
 	emit_output_expected_header();
 	emit_retval("TRUE");
-	emit_param("Temporary Working Directory", "\n\t\t%s", expect_dir.Value());
+	emit_param("Temporary Working Directory", "\n\t\t%s", expect_dir.c_str());
 	emit_param("Current Working Directory after delete", "\n\t\t%s",
-		original_dir.Value());
+		original_dir.c_str());
 	TmpDir* tmp_dir = new TmpDir();
-	bool ret_val = tmp_dir->Cd2TmpDir(deep_dir.Value(), err_msg);
+	bool ret_val = tmp_dir->Cd2TmpDir(deep_dir.c_str(), err_msg);
 	condor_getcwd(temporary_dir);
 	delete tmp_dir;
 	condor_getcwd(current_dir);
 	emit_output_actual_header();
 	emit_retval("%s", tfstr(ret_val));
 	emit_param("Temporary Working Directory", "\n\t\t%s",
-		temporary_dir.Value());
+		temporary_dir.c_str());
 	emit_param("Current Working Directory after delete", "\n\t\t%s",
-		current_dir.Value());
+		current_dir.c_str());
 	if(!ret_val || temporary_dir != expect_dir || current_dir != original_dir) {
 		FAIL;
 	}
@@ -548,27 +546,27 @@ static bool test_cd2tmpdir_deep_long() {
 	emit_test("Test that Cd2TmpDir() returns true and changes the current "
 		"working directory for a long deep directory that exists.");
 	emit_input_header();
-	emit_param("Directory", "%s", deep_dir_long.Value());
+	emit_param("Directory", "%s", deep_dir_long.c_str());
 	emit_param("Error Message", "");
-	MyString temporary_dir, current_dir, expect_dir, err_msg;
-	expect_dir.formatstr("%s%c%s", original_dir.Value(), DIR_DELIM_CHAR,
-		deep_dir_long.Value());
+	std::string temporary_dir, current_dir, expect_dir, err_msg;
+	formatstr(expect_dir, "%s%c%s", original_dir.c_str(), DIR_DELIM_CHAR,
+		deep_dir_long.c_str());
 	emit_output_expected_header();
 	emit_retval("TRUE");
-	emit_param("Temporary Working Directory", "\n\t\t%s", expect_dir.Value());
+	emit_param("Temporary Working Directory", "\n\t\t%s", expect_dir.c_str());
 	emit_param("Current Working Directory after delete", "\n\t\t%s",
-		original_dir.Value());
+		original_dir.c_str());
 	TmpDir* tmp_dir = new TmpDir();
-	bool ret_val = tmp_dir->Cd2TmpDir(deep_dir_long.Value(), err_msg);
+	bool ret_val = tmp_dir->Cd2TmpDir(deep_dir_long.c_str(), err_msg);
 	condor_getcwd(temporary_dir);
 	delete tmp_dir;
 	condor_getcwd(current_dir);
 	emit_output_actual_header();
 	emit_retval("%s", tfstr(ret_val));
 	emit_param("Temporary Working Directory", "\n\t\t%s",
-		temporary_dir.Value());
+		temporary_dir.c_str());
 	emit_param("Current Working Directory after delete", "\n\t\t%s",
-		current_dir.Value());
+		current_dir.c_str());
 	if(!ret_val || temporary_dir != expect_dir || current_dir != original_dir) {
 		FAIL;
 	}
@@ -579,36 +577,36 @@ static bool test_cd2tmpdir_multiple() {
 	emit_test("Test that Cd2TmpDir() returns true and changes the current "
 		"working directory for multiple calls into directories that exist.");
 	emit_input_header();
-	emit_param("Directory", "%s", tmp.Value());
+	emit_param("Directory", "%s", tmp.c_str());
 	emit_param("Error Message", "");
-	MyString temporary_dir, current_dir, expect_dir, err_msg;
-	expect_dir.formatstr("%s%c%s", original_dir.Value(), DIR_DELIM_CHAR,
-		deep_dir.Value());
+	std::string temporary_dir, current_dir, expect_dir, err_msg;
+	formatstr(expect_dir, "%s%c%s", original_dir.c_str(), DIR_DELIM_CHAR,
+		deep_dir.c_str());
 	emit_output_expected_header();
 	emit_retval("TRUE");
-	emit_param("Temporary Working Directory", "\n\t\t%s", expect_dir.Value());
+	emit_param("Temporary Working Directory", "\n\t\t%s", expect_dir.c_str());
 	emit_param("Current Working Directory after delete", "\n\t\t%s",
-		original_dir.Value());
+		original_dir.c_str());
 	TmpDir* tmp_dir = new TmpDir();
-	bool ret_val = tmp_dir->Cd2TmpDir(tmp.Value(), err_msg) &&
-		tmp_dir->Cd2TmpDir(tmp.Value(), err_msg) &&
-		tmp_dir->Cd2TmpDir(tmp.Value(), err_msg) &&
-		tmp_dir->Cd2TmpDir(tmp.Value(), err_msg) &&
-		tmp_dir->Cd2TmpDir(tmp.Value(), err_msg) &&
-		tmp_dir->Cd2TmpDir(tmp.Value(), err_msg) &&
-		tmp_dir->Cd2TmpDir(tmp.Value(), err_msg) &&
-		tmp_dir->Cd2TmpDir(tmp.Value(), err_msg) &&
-		tmp_dir->Cd2TmpDir(tmp.Value(), err_msg) &&
-		tmp_dir->Cd2TmpDir(tmp.Value(), err_msg);
+	bool ret_val = tmp_dir->Cd2TmpDir(tmp.c_str(), err_msg) &&
+		tmp_dir->Cd2TmpDir(tmp.c_str(), err_msg) &&
+		tmp_dir->Cd2TmpDir(tmp.c_str(), err_msg) &&
+		tmp_dir->Cd2TmpDir(tmp.c_str(), err_msg) &&
+		tmp_dir->Cd2TmpDir(tmp.c_str(), err_msg) &&
+		tmp_dir->Cd2TmpDir(tmp.c_str(), err_msg) &&
+		tmp_dir->Cd2TmpDir(tmp.c_str(), err_msg) &&
+		tmp_dir->Cd2TmpDir(tmp.c_str(), err_msg) &&
+		tmp_dir->Cd2TmpDir(tmp.c_str(), err_msg) &&
+		tmp_dir->Cd2TmpDir(tmp.c_str(), err_msg);
 	condor_getcwd(temporary_dir);
 	delete tmp_dir;
 	condor_getcwd(current_dir);
 	emit_output_actual_header();
 	emit_retval("%s", tfstr(ret_val));
 	emit_param("Temporary Working Directory", "\n\t\t%s",
-		temporary_dir.Value());
+		temporary_dir.c_str());
 	emit_param("Current Working Directory after delete", "\n\t\t%s",
-		current_dir.Value());
+		current_dir.c_str());
 	if(!ret_val || temporary_dir != expect_dir || current_dir != original_dir) {
 		FAIL;
 	}
@@ -621,7 +619,7 @@ static bool test_cd2tmpdir_multiple_different() {
 		"directories that result in the current directory.");
 	emit_input_header();
 	emit_param("Directory", "%s", dot);
-	emit_param("Directory", "%s", tmp.Value());
+	emit_param("Directory", "%s", tmp.c_str());
 	emit_param("Directory", "%s", dot);
 	emit_param("Directory", "%s", dotdot);
 	emit_param("Directory", "%s", dot);
@@ -629,13 +627,13 @@ static bool test_cd2tmpdir_multiple_different() {
 	emit_output_expected_header();
 	emit_retval("TRUE");
 	emit_param("Temporary Working Directory", "\n\t\t%s",
-		original_dir.Value());
+		original_dir.c_str());
 	emit_param("Current Working Directory after delete", "\n\t\t%s",
-		original_dir.Value());
-	MyString temporary_dir, current_dir, err_msg;
+		original_dir.c_str());
+	std::string temporary_dir, current_dir, err_msg;
 	TmpDir* tmp_dir = new TmpDir();
 	bool ret_val = tmp_dir->Cd2TmpDir(dot, err_msg) &&
-		tmp_dir->Cd2TmpDir(tmp.Value(), err_msg) &&
+		tmp_dir->Cd2TmpDir(tmp.c_str(), err_msg) &&
 		tmp_dir->Cd2TmpDir(dot, err_msg) &&
 		tmp_dir->Cd2TmpDir(dotdot, err_msg) &&
 		tmp_dir->Cd2TmpDir(dot, err_msg);
@@ -645,9 +643,9 @@ static bool test_cd2tmpdir_multiple_different() {
 	emit_output_actual_header();
 	emit_retval("%s", tfstr(ret_val));
 	emit_param("Temporary Working Directory", "\n\t\t%s",
-		temporary_dir.Value());
+		temporary_dir.c_str());
 	emit_param("Current Working Directory after delete", "\n\t\t%s",
-		current_dir.Value());
+		current_dir.c_str());
 	if(!ret_val || temporary_dir != original_dir || 
 		current_dir != original_dir)
 	{
@@ -665,10 +663,10 @@ static bool test_cd2tmpdir_not_exist() {
 	emit_output_expected_header();
 	emit_retval("FALSE");
 	emit_param("Temporary Working Directory", "\n\t\t%s",
-		original_dir.Value());
+		original_dir.c_str());
 	emit_param("Current Working Directory after delete", "\n\t\t%s",
-		original_dir.Value());
-	MyString temporary_dir, current_dir, err_msg;
+		original_dir.c_str());
+	std::string temporary_dir, current_dir, err_msg;
 	TmpDir* tmp_dir = new TmpDir();
 	bool ret_val = tmp_dir->Cd2TmpDir(non_existent, err_msg);
 	condor_getcwd(temporary_dir);
@@ -677,9 +675,9 @@ static bool test_cd2tmpdir_not_exist() {
 	emit_output_actual_header();
 	emit_retval("%s", tfstr(ret_val));
 	emit_param("Temporary Working Directory", "\n\t\t%s",
-		temporary_dir.Value());
+		temporary_dir.c_str());
 	emit_param("Current Working Directory after delete", "\n\t\t%s",
-		current_dir.Value());
+		current_dir.c_str());
 	if(ret_val || temporary_dir != original_dir || 
 		current_dir != original_dir)
 	{
@@ -698,10 +696,10 @@ static bool test_cd2tmpdir_not_exist_file() {
 	emit_output_expected_header();
 	emit_retval("FALSE");
 	emit_param("Temporary Working Directory", "\n\t\t%s",
-		original_dir.Value());
+		original_dir.c_str());
 	emit_param("Current Working Directory after delete", "\n\t\t%s",
-		original_dir.Value());
-	MyString temporary_dir, current_dir, err_msg;
+		original_dir.c_str());
+	std::string temporary_dir, current_dir, err_msg;
 	TmpDir* tmp_dir = new TmpDir();
 	bool ret_val = tmp_dir->Cd2TmpDir(readme, err_msg);
 	condor_getcwd(temporary_dir);
@@ -710,9 +708,9 @@ static bool test_cd2tmpdir_not_exist_file() {
 	emit_output_actual_header();
 	emit_retval("%s", tfstr(ret_val));
 	emit_param("Temporary Working Directory", "\n\t\t%s",
-		temporary_dir.Value());
+		temporary_dir.c_str());
 	emit_param("Current Working Directory after delete", "\n\t\t%s",
-		current_dir.Value());
+		current_dir.c_str());
 	if(ret_val || temporary_dir != original_dir || 
 		current_dir != original_dir)
 	{
@@ -723,19 +721,19 @@ static bool test_cd2tmpdir_not_exist_file() {
 
 static bool test_cd2tmpdir_error_exist() {
 	emit_test("Test that Cd2TmpDir() doesn't put anything in the error message"
-		" MyString for a directory that exists.");
+		" std::string for a directory that exists.");
 	emit_input_header();
-	emit_param("Directory", "%s", tmp.Value());
+	emit_param("Directory", "%s", tmp.c_str());
 	emit_param("Error Message", "");
 	emit_output_expected_header();
 	emit_param("Error Message", "");
-	MyString err_msg;
+	std::string err_msg;
 	TmpDir* tmp_dir = new TmpDir();
-	tmp_dir->Cd2TmpDir(tmp.Value(), err_msg);
+	tmp_dir->Cd2TmpDir(tmp.c_str(), err_msg);
 	emit_output_actual_header();
-	emit_param("Error Message", err_msg.Value());
+	emit_param("Error Message", err_msg.c_str());
 	delete tmp_dir;
-	if(!err_msg.IsEmpty()) {
+	if(!err_msg.empty()) {
 		FAIL;
 	}
 	PASS;
@@ -743,19 +741,19 @@ static bool test_cd2tmpdir_error_exist() {
 
 static bool test_cd2tmpdir_error_not_exist() {
 	emit_test("Test that Cd2TmpDir() puts something in the error message "
-		"MyString for a directory that doesn't exist.");
+		"std::string for a directory that doesn't exist.");
 	emit_comment("We just check that the error message is not empty, not its "
 		"contents.");
 	emit_input_header();
 	emit_param("Directory", "%s", non_existent);
 	emit_param("Error Message", "");
-	MyString err_msg;
+	std::string err_msg;
 	TmpDir* tmp_dir = new TmpDir();
 	tmp_dir->Cd2TmpDir(non_existent, err_msg);
 	emit_output_actual_header();
-	emit_param("Error Message", "%s", err_msg.Value());
+	emit_param("Error Message", "%s", err_msg.c_str());
 	delete tmp_dir;
-	if(err_msg.IsEmpty()) {
+	if(err_msg.empty()) {
 		FAIL;
 	}
 	PASS;
@@ -763,20 +761,20 @@ static bool test_cd2tmpdir_error_not_exist() {
 
 static bool test_cd2tmpdir_error_not_exist_file() {
 	emit_test("Test that Cd2TmpDir() puts something in the error message "
-		"MyString for a directory that doesn't exist, but is actually a file "
+		"std::string for a directory that doesn't exist, but is actually a file "
 		"name.");
 	emit_comment("We just check that the error message is not empty, not its "
 		"contents.");
 	emit_input_header();
 	emit_param("Directory", "%s", readme);
 	emit_param("Error Message", "");
-	MyString err_msg;
+	std::string err_msg;
 	TmpDir* tmp_dir = new TmpDir();
 	tmp_dir->Cd2TmpDir(readme, err_msg);
 	emit_output_actual_header();
-	emit_param("Error Message", "%s", err_msg.Value());
+	emit_param("Error Message", "%s", err_msg.c_str());
 	delete tmp_dir;
-	if(err_msg.IsEmpty()) {
+	if(err_msg.empty()) {
 		FAIL;
 	}
 	PASS;
@@ -791,10 +789,10 @@ static bool test_cd2tmpdirfile_null() {
 	emit_output_expected_header();
 	emit_retval("TRUE");
 	emit_param("Temporary Working Directory", "\n\t\t%s",
-		original_dir.Value());
+		original_dir.c_str());
 	emit_param("Current Working Directory after delete", "\n\t\t%s",
-		original_dir.Value());
-	MyString temporary_dir, current_dir, err_msg;
+		original_dir.c_str());
+	std::string temporary_dir, current_dir, err_msg;
 	TmpDir* tmp_dir = new TmpDir();
 	bool ret_val = tmp_dir->Cd2TmpDirFile(NULL, err_msg);
 	condor_getcwd(temporary_dir);
@@ -803,9 +801,9 @@ static bool test_cd2tmpdirfile_null() {
 	emit_output_actual_header();
 	emit_retval("%s", tfstr(ret_val));
 	emit_param("Temporary Working Directory", "\n\t\t%s",
-		temporary_dir.Value());
+		temporary_dir.c_str());
 	emit_param("Current Working Directory after delete", "\n\t\t%s",
-		current_dir.Value());
+		current_dir.c_str());
 	if(!ret_val || temporary_dir != original_dir || 
 		current_dir != original_dir)
 	{
@@ -823,10 +821,10 @@ static bool test_cd2tmpdirfile_empty() {
 	emit_output_expected_header();
 	emit_retval("TRUE");
 	emit_param("Temporary Working Directory", "\n\t\t%s",
-		original_dir.Value());
+		original_dir.c_str());
 	emit_param("Current Working Directory after delete", "\n\t\t%s",
-		original_dir.Value());
-	MyString temporary_dir, current_dir, err_msg;
+		original_dir.c_str());
+	std::string temporary_dir, current_dir, err_msg;
 	TmpDir* tmp_dir = new TmpDir();
 	bool ret_val = tmp_dir->Cd2TmpDirFile(empty, err_msg);
 	condor_getcwd(temporary_dir);
@@ -835,9 +833,9 @@ static bool test_cd2tmpdirfile_empty() {
 	emit_output_actual_header();
 	emit_retval("%s", tfstr(ret_val));
 	emit_param("Temporary Working Directory", "\n\t\t%s",
-		temporary_dir.Value());
+		temporary_dir.c_str());
 	emit_param("Current Working Directory after delete", "\n\t\t%s",
-		current_dir.Value());
+		current_dir.c_str());
 	if(!ret_val || temporary_dir != original_dir || 
 		current_dir != original_dir)
 	{
@@ -849,29 +847,29 @@ static bool test_cd2tmpdirfile_empty() {
 static bool test_cd2tmpdirfile_directory() {
 	emit_test("Test that Cd2TmpDirFile() returns true and changes the current "
 		"working directory for a valid file directory.");
-	MyString temporary_dir, current_dir, expect_dir, dir, err_msg;
-	dir.formatstr("%s%c%s", tmp.Value(), DIR_DELIM_CHAR, tmp.Value());
+	std::string temporary_dir, current_dir, expect_dir, dir, err_msg;
+	formatstr(dir, "%s%c%s", tmp.c_str(), DIR_DELIM_CHAR, tmp.c_str());
 	emit_input_header();
-	emit_param("File Directory", "%s", dir.Value());
+	emit_param("File Directory", "%s", dir.c_str());
 	emit_param("Error Message", "");
-	expect_dir.formatstr("%s%c%s", original_dir.Value(), DIR_DELIM_CHAR,
-		tmp.Value());
+	formatstr(expect_dir, "%s%c%s", original_dir.c_str(), DIR_DELIM_CHAR,
+		tmp.c_str());
 	emit_output_expected_header();
 	emit_retval("TRUE");
-	emit_param("Temporary Working Directory", "\n\t\t%s", expect_dir.Value());
+	emit_param("Temporary Working Directory", "\n\t\t%s", expect_dir.c_str());
 	emit_param("Current Working Directory after delete", "\n\t\t%s",
-		original_dir.Value());
+		original_dir.c_str());
 	TmpDir* tmp_dir = new TmpDir();
-	bool ret_val = tmp_dir->Cd2TmpDirFile(dir.Value(), err_msg);
+	bool ret_val = tmp_dir->Cd2TmpDirFile(dir.c_str(), err_msg);
 	condor_getcwd(temporary_dir);
 	delete tmp_dir;
 	condor_getcwd(current_dir);
 	emit_output_actual_header();
 	emit_retval("%s", tfstr(ret_val));
 	emit_param("Temporary Working Directory", "\n\t\t%s",
-		temporary_dir.Value());
+		temporary_dir.c_str());
 	emit_param("Current Working Directory after delete", "\n\t\t%s",
-		current_dir.Value());
+		current_dir.c_str());
 	if(!ret_val || temporary_dir != expect_dir || current_dir != original_dir) {
 		FAIL;
 	}
@@ -887,10 +885,10 @@ static bool test_cd2tmpdirfile_file() {
 	emit_output_expected_header();
 	emit_retval("TRUE");
 	emit_param("Temporary Working Directory", "\n\t\t%s",
-		original_dir.Value());
+		original_dir.c_str());
 	emit_param("Current Working Directory after delete", "\n\t\t%s",
-		original_dir.Value());
-	MyString temporary_dir, current_dir, err_msg;
+		original_dir.c_str());
+	std::string temporary_dir, current_dir, err_msg;
 	TmpDir* tmp_dir = new TmpDir();
 	bool ret_val = tmp_dir->Cd2TmpDirFile(readme, err_msg);
 	condor_getcwd(temporary_dir);
@@ -899,9 +897,9 @@ static bool test_cd2tmpdirfile_file() {
 	emit_output_actual_header();
 	emit_retval("%s", tfstr(ret_val));
 	emit_param("Temporary Working Directory", "\n\t\t%s",
-		temporary_dir.Value());
+		temporary_dir.c_str());
 	emit_param("Current Working Directory after delete", "\n\t\t%s",
-		current_dir.Value());
+		current_dir.c_str());
 	if(!ret_val || temporary_dir != original_dir || 
 		current_dir != original_dir)
 	{
@@ -919,10 +917,10 @@ static bool test_cd2tmpdirfile_not_exist_directory() {
 	emit_output_expected_header();
 	emit_retval("FALSE");
 	emit_param("Temporary Working Directory", "\n\t\t%s",
-		original_dir.Value());
+		original_dir.c_str());
 	emit_param("Current Working Directory after delete", "\n\t\t%s",
-		original_dir.Value());
-	MyString temporary_dir, current_dir, err_msg;
+		original_dir.c_str());
+	std::string temporary_dir, current_dir, err_msg;
 	TmpDir* tmp_dir = new TmpDir();
 	bool ret_val = tmp_dir->Cd2TmpDirFile(non_existent, err_msg);
 	condor_getcwd(temporary_dir);
@@ -931,9 +929,9 @@ static bool test_cd2tmpdirfile_not_exist_directory() {
 	emit_output_actual_header();
 	emit_retval("%s", tfstr(ret_val));
 	emit_param("Temporary Working Directory", "\n\t\t%s",
-		temporary_dir.Value());
+		temporary_dir.c_str());
 	emit_param("Current Working Directory after delete", "\n\t\t%s",
-		current_dir.Value());
+		current_dir.c_str());
 	if(ret_val || temporary_dir != original_dir || 
 		current_dir != original_dir)
 	{
@@ -951,10 +949,10 @@ static bool test_cd2tmpdirfile_not_exist_file() {
 	emit_output_expected_header();
 	emit_retval("FALSE");
 	emit_param("Temporary Working Directory", "\n\t\t%s",
-		original_dir.Value());
+		original_dir.c_str());
 	emit_param("Current Working Directory after delete", "\n\t\t%s",
-		original_dir.Value());
-	MyString temporary_dir, current_dir, err_msg;
+		original_dir.c_str());
+	std::string temporary_dir, current_dir, err_msg;
 	TmpDir* tmp_dir = new TmpDir();
 	bool ret_val = tmp_dir->Cd2TmpDirFile(non_existent_file, err_msg);
 	condor_getcwd(temporary_dir);
@@ -963,9 +961,9 @@ static bool test_cd2tmpdirfile_not_exist_file() {
 	emit_output_actual_header();
 	emit_retval("%s", tfstr(ret_val));
 	emit_param("Temporary Working Directory", "\n\t\t%s",
-		temporary_dir.Value());
+		temporary_dir.c_str());
 	emit_param("Current Working Directory after delete", "\n\t\t%s",
-		current_dir.Value());
+		current_dir.c_str());
 	if(ret_val || temporary_dir != original_dir || 
 		current_dir != original_dir)
 	{
@@ -976,19 +974,19 @@ static bool test_cd2tmpdirfile_not_exist_file() {
 
 static bool test_cd2tmpdirfile_error_exist() {
 	emit_test("Test that Cd2TmpDirFile() doesn't put anything in the error "
-		"message MyString for a file directory that exists.");
+		"message std::string for a file directory that exists.");
 	emit_input_header();
 	emit_param("File Directory", "%s", readme);
 	emit_param("Error Message", "");
 	emit_output_expected_header();
 	emit_param("Error Message", "");
-	MyString err_msg;
+	std::string err_msg;
 	TmpDir* tmp_dir = new TmpDir();
 	tmp_dir->Cd2TmpDirFile(readme, err_msg);
 	emit_output_actual_header();
-	emit_param("Error Message", "%s", err_msg.Value());
+	emit_param("Error Message", "%s", err_msg.c_str());
 	delete tmp_dir;
-	if(!err_msg.IsEmpty()) {
+	if(!err_msg.empty()) {
 		FAIL;
 	}
 	PASS;
@@ -996,19 +994,19 @@ static bool test_cd2tmpdirfile_error_exist() {
 
 static bool test_cd2tmpdirfile_error_not_exist() {
 	emit_test("Test that Cd2TmpDirFile() puts something in the error message "
-		"MyString for a file directory that doesn't exist.");
+		"std::string for a file directory that doesn't exist.");
 	emit_comment("We just check that the error message is not empty, not its "
 		"contents.");
 	emit_input_header();
 	emit_param("File Directory", "%s", non_existent);
 	emit_param("Error Message", "");
-	MyString err_msg;
+	std::string err_msg;
 	TmpDir* tmp_dir = new TmpDir();
 	tmp_dir->Cd2TmpDirFile(non_existent, err_msg);
 	emit_output_actual_header();
-	emit_param("Error Message", "%s", err_msg.Value());
+	emit_param("Error Message", "%s", err_msg.c_str());
 	delete tmp_dir;
-	if(err_msg.IsEmpty()) {
+	if(err_msg.empty()) {
 		FAIL;
 	}
 	PASS;
@@ -1016,19 +1014,19 @@ static bool test_cd2tmpdirfile_error_not_exist() {
 
 static bool test_cd2tmpdirfile_error_not_exist_file() {
 	emit_test("Test that Cd2TmpDirFile() puts something in the error message "
-		"MyString for a file directory that doesn't exist.");
+		"std::string for a file directory that doesn't exist.");
 	emit_comment("We just check that the error message is not empty, not its "
 		"contents.");
 	emit_input_header();
 	emit_param("File Directory", "%s", non_existent_file);
 	emit_param("Error Message", "");
-	MyString err_msg;
+	std::string err_msg;
 	TmpDir* tmp_dir = new TmpDir();
 	tmp_dir->Cd2TmpDirFile(non_existent_file, err_msg);
 	emit_output_actual_header();
-	emit_param("Error Message", "%s", err_msg.Value());
+	emit_param("Error Message", "%s", err_msg.c_str());
 	delete tmp_dir;
-	if(err_msg.IsEmpty()) {
+	if(err_msg.empty()) {
 		FAIL;
 	}
 	PASS;
@@ -1042,16 +1040,16 @@ static bool test_cd2maindir_before() {
 	emit_param("Error Message", "");
 	emit_output_expected_header();
 	emit_retval("TRUE");
-	emit_param("Current Working Directory", "\n\t\t%s", original_dir.Value());
-	MyString err_msg;
+	emit_param("Current Working Directory", "\n\t\t%s", original_dir.c_str());
+	std::string err_msg;
 	TmpDir* tmp_dir = new TmpDir();
 	bool ret_val = tmp_dir->Cd2MainDir(err_msg);
-	MyString current_dir;
+	std::string current_dir;
 	condor_getcwd(current_dir);
 	delete tmp_dir;
 	emit_output_actual_header();
 	emit_retval("%s", tfstr(ret_val));
-	emit_param("Current Working Directory", "\n\t\t%s", current_dir.Value());
+	emit_param("Current Working Directory", "\n\t\t%s", current_dir.c_str());
 	if(!ret_val || current_dir != original_dir) {
 		FAIL;
 	}
@@ -1066,17 +1064,17 @@ static bool test_cd2maindir_empty() {
 	emit_param("Error Message", "");
 	emit_output_expected_header();
 	emit_retval("TRUE");
-	emit_param("Current Working Directory", "\n\t\t%s", original_dir.Value());
-	MyString err_msg;
+	emit_param("Current Working Directory", "\n\t\t%s", original_dir.c_str());
+	std::string err_msg;
 	TmpDir* tmp_dir = new TmpDir();
 	tmp_dir->Cd2TmpDir("", err_msg);
 	bool ret_val = tmp_dir->Cd2MainDir(err_msg);
-	MyString current_dir;
+	std::string current_dir;
 	condor_getcwd(current_dir);
 	delete tmp_dir;
 	emit_output_actual_header();
 	emit_retval("%s", tfstr(ret_val));
-	emit_param("Current Working Directory", "\n\t\t%s", current_dir.Value());
+	emit_param("Current Working Directory", "\n\t\t%s", current_dir.c_str());
 	if(!ret_val || current_dir != original_dir) {
 		FAIL;
 	}
@@ -1091,17 +1089,17 @@ static bool test_cd2maindir_dot() {
 	emit_param("Error Message", "");
 	emit_output_expected_header();
 	emit_retval("TRUE");
-	emit_param("Current Working Directory", "\n\t\t%s", original_dir.Value());
-	MyString err_msg;
+	emit_param("Current Working Directory", "\n\t\t%s", original_dir.c_str());
+	std::string err_msg;
 	TmpDir* tmp_dir = new TmpDir();
 	tmp_dir->Cd2TmpDir(dot, err_msg);
 	bool ret_val = tmp_dir->Cd2MainDir(err_msg);
-	MyString current_dir;
+	std::string current_dir;
 	condor_getcwd(current_dir);
 	delete tmp_dir;
 	emit_output_actual_header();
 	emit_retval("%s", tfstr(ret_val));
-	emit_param("Current Working Directory", "\n\t\t%s", current_dir.Value());
+	emit_param("Current Working Directory", "\n\t\t%s", current_dir.c_str());
 	if(!ret_val || current_dir != original_dir) {
 		FAIL;
 	}
@@ -1116,17 +1114,17 @@ static bool test_cd2maindir_dot_dot() {
 	emit_param("Error Message", "");
 	emit_output_expected_header();
 	emit_retval("TRUE");
-	emit_param("Current Working Directory", "\n\t\t%s", original_dir.Value());
-	MyString err_msg;
+	emit_param("Current Working Directory", "\n\t\t%s", original_dir.c_str());
+	std::string err_msg;
 	TmpDir* tmp_dir = new TmpDir();
 	tmp_dir->Cd2TmpDir(dotdot, err_msg);
 	bool ret_val = tmp_dir->Cd2MainDir(err_msg);
-	MyString current_dir;
+	std::string current_dir;
 	condor_getcwd(current_dir);
 	delete tmp_dir;
 	emit_output_actual_header();
 	emit_retval("%s", tfstr(ret_val));
-	emit_param("Current Working Directory", "\n\t\t%s", current_dir.Value());
+	emit_param("Current Working Directory", "\n\t\t%s", current_dir.c_str());
 	if(!ret_val || current_dir != original_dir) {
 		FAIL;
 	}
@@ -1141,17 +1139,17 @@ static bool test_cd2maindir_file() {
 	emit_param("Error Message", "");
 	emit_output_expected_header();
 	emit_retval("TRUE");
-	emit_param("Current Working Directory", "\n\t\t%s", original_dir.Value());
-	MyString err_msg;
+	emit_param("Current Working Directory", "\n\t\t%s", original_dir.c_str());
+	std::string err_msg;
 	TmpDir* tmp_dir = new TmpDir();
 	tmp_dir->Cd2TmpDirFile(readme, err_msg);
 	bool ret_val = tmp_dir->Cd2MainDir(err_msg);
-	MyString current_dir;
+	std::string current_dir;
 	condor_getcwd(current_dir);
 	delete tmp_dir;
 	emit_output_actual_header();
 	emit_retval("%s", tfstr(ret_val));
-	emit_param("Current Working Directory", "\n\t\t%s", current_dir.Value());
+	emit_param("Current Working Directory", "\n\t\t%s", current_dir.c_str());
 	if(!ret_val || current_dir != original_dir) {
 		FAIL;
 	}
@@ -1166,17 +1164,17 @@ static bool test_cd2maindir_short() {
 	emit_param("Error Message", "");
 	emit_output_expected_header();
 	emit_retval("TRUE");
-	emit_param("Current Working Directory", "\n\t\t%s", original_dir.Value());
-	MyString err_msg;
+	emit_param("Current Working Directory", "\n\t\t%s", original_dir.c_str());
+	std::string err_msg;
 	TmpDir* tmp_dir = new TmpDir();
-	tmp_dir->Cd2TmpDir(tmp.Value(), err_msg);
+	tmp_dir->Cd2TmpDir(tmp.c_str(), err_msg);
 	bool ret_val = tmp_dir->Cd2MainDir(err_msg);
-	MyString current_dir;
+	std::string current_dir;
 	condor_getcwd(current_dir);
 	delete tmp_dir;
 	emit_output_actual_header();
 	emit_retval("%s", tfstr(ret_val));
-	emit_param("Current Working Directory", "\n\t\t%s", current_dir.Value());
+	emit_param("Current Working Directory", "\n\t\t%s", current_dir.c_str());
 	if(!ret_val || current_dir != original_dir) {
 		FAIL;
 	}
@@ -1191,17 +1189,17 @@ static bool test_cd2maindir_long() {
 	emit_param("Error Message", "");
 	emit_output_expected_header();
 	emit_retval("TRUE");
-	emit_param("Current Working Directory", "\n\t\t%s", original_dir.Value());
-	MyString err_msg;
+	emit_param("Current Working Directory", "\n\t\t%s", original_dir.c_str());
+	std::string err_msg;
 	TmpDir* tmp_dir = new TmpDir();
 	tmp_dir->Cd2TmpDir(long_dir, err_msg);
 	bool ret_val = tmp_dir->Cd2MainDir(err_msg);
-	MyString current_dir;
+	std::string current_dir;
 	condor_getcwd(current_dir);
 	delete tmp_dir;
 	emit_output_actual_header();
 	emit_retval("%s", tfstr(ret_val));
-	emit_param("Current Working Directory", "\n\t\t%s", current_dir.Value());
+	emit_param("Current Working Directory", "\n\t\t%s", current_dir.c_str());
 	if(!ret_val || current_dir != original_dir) {
 		FAIL;
 	}
@@ -1216,17 +1214,17 @@ static bool test_cd2maindir_deep_short() {
 	emit_param("Error Message", "");
 	emit_output_expected_header();
 	emit_retval("TRUE");
-	emit_param("Current Working Directory", "\n\t\t%s", original_dir.Value());
-	MyString err_msg;
+	emit_param("Current Working Directory", "\n\t\t%s", original_dir.c_str());
+	std::string err_msg;
 	TmpDir* tmp_dir = new TmpDir();
-	tmp_dir->Cd2TmpDir(deep_dir.Value(), err_msg);
+	tmp_dir->Cd2TmpDir(deep_dir.c_str(), err_msg);
 	bool ret_val = tmp_dir->Cd2MainDir(err_msg);
-	MyString current_dir;
+	std::string current_dir;
 	condor_getcwd(current_dir);
 	delete tmp_dir;
 	emit_output_actual_header();
 	emit_retval("%s", tfstr(ret_val));
-	emit_param("Current Working Directory", "\n\t\t%s", current_dir.Value());
+	emit_param("Current Working Directory", "\n\t\t%s", current_dir.c_str());
 	if(!ret_val || current_dir != original_dir) {
 		FAIL;
 	}
@@ -1241,17 +1239,17 @@ static bool test_cd2maindir_deep_long() {
 	emit_param("Error Message", "");
 	emit_output_expected_header();
 	emit_retval("TRUE");
-	emit_param("Current Working Directory", "\n\t\t%s", original_dir.Value());
-	MyString err_msg;
+	emit_param("Current Working Directory", "\n\t\t%s", original_dir.c_str());
+	std::string err_msg;
 	TmpDir* tmp_dir = new TmpDir();
-	tmp_dir->Cd2TmpDir(deep_dir_long.Value(), err_msg);
+	tmp_dir->Cd2TmpDir(deep_dir_long.c_str(), err_msg);
 	bool ret_val = tmp_dir->Cd2MainDir(err_msg);
-	MyString current_dir;
+	std::string current_dir;
 	condor_getcwd(current_dir);
 	delete tmp_dir;
 	emit_output_actual_header();
 	emit_retval("%s", tfstr(ret_val));
-	emit_param("Current Working Directory", "\n\t\t%s", current_dir.Value());
+	emit_param("Current Working Directory", "\n\t\t%s", current_dir.c_str());
 	if(!ret_val || current_dir != original_dir) {
 		FAIL;
 	}
@@ -1266,26 +1264,26 @@ static bool test_cd2maindir_multiple() {
 	emit_param("Error Message", "");
 	emit_output_expected_header();
 	emit_retval("TRUE");
-	emit_param("Current Working Directory", "\n\t\t%s", original_dir.Value());
-	MyString err_msg;
+	emit_param("Current Working Directory", "\n\t\t%s", original_dir.c_str());
+	std::string err_msg;
 	TmpDir* tmp_dir = new TmpDir();
-	tmp_dir->Cd2TmpDir(tmp.Value(), err_msg);
-	tmp_dir->Cd2TmpDir(tmp.Value(), err_msg);
-	tmp_dir->Cd2TmpDir(tmp.Value(), err_msg);
-	tmp_dir->Cd2TmpDir(tmp.Value(), err_msg);
-	tmp_dir->Cd2TmpDir(tmp.Value(), err_msg);
-	tmp_dir->Cd2TmpDir(tmp.Value(), err_msg);
-	tmp_dir->Cd2TmpDir(tmp.Value(), err_msg);
-	tmp_dir->Cd2TmpDir(tmp.Value(), err_msg);
-	tmp_dir->Cd2TmpDir(tmp.Value(), err_msg);
-	tmp_dir->Cd2TmpDir(tmp.Value(), err_msg);
+	tmp_dir->Cd2TmpDir(tmp.c_str(), err_msg);
+	tmp_dir->Cd2TmpDir(tmp.c_str(), err_msg);
+	tmp_dir->Cd2TmpDir(tmp.c_str(), err_msg);
+	tmp_dir->Cd2TmpDir(tmp.c_str(), err_msg);
+	tmp_dir->Cd2TmpDir(tmp.c_str(), err_msg);
+	tmp_dir->Cd2TmpDir(tmp.c_str(), err_msg);
+	tmp_dir->Cd2TmpDir(tmp.c_str(), err_msg);
+	tmp_dir->Cd2TmpDir(tmp.c_str(), err_msg);
+	tmp_dir->Cd2TmpDir(tmp.c_str(), err_msg);
+	tmp_dir->Cd2TmpDir(tmp.c_str(), err_msg);
 	bool ret_val = tmp_dir->Cd2MainDir(err_msg);
-	MyString current_dir;
+	std::string current_dir;
 	condor_getcwd(current_dir);
 	delete tmp_dir;
 	emit_output_actual_header();
 	emit_retval("%s", tfstr(ret_val));
-	emit_param("Current Working Directory", "\n\t\t%s", current_dir.Value());
+	emit_param("Current Working Directory", "\n\t\t%s", current_dir.c_str());
 	if(!ret_val || current_dir != original_dir) {
 		FAIL;
 	}
@@ -1300,21 +1298,21 @@ static bool test_cd2maindir_multiple_different() {
 	emit_param("Error Message", "");
 	emit_output_expected_header();
 	emit_retval("TRUE");
-	emit_param("Current Working Directory", "\n\t\t%s", original_dir.Value());
-	MyString err_msg;
+	emit_param("Current Working Directory", "\n\t\t%s", original_dir.c_str());
+	std::string err_msg;
 	TmpDir* tmp_dir = new TmpDir();
 	tmp_dir->Cd2TmpDir(dot, err_msg);
-	tmp_dir->Cd2TmpDir(tmp.Value(), err_msg);
+	tmp_dir->Cd2TmpDir(tmp.c_str(), err_msg);
 	tmp_dir->Cd2TmpDir(dot, err_msg);
 	tmp_dir->Cd2TmpDir(dotdot, err_msg);
 	tmp_dir->Cd2TmpDir(dot, err_msg);
 	bool ret_val = tmp_dir->Cd2MainDir(err_msg);
-	MyString current_dir;
+	std::string current_dir;
 	condor_getcwd(current_dir);
 	delete tmp_dir;
 	emit_output_actual_header();
 	emit_retval("%s", tfstr(ret_val));
-	emit_param("Current Working Directory", "\n\t\t%s", current_dir.Value());
+	emit_param("Current Working Directory", "\n\t\t%s", current_dir.c_str());
 	if(!ret_val || current_dir != original_dir) {
 		FAIL;
 	}
@@ -1329,17 +1327,17 @@ static bool test_cd2maindir_not_exist() {
 	emit_param("Error Message", "");
 	emit_output_expected_header();
 	emit_retval("TRUE");
-	emit_param("Current Working Directory", "\n\t\t%s", original_dir.Value());
-	MyString err_msg;
+	emit_param("Current Working Directory", "\n\t\t%s", original_dir.c_str());
+	std::string err_msg;
 	TmpDir* tmp_dir = new TmpDir();
 	tmp_dir->Cd2TmpDir(non_existent, err_msg);
 	bool ret_val = tmp_dir->Cd2MainDir(err_msg);
-	MyString current_dir;
+	std::string current_dir;
 	condor_getcwd(current_dir);
 	delete tmp_dir;
 	emit_output_actual_header();
 	emit_retval("%s", tfstr(ret_val));
-	emit_param("Current Working Directory", "\n\t\t%s", current_dir.Value());
+	emit_param("Current Working Directory", "\n\t\t%s", current_dir.c_str());
 	if(!ret_val || current_dir != original_dir) {
 		FAIL;
 	}
@@ -1357,23 +1355,23 @@ static bool test_cd2maindir_remove() {
 	emit_param("Error Message", "");
 	emit_output_expected_header();
 	emit_retval("FALSE");
-	emit_param("Current Working Directory", "\n\t\t%s", original_dir.Value());
+	emit_param("Current Working Directory", "\n\t\t%s", original_dir.c_str());
 	mkdir("remove_soon", 0777);
 	if(chdir("remove_soon") != 0) {
 		emit_alert("Unable to chdir() to newly created directory.");
 		ABORT;
 	}
-	MyString err_msg;
+	std::string err_msg;
 	TmpDir* tmp_dir = new TmpDir();
 	tmp_dir->Cd2TmpDir(dotdot, err_msg);
 	rmdir("remove_soon");
 	bool ret_val = tmp_dir->Cd2MainDir(err_msg);
-	MyString current_dir;
+	std::string current_dir;
 	condor_getcwd(current_dir);
 	delete tmp_dir;
 	emit_output_actual_header();
 	emit_retval("%s", tfstr(ret_val));
-	emit_param("Current Working Directory", "\n\t\t%s", current_dir.Value());
+	emit_param("Current Working Directory", "\n\t\t%s", current_dir.c_str());
 	if(!ret_val || current_dir != original_dir) {
 		FAIL;
 	}
@@ -1389,14 +1387,14 @@ static bool test_cd2maindir_error_good() {
 	emit_param("Error Message", "");
 	emit_output_expected_header();
 	emit_param("Error Message", "");
-	MyString err_msg;
+	std::string err_msg;
 	TmpDir* tmp_dir = new TmpDir();
-	tmp_dir->Cd2TmpDir(tmp.Value(), err_msg);
+	tmp_dir->Cd2TmpDir(tmp.c_str(), err_msg);
 	tmp_dir->Cd2MainDir(err_msg);
 	delete tmp_dir;
 	emit_output_actual_header();
-	emit_param("Error Message", "%s", err_msg.Value());
-	if(!err_msg.IsEmpty()) {
+	emit_param("Error Message", "%s", err_msg.c_str());
+	if(!err_msg.empty()) {
 		FAIL;
 	}
 	PASS;
@@ -1418,15 +1416,15 @@ static bool test_cd2maindir_error_bad() {
 		emit_alert("Unable to chdir() to newly created directory.");
 		ABORT;
 	}
-	MyString err_msg;
+	std::string err_msg;
 	TmpDir* tmp_dir = new TmpDir();
 	tmp_dir->Cd2TmpDir(dotdot, err_msg);
 	rmdir("remove_soon");
 	tmp_dir->Cd2MainDir(err_msg);
 	delete tmp_dir;
 	emit_output_actual_header();
-	emit_param("Error Message", "%s", err_msg.Value());
-	if(err_msg.IsEmpty()) {
+	emit_param("Error Message", "%s", err_msg.c_str());
+	if(err_msg.empty()) {
 		FAIL;
 	}
 */

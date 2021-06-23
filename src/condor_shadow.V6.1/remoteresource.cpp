@@ -1,6 +1,6 @@
 /***************************************************************
  *
- * Copyright (C) 1990-2007, Condor Team, Computer Sciences Department,
+ * Copyright (C) 1990-2020, Condor Team, Computer Sciences Department,
  * University of Wisconsin-Madison, WI.
  * 
  * Licensed under the Apache License, Version 2.0 (the "License"); you
@@ -32,6 +32,7 @@
 #include "condor_claimid_parser.h"
 #include "authentication.h"
 #include "globus_utils.h"
+#include "limit_directory_access.h"
 
 extern const char* public_schedd_addr;	// in shadow_v61_main.C
 
@@ -391,6 +392,7 @@ RemoteResource::RemoteResource( BaseShadow *shad )
 	exit_value = -1;
 	memset( &remote_rusage, 0, sizeof(struct rusage) );
 	disk_usage = 0;
+	scratch_dir_file_count = -1; // -1 for 'unspecified'
 	image_size_kb = 0;
 	memory_usage_mb = -1;
 	proportional_set_size_kb = -1;
@@ -415,7 +417,9 @@ RemoteResource::RemoteResource( BaseShadow *shad )
 	m_upload_xfer_status = XFER_STATUS_UNKNOWN;
 	m_download_xfer_status = XFER_STATUS_UNKNOWN;
 
-	param_and_insert_attrs("CHIRP_DELAYED_UPDATE_PREFIX", m_delayed_update_prefixes);
+	std::string prefix;
+	param(prefix, "CHIRP_DELAYED_UPDATE_PREFIX");
+	m_delayed_update_prefix.initializeFromString(prefix.c_str());
 
 	param_and_insert_attrs("PROTECTED_JOB_ATTRS", m_unsettable_attrs);
 	param_and_insert_attrs("SYSTEM_PROTECTED_JOB_ATTRS", m_unsettable_attrs);
@@ -648,7 +652,7 @@ RemoteResource::killStarter( bool graceful )
 				 graceful ? "graceful" : "fast", addr );
 	}
 
-	int wantReleaseClaim = 0;
+	bool wantReleaseClaim = false;
 	jobAd->LookupBool(ATTR_RELEASE_CLAIM, wantReleaseClaim);
 	if (wantReleaseClaim) {
 		ClassAd replyAd;
@@ -725,11 +729,11 @@ RemoteResource::dprintfSelf( int debugLevel )
 	shadow->dprintf( debugLevel, "\texited_by_signal: %s\n", 
 					 exited_by_signal ? "True" : "False" );
 	if( exited_by_signal ) {
-		shadow->dprintf( debugLevel, "\texit_signal: %d\n", 
-						 exit_value );
+		shadow->dprintf( debugLevel, "\texit_signal: %lld\n", 
+						 (long long)exit_value );
 	} else {
-		shadow->dprintf( debugLevel, "\texit_code: %d\n", 
-						 exit_value );
+		shadow->dprintf( debugLevel, "\texit_code: %lld\n", 
+						 (long long)exit_value );
 	}
 }
 
@@ -917,20 +921,20 @@ RemoteResource::closeClaimSock( void )
 
 
 int
-RemoteResource::getExitReason()
+RemoteResource::getExitReason() const
 {
 	return exit_reason;
 }
 
 bool
-RemoteResource::claimIsClosing()
+RemoteResource::claimIsClosing() const
 {
 	return claim_is_closing;
 }
 
 
-int
-RemoteResource::exitSignal( void )
+int64_t
+RemoteResource::exitSignal( void ) const
 {
 	if( exited_by_signal ) {
 		return exit_value;
@@ -939,8 +943,8 @@ RemoteResource::exitSignal( void )
 }
 
 
-int
-RemoteResource::exitCode( void )
+int64_t
+RemoteResource::exitCode( void ) const
 {
 	if( ! exited_by_signal ) {
 		return exit_value;
@@ -1025,9 +1029,11 @@ RemoteResource::initStartdInfo( const char *name, const char *pool,
 				m_claim_session.secSessionId(),
 				m_claim_session.secSessionKey(),
 				m_claim_session.secSessionInfo(),
+				AUTH_METHOD_MATCH,
 				EXECUTE_SIDE_MATCHSESSION_FQU,
 				dc_startd->addr(),
-				0 /*don't expire*/ );
+				0 /*don't expire*/,
+				nullptr );
 
 			if( !rc ) {
 				dprintf(D_ALWAYS,"SEC_ENABLE_MATCH_PASSWORD_AUTHENTICATION: failed to create security session for %s, so will fall back on security negotiation\n",m_claim_session.publicClaimId());
@@ -1043,11 +1049,11 @@ RemoteResource::initStartdInfo( const char *name, const char *pool,
 				// by the startd, but for file transfer, it makes more sense
 				// to use the shadow's policy.
 
-			MyString filetrans_claimid;
+			std::string filetrans_claimid;
 				// prepend something to the claim id so that the session id
 				// is different for file transfer than for the claim session
-			filetrans_claimid.formatstr("filetrans.%s",claim_id);
-			m_filetrans_session = ClaimIdParser(filetrans_claimid.Value());
+			formatstr(filetrans_claimid,"filetrans.%s",claim_id);
+			m_filetrans_session = ClaimIdParser(filetrans_claimid.c_str());
 
 				// Get rid of session parameters set by startd.
 				// We will set our own based on the shadow WRITE policy.
@@ -1056,17 +1062,19 @@ RemoteResource::initStartdInfo( const char *name, const char *pool,
 				// Since we just removed the session info, we must
 				// set ignore_session_info=true in the following call or
 				// we will get NULL for the session id.
-			MyString filetrans_session_id =
+			std::string filetrans_session_id =
 				m_filetrans_session.secSessionId(/*ignore_session_info=*/ true);
 
 			rc = daemonCore->getSecMan()->CreateNonNegotiatedSecuritySession(
 				WRITE,
-				filetrans_session_id.Value(),
+				filetrans_session_id.c_str(),
 				m_filetrans_session.secSessionKey(),
 				NULL,
+				AUTH_METHOD_MATCH,
 				EXECUTE_SIDE_MATCHSESSION_FQU,
 				NULL,
-				0 /*don't expire*/ );
+				0 /*don't expire*/,
+				nullptr, true );
 
 			if( !rc ) {
 				dprintf(D_ALWAYS,"SEC_ENABLE_MATCH_PASSWORD_AUTHENTICATION: failed to create security session for %s, so will fall back on security negotiation\n",m_filetrans_session.publicClaimId());
@@ -1075,16 +1083,16 @@ RemoteResource::initStartdInfo( const char *name, const char *pool,
 					// fill in session_info so that starter will have
 					// enough info to create a security session
 					// compatible with the one we just created.
-				MyString session_info;
+				std::string session_info;
 				rc = daemonCore->getSecMan()->ExportSecSessionInfo(
-					filetrans_session_id.Value(),
+					filetrans_session_id.c_str(),
 					session_info );
 
 				if( !rc ) {
 					dprintf(D_ALWAYS, "SEC_ENABLE_MATCH_PASSWORD_AUTHENTICATION: failed to get session info for claim id %s\n",m_filetrans_session.publicClaimId());
 				}
 				else {
-					m_filetrans_session.setSecSessionInfo( session_info.Value() );
+					m_filetrans_session.setSecSessionInfo( session_info.c_str() );
 				}
 			}
 		}
@@ -1158,7 +1166,7 @@ RemoteResource::setStarterInfo( ClassAd* ad )
 		tmp = NULL;
 	}
 
-	char* starter_version;
+	char* starter_version=NULL;
 	if( ad->LookupString(ATTR_VERSION, &starter_version) ) {
 		dprintf( D_SYSCALLS, "  %s = %s\n", ATTR_VERSION, starter_version ); 
 	}
@@ -1172,11 +1180,9 @@ RemoteResource::setStarterInfo( ClassAd* ad )
 
 	filetrans.setTransferQueueContactInfo( shadow->getTransferQueueContactInfo() );
 
-	int tmp_int;
-	if( ad->LookupBool(ATTR_HAS_RECONNECT, tmp_int) ) {
+	if( ad->LookupBool(ATTR_HAS_RECONNECT, supports_reconnect) ) {
 			// Whatever the starter defines in its own classad
 			// overrides whatever we might think...
-		supports_reconnect = tmp_int;
 		dprintf( D_SYSCALLS, "  %s = %s\n", ATTR_HAS_RECONNECT, 
 				 supports_reconnect ? "TRUE" : "FALSE" );
 	} else {
@@ -1232,7 +1238,7 @@ RemoteResource::setExitReason( int reason )
 
 
 float
-RemoteResource::bytesSent()
+RemoteResource::bytesSent() const
 {
 	float bytes = 0.0;
 
@@ -1252,7 +1258,7 @@ RemoteResource::bytesSent()
 
 
 float
-RemoteResource::bytesReceived()
+RemoteResource::bytesReceived() const
 {
 	float bytes = 0.0;
 
@@ -1281,8 +1287,7 @@ RemoteResource::setJobAd( ClassAd *jA )
 		// ImageSizeEvent everytime we start running, even if the
 		// image size hasn't changed at all...
 
-	int int_value;
-	int64_t int64_value;
+	int64_t long_value;
 	double real_value;
 
 	// REMOTE_SYS_CPU and REMOTE_USER_CPU reflect usage for this execution only.
@@ -1293,29 +1298,40 @@ RemoteResource::setJobAd( ClassAd *jA )
 	jA->Assign(ATTR_JOB_REMOTE_USER_CPU, real_value);
 	jA->Assign(ATTR_JOB_REMOTE_SYS_CPU, real_value);
 			
-	if( jA->LookupInteger(ATTR_IMAGE_SIZE, int64_value) ) {
-		image_size_kb = int64_value;
+	if( jA->LookupInteger(ATTR_IMAGE_SIZE, long_value) ) {
+		image_size_kb = long_value;
 	}
 
-	if( jA->LookupInteger(ATTR_MEMORY_USAGE, int64_value) ) {
-		memory_usage_mb = int64_value;
+	if( jA->LookupInteger(ATTR_MEMORY_USAGE, long_value) ) {
+		memory_usage_mb = long_value;
 	}
 
-	if( jA->LookupInteger(ATTR_RESIDENT_SET_SIZE, int_value) ) {
-		remote_rusage.ru_maxrss = int_value;
+	if( jA->LookupInteger(ATTR_RESIDENT_SET_SIZE, long_value) ) {
+		remote_rusage.ru_maxrss = long_value;
 	}
 
-	if( jA->LookupInteger(ATTR_PROPORTIONAL_SET_SIZE, int64_value) ) {
-		proportional_set_size_kb = int64_value;
+	if( jA->LookupInteger(ATTR_PROPORTIONAL_SET_SIZE, long_value) ) {
+		proportional_set_size_kb = long_value;
 	}
 
-			
-	if( jA->LookupInteger(ATTR_DISK_USAGE, int_value) ) {
-		disk_usage = int_value;
+	// DiskUsage and ScratchDirFileCount should reflect the usage for this single execution
+	// so we *don't* propagate the values from the initial job ad
+#if 1
+	disk_usage = 0;
+	scratch_dir_file_count = -1; // -1 because the starter may never send us a value
+#else
+
+	if( jA->LookupInteger(ATTR_DISK_USAGE, long_value) ) {
+		disk_usage = long_value;
 	}
 
-	if( jA->LookupInteger(ATTR_LAST_JOB_LEASE_RENEWAL, int_value) ) {
-		last_job_lease_renewal = (time_t)int_value;
+	if( jA->LookupInteger(ATTR_SCRATCH_DIR_FILE_COUNT, long_value) ) {
+		scratch_dir_file_count = long_value;
+	}
+#endif
+
+	if( jA->LookupInteger(ATTR_LAST_JOB_LEASE_RENEWAL, long_value) ) {
+		last_job_lease_renewal = (time_t)long_value;
 	}
 
 	jA->LookupBool( ATTR_WANT_IO_PROXY, m_want_chirp );
@@ -1346,9 +1362,9 @@ RemoteResource::setJobAd( ClassAd *jA )
 void
 RemoteResource::updateFromStarter( ClassAd* update_ad )
 {
-	int int_value;
-	int64_t int64_value;
-	MyString string_value;
+	int64_t long_value;
+	std::string string_value;
+	bool bool_value;
 
 	dprintf( D_FULLDEBUG, "Inside RemoteResource::updateFromStarter()\n" );
 	hadContact();
@@ -1394,36 +1410,53 @@ RemoteResource::updateFromStarter( ClassAd* update_ad )
 		jobAd->Assign(ATTR_JOB_REMOTE_USER_CPU, real_value);
 	}
 
-	if( update_ad->LookupInteger(ATTR_IMAGE_SIZE, int64_value) ) {
-		if( int64_value > image_size_kb ) {
-			image_size_kb = int64_value;
+	if( update_ad->LookupInteger(ATTR_IMAGE_SIZE, long_value) ) {
+		if( long_value > image_size_kb ) {
+			image_size_kb = long_value;
 			jobAd->Assign(ATTR_IMAGE_SIZE, image_size_kb);
 		}
 	}
 
+	// Update memory_usage_mb, which should be the maximum value seen
+	// in the update ad for ATTR_MEMORY_USAGE
+	if( EvalInteger(ATTR_MEMORY_USAGE, update_ad, NULL, long_value) ) {
+		if( long_value > memory_usage_mb ) {
+			memory_usage_mb = long_value;
+		}
+	}
+	// Now update MemoryUsage in the job ad.  If the update ad sent us 
+	// a literal value for MemoryUsage, then insert in the job ad the MAX 
+	// value we have seen.  But if the update ad sent us MemoryUsage as an
+	// expression, then just copy the expression into the job ad.
 	classad::ExprTree * tree = update_ad->Lookup(ATTR_MEMORY_USAGE);
-	if( tree ) {
-		tree = tree->Copy();
-		jobAd->Insert(ATTR_MEMORY_USAGE, tree);
+	if (tree) {
+		if (tree->GetKind() != ExprTree::LITERAL_NODE) {
+				// Copy the exression over
+			tree = tree->Copy();
+			jobAd->Insert(ATTR_MEMORY_USAGE, tree);
+		} else {
+				// It is a literal, so insert the MAX of the literals seen
+			jobAd->Assign(ATTR_MEMORY_USAGE, memory_usage_mb);
+		}
 	}
 
 	if( update_ad->LookupFloat(ATTR_JOB_VM_CPU_UTILIZATION, real_value) ) {
 		  jobAd->Assign(ATTR_JOB_VM_CPU_UTILIZATION, real_value);
 	}
 
-	if( update_ad->LookupInteger(ATTR_RESIDENT_SET_SIZE, int_value) ) {
-		int rss = remote_rusage.ru_maxrss;
-		if( !jobAd->LookupInteger(ATTR_RESIDENT_SET_SIZE,rss) || rss < int_value ) {
-			remote_rusage.ru_maxrss = int_value;
-			jobAd->Assign(ATTR_RESIDENT_SET_SIZE, int_value);
+	if( update_ad->LookupInteger(ATTR_RESIDENT_SET_SIZE, long_value) ) {
+		int64_t rss = remote_rusage.ru_maxrss;
+		if( !jobAd->LookupInteger(ATTR_RESIDENT_SET_SIZE,rss) || rss < long_value ) {
+			remote_rusage.ru_maxrss = long_value;
+			jobAd->Assign(ATTR_RESIDENT_SET_SIZE, long_value);
 		}
 	}
 
-	if( update_ad->LookupInteger(ATTR_PROPORTIONAL_SET_SIZE, int64_value) ) {
+	if( update_ad->LookupInteger(ATTR_PROPORTIONAL_SET_SIZE, long_value) ) {
 		int64_t pss = proportional_set_size_kb;
-		if( !jobAd->LookupInteger(ATTR_PROPORTIONAL_SET_SIZE,pss) || pss < int64_value ) {
-			proportional_set_size_kb = int64_value;
-			jobAd->Assign(ATTR_PROPORTIONAL_SET_SIZE, int64_value);
+		if( !jobAd->LookupInteger(ATTR_PROPORTIONAL_SET_SIZE,pss) || pss < long_value ) {
+			proportional_set_size_kb = long_value;
+			jobAd->Assign(ATTR_PROPORTIONAL_SET_SIZE, long_value);
 		}
 	}
 
@@ -1445,7 +1478,9 @@ RemoteResource::updateFromStarter( ClassAd* update_ad )
     CopyAttribute("Recent" ATTR_BLOCK_READS, *jobAd, *update_ad);
     CopyAttribute("Recent" ATTR_BLOCK_WRITES, *jobAd, *update_ad);
 
+
     CopyAttribute(ATTR_IO_WAIT, *jobAd, *update_ad);
+    CopyAttribute(ATTR_JOB_CPU_INSTRUCTIONS, *jobAd, *update_ad);
 
 	// FIXME: If we're convinced that we want a whitelist here (chirp
 	// would seem to make a mockery of that), we should at least rewrite
@@ -1458,6 +1493,14 @@ RemoteResource::updateFromStarter( ClassAd* update_ad )
 	CopyAttribute( "PostExitSignal", *jobAd, *update_ad );
 	CopyAttribute( "PostExitBySignal", *jobAd, *update_ad );
 
+	classad::ClassAd * toeTag = dynamic_cast<classad::ClassAd *>(update_ad->Lookup(ATTR_JOB_TOE));
+	if( toeTag ) {
+		CopyAttribute(ATTR_JOB_TOE, *jobAd, *update_ad );
+
+		// Required to actually update the schedd's copy.  (sigh)
+		shadow->watchJobAttr(ATTR_JOB_TOE);
+	}
+
     // these are headed for job ads in the scheduler, so rename them
     // to prevent these from colliding with similar attributes from schedd statistics
     CopyAttribute("StatsLastUpdateTimeStarter", *jobAd, "StatsLastUpdateTime", *update_ad);
@@ -1466,46 +1509,52 @@ RemoteResource::updateFromStarter( ClassAd* update_ad )
     CopyAttribute("RecentWindowMaxStarter", *jobAd, "RecentWindowMax", *update_ad);
     CopyAttribute("RecentStatsTickTimeStarter", *jobAd, "RecentStatsTickTime", *update_ad);
 
-	if( update_ad->LookupInteger(ATTR_DISK_USAGE, int_value) ) {
-		if( int_value > disk_usage ) {
-			disk_usage = int_value;
-			jobAd->Assign(ATTR_DISK_USAGE, int_value);
+	if( update_ad->LookupInteger(ATTR_DISK_USAGE, long_value) ) {
+		if( long_value > disk_usage ) {
+			disk_usage = long_value;
+			jobAd->Assign(ATTR_DISK_USAGE, disk_usage);
+		}
+	}
+
+	if( update_ad->LookupInteger(ATTR_SCRATCH_DIR_FILE_COUNT, long_value) ) {
+		if( long_value > scratch_dir_file_count ) {
+			scratch_dir_file_count = long_value;
+			jobAd->Assign(ATTR_SCRATCH_DIR_FILE_COUNT, scratch_dir_file_count);
 		}
 	}
 
 	if( update_ad->LookupString(ATTR_EXCEPTION_HIERARCHY,string_value) ) {
-		jobAd->Assign(ATTR_EXCEPTION_HIERARCHY, string_value.Value());
+		jobAd->Assign(ATTR_EXCEPTION_HIERARCHY, string_value);
 	}
 
 	if( update_ad->LookupString(ATTR_EXCEPTION_NAME,string_value) ) {
-		jobAd->Assign(ATTR_EXCEPTION_NAME, string_value.Value());
+		jobAd->Assign(ATTR_EXCEPTION_NAME, string_value);
 	}
 
 	if( update_ad->LookupString(ATTR_EXCEPTION_TYPE,string_value) ) {
-		jobAd->Assign(ATTR_EXCEPTION_TYPE, string_value.Value());
+		jobAd->Assign(ATTR_EXCEPTION_TYPE, string_value);
 	}
 
-	if( update_ad->LookupBool(ATTR_ON_EXIT_BY_SIGNAL, int_value) ) {
-		exited_by_signal = (bool)int_value;
-		jobAd->Assign(ATTR_ON_EXIT_BY_SIGNAL, (bool)exited_by_signal);
+	if( update_ad->LookupBool(ATTR_ON_EXIT_BY_SIGNAL, exited_by_signal) ) {
+		jobAd->Assign(ATTR_ON_EXIT_BY_SIGNAL, exited_by_signal);
 	}
 
-	if( update_ad->LookupInteger(ATTR_ON_EXIT_SIGNAL, int_value) ) {
-		jobAd->Assign(ATTR_ON_EXIT_SIGNAL, int_value);
-		exit_value = int_value;
+	if( update_ad->LookupInteger(ATTR_ON_EXIT_SIGNAL, long_value) ) {
+		jobAd->Assign(ATTR_ON_EXIT_SIGNAL, long_value);
+		exit_value = long_value;
 	}
 
-	if( update_ad->LookupInteger(ATTR_ON_EXIT_CODE, int_value) ) {
-		jobAd->Assign(ATTR_ON_EXIT_CODE, int_value);
-		exit_value = int_value;
+	if( update_ad->LookupInteger(ATTR_ON_EXIT_CODE, long_value) ) {
+		jobAd->Assign(ATTR_ON_EXIT_CODE, long_value);
+		exit_value = long_value;
 	}
 
 	if( update_ad->LookupString(ATTR_EXIT_REASON,string_value) ) {
-		jobAd->Assign(ATTR_EXIT_REASON, string_value.Value());
+		jobAd->Assign(ATTR_EXIT_REASON, string_value);
 	}
 
-	if( update_ad->LookupBool(ATTR_JOB_CORE_DUMPED, int_value) ) {
-		jobAd->Assign(ATTR_JOB_CORE_DUMPED, (bool)int_value);
+	if( update_ad->LookupBool(ATTR_JOB_CORE_DUMPED, bool_value) ) {
+		jobAd->Assign(ATTR_JOB_CORE_DUMPED, bool_value);
 	}
 
 		// The starter sends this attribute whether or not we are spooling
@@ -1514,7 +1563,7 @@ RemoteResource::updateFromStarter( ClassAd* update_ad )
 		// are spooling output.  However, it doesn't hurt to have it there
 		// otherwise.
 	if( update_ad->LookupString(ATTR_SPOOLED_OUTPUT_FILES,string_value) ) {
-		jobAd->Assign(ATTR_SPOOLED_OUTPUT_FILES,string_value.Value());
+		jobAd->Assign(ATTR_SPOOLED_OUTPUT_FILES,string_value);
 	}
 	else if( jobAd->LookupString(ATTR_SPOOLED_OUTPUT_FILES,string_value) ) {
 		jobAd->AssignExpr(ATTR_SPOOLED_OUTPUT_FILES,"UNDEFINED");
@@ -1527,7 +1576,15 @@ RemoteResource::updateFromStarter( ClassAd* update_ad )
 			classad::ExprTree *expr_copy = it->second->Copy();
 			jobAd->Insert(it->first, expr_copy);
 			shadow->watchJobAttr(it->first);
+		} else if( (offset = it->first.rfind( "AverageUsage" )) != std::string::npos
+			&& offset == it->first.length() - 12 ) {
+			classad::ExprTree *expr_copy = it->second->Copy();
+			jobAd->Insert(it->first, expr_copy);
+			shadow->watchJobAttr(it->first);
 		} else if( (offset = it->first.rfind( "Usage" )) != std::string::npos
+			&& it->first != ATTR_MEMORY_USAGE  // ignore MemoryUsage, we handle it above
+			&& it->first != ATTR_DISK_USAGE    // ditto
+			// the ATTR_JOB_*_CPU attributes don't end in "Usage"
 			&& offset == it->first.length() - 5 ) {
 			classad::ExprTree *expr_copy = it->second->Copy();
 			jobAd->Insert(it->first, expr_copy);
@@ -1538,6 +1595,13 @@ RemoteResource::updateFromStarter( ClassAd* update_ad )
 			jobAd->Insert(it->first, expr_copy);
 			shadow->watchJobAttr(it->first);
 		} else if( it->first.find( "Assigned" ) == 0 ) {
+			classad::ExprTree *expr_copy = it->second->Copy();
+			jobAd->Insert(it->first, expr_copy);
+			shadow->watchJobAttr(it->first);
+		// Arguably, this should actually check the list of container services
+		// and only forward the matching attributes through, but I'm not
+		// actually worried.
+		} else if( ends_with( it->first, "_HostPort" ) ) {
 			classad::ExprTree *expr_copy = it->second->Copy();
 			jobAd->Insert(it->first, expr_copy);
 			shadow->watchJobAttr(it->first);
@@ -1594,17 +1658,13 @@ RemoteResource::updateFromStarter( ClassAd* update_ad )
 		}
 	}
 
-	if (jobAd->EvalInteger(ATTR_MEMORY_USAGE, NULL, int64_value)) {
-		memory_usage_mb = int64_value;
-	}
-
-	MyString starter_addr;
+	std::string starter_addr;
 	update_ad->LookupString( ATTR_STARTER_IP_ADDR, starter_addr );
-	if( !starter_addr.IsEmpty() ) {
+	if( !starter_addr.empty() ) {
 		// The starter sends updated contact info along with the job
 		// update (useful if CCB info changes).  It's a bit of a hack
 		// to do it through this channel, but better than nothing.
-		setStarterAddress( starter_addr.Value() );
+		setStarterAddress( starter_addr.c_str() );
 	}
 
 	if( IsDebugLevel(D_MACHINE) ) {
@@ -1720,7 +1780,7 @@ bool
 RemoteResource::recordCheckpointEvent( ClassAd* update_ad )
 {
 	bool rval = true;
-	MyString string_value;
+	std::string string_value;
 	int int_value = 0;
 	static float last_recv_bytes = 0.0;
 
@@ -1790,10 +1850,10 @@ RemoteResource::recordCheckpointEvent( ClassAd* update_ad )
 
 	// Update Ckpt MAC and IP address of VM
 	if( update_ad->LookupString(ATTR_VM_CKPT_MAC,string_value) ) {
-		jobAd->Assign(ATTR_VM_CKPT_MAC, string_value.Value());
+		jobAd->Assign(ATTR_VM_CKPT_MAC, string_value);
 	}
 	if( update_ad->LookupString(ATTR_VM_CKPT_IP,string_value) ) {
-		jobAd->Assign(ATTR_VM_CKPT_IP, string_value.Value());
+		jobAd->Assign(ATTR_VM_CKPT_IP, string_value);
 	}
 
 	shadow->CommitSuspensionTime(jobAd);
@@ -1847,7 +1907,7 @@ void
 RemoteResource::printCheckpointStats( int debug_level )
 {
 	int int_value = 0;
-	MyString string_attr;
+	std::string string_attr;
 
 	dprintf( debug_level, "Statistics about job checkpointing:\n" );
 
@@ -1876,20 +1936,20 @@ RemoteResource::printCheckpointStats( int debug_level )
 	// CkptArch and CkptOpSys
 	string_attr = "";
 	jobAd->LookupString(ATTR_CKPT_ARCH, string_attr);
-	dprintf( debug_level, "%s = %s\n", ATTR_CKPT_ARCH, string_attr.Value());
+	dprintf( debug_level, "%s = %s\n", ATTR_CKPT_ARCH, string_attr.c_str());
 
 	string_attr = "";
 	jobAd->LookupString(ATTR_CKPT_OPSYS, string_attr);
-	dprintf( debug_level, "%s = %s\n", ATTR_CKPT_OPSYS, string_attr.Value());
+	dprintf( debug_level, "%s = %s\n", ATTR_CKPT_OPSYS, string_attr.c_str());
 
 	// MAC and IP address of VM
 	string_attr = "";
 	jobAd->LookupString(ATTR_VM_CKPT_MAC, string_attr);
-	dprintf( debug_level, "%s = %s\n", ATTR_VM_CKPT_MAC, string_attr.Value());
+	dprintf( debug_level, "%s = %s\n", ATTR_VM_CKPT_MAC, string_attr.c_str());
 
 	string_attr = "";
 	jobAd->LookupString(ATTR_VM_CKPT_IP, string_attr);
-	dprintf( debug_level, "%s = %s\n", ATTR_VM_CKPT_IP, string_attr.Value());
+	dprintf( debug_level, "%s = %s\n", ATTR_VM_CKPT_IP, string_attr.c_str());
 }
 
 
@@ -1993,7 +2053,7 @@ RemoteResource::startCheckingProxy()
 	if( proxy_check_tid != -1 ) {
 		return; // already running
 	}
-	if( !proxy_path.IsEmpty() ) {
+	if( !proxy_path.empty() ) {
 		// This job has a proxy.  We need to check it regularlly to
 		// potentially upload a renewed one.
 		int PROXY_CHECK_INTERVAL = param_integer("SHADOW_CHECKPROXY_INTERVAL",60*10,1);
@@ -2028,6 +2088,7 @@ RemoteResource::beginExecution( void )
 void
 RemoteResource::hadContact( void )
 {
+	last_job_lease_renewal = time(0);
 	jobAd->Assign( ATTR_LAST_JOB_LEASE_RENEWAL, (int)last_job_lease_renewal );
 }
 
@@ -2098,10 +2159,10 @@ RemoteResource::reconnect( void )
 	if( !remaining ) {
 		dprintf( D_ALWAYS, "%s remaining: EXPIRED!\n",
 			 ATTR_JOB_LEASE_DURATION );
-		MyString reason;
+		std::string reason;
 		formatstr( reason, "Job disconnected too long: %s (%d seconds) expired",
 		           ATTR_JOB_LEASE_DURATION, lease_duration );
-		shadow->reconnectFailed( reason.Value() );
+		shadow->reconnectFailed( reason.c_str() );
 	}
 	dprintf( D_ALWAYS, "%s remaining: %d\n", ATTR_JOB_LEASE_DURATION,
 			 remaining );
@@ -2257,7 +2318,7 @@ RemoteResource::locateReconnectStarter( void )
 }
 
 void
-RemoteResource::getFileTransferStatus(FileTransferStatus &upload_status,FileTransferStatus &download_status)
+RemoteResource::getFileTransferStatus(FileTransferStatus &upload_status,FileTransferStatus &download_status) const
 {
 	upload_status = m_upload_xfer_status;
 	download_status = m_download_xfer_status;
@@ -2293,7 +2354,11 @@ RemoteResource::initFileTransfer()
 	ASSERT(jobAd);
 	int spool_time = 0;
 	jobAd->LookupInteger(ATTR_STAGE_IN_FINISH,spool_time);
-	filetrans.Init( jobAd, false, PRIV_USER, spool_time != 0 );
+	int r = filetrans.Init( jobAd, false, PRIV_USER, spool_time != 0 );
+	if (r == 0) {
+		// filetransfer Init failed
+		EXCEPT( "RemoteResource::initFileTransfer  Init failed\n");
+	}
 
 	filetrans.RegisterCallback(
 		(FileTransferHandlerCpp)&RemoteResource::transferStatusUpdateCallback,
@@ -2312,10 +2377,10 @@ RemoteResource::initFileTransfer()
 		// The job may override the system defaults for max transfer I/O
 	int ad_max_upload_mb = -1;
 	int ad_max_download_mb = -1;
-	if( jobAd->EvalInteger(ATTR_MAX_TRANSFER_INPUT_MB,NULL,ad_max_upload_mb) ) {
+	if( jobAd->LookupInteger(ATTR_MAX_TRANSFER_INPUT_MB,ad_max_upload_mb) ) {
 		max_upload_mb = ad_max_upload_mb;
 	}
-	if( jobAd->EvalInteger(ATTR_MAX_TRANSFER_OUTPUT_MB,NULL,ad_max_download_mb) ) {
+	if( jobAd->LookupInteger(ATTR_MAX_TRANSFER_OUTPUT_MB,ad_max_download_mb) ) {
 		max_download_mb = ad_max_download_mb;
 	}
 
@@ -2350,7 +2415,7 @@ RemoteResource::requestReconnect( void )
 	ReliSock* rsock = new ReliSock;
 	ClassAd req;
 	ClassAd reply;
-	MyString msg;
+	std::string msg;
 
 		// First, fill up the request with all the data we need
 	shadow->publishShadowAttrs( &req );
@@ -2425,7 +2490,7 @@ RemoteResource::requestReconnect( void )
 			msg = "Starter refused request (";
 			msg += starter.error();
 			msg += ')';
-			shadow->reconnectFailed( msg.Value() );
+			shadow->reconnectFailed( msg.c_str() );
 			break;
 
 				// All the errors that can only be programmer
@@ -2507,24 +2572,24 @@ RemoteResource::setRemoteProxyRenewTime()
 		// actually is, we would need to have a better interface for
 		// obtaining that information from the file transfer object.
 
-	if( proxy_path.IsEmpty() ) {
+	if( proxy_path.empty() ) {
 		return;
 	}
 
 	time_t desired_expiration_time = GetDesiredDelegatedJobCredentialExpiration(jobAd);
 #if defined(DLOPEN_GSI_LIBS)
 	time_t proxy_expiration_time = -1;
-	QueryJobProxy( proxy_path.Value(), &proxy_expiration_time, NULL, NULL,
+	QueryJobProxy( proxy_path.c_str(), &proxy_expiration_time, NULL, NULL,
 				   NULL, NULL );
 #else
-	time_t proxy_expiration_time = x509_proxy_expiration_time(proxy_path.Value());
+	time_t proxy_expiration_time = x509_proxy_expiration_time(proxy_path.c_str());
 #endif
 	time_t expiration_time = desired_expiration_time;
 
 	if( proxy_expiration_time == (time_t)-1 ) {
 		char const *errmsg = x509_error_string();
 		dprintf(D_ALWAYS,"setRemoteProxyRenewTime: failed to get proxy expiration time for %s: %s\n",
-				proxy_path.Value(),
+				proxy_path.c_str(),
 				errmsg ? errmsg : "");
 	}
 	else {
@@ -2587,12 +2652,12 @@ RemoteResource::checkX509Proxy( void )
 		dprintf(D_FULLDEBUG,"checkX509Proxy() doing nothing, because resource is not in EXECUTING state.\n");
 		return;
 	}
-	if(proxy_path.IsEmpty()) {
+	if(proxy_path.empty()) {
 		/* Harmless, but suspicious. */
 		return;
 	}
 	
-	StatInfo si(proxy_path.Value());
+	StatInfo si(proxy_path.c_str());
 	time_t lastmod = si.GetModifyTime();
 	dprintf(D_FULLDEBUG, "Proxy timestamps: remote estimated %ld, local %ld (%ld difference)\n",
 		(long)last_proxy_timestamp, (long)lastmod,lastmod - last_proxy_timestamp);
@@ -2623,7 +2688,7 @@ RemoteResource::checkX509Proxy( void )
 	char *voname = NULL;
 	char *firstfqan = NULL;
 	char *quoted_DN_and_FQAN = NULL;
-	QueryJobProxy( proxy_path.Value(), &proxy_expiration_time, &proxy_subject,
+	QueryJobProxy( proxy_path.c_str(), &proxy_expiration_time, &proxy_subject,
 				   &voname, &firstfqan, &quoted_DN_and_FQAN );
 
 	jobAd->Assign(ATTR_X509_USER_PROXY_EXPIRATION, proxy_expiration_time);
@@ -2648,8 +2713,8 @@ RemoteResource::checkX509Proxy( void )
 	free( quoted_DN_and_FQAN );
 #else
 	// first, do the DN and expiration time, which all proxies have
-	char* proxy_subject = x509_proxy_identity_name(proxy_path.Value());
-	time_t proxy_expiration_time = x509_proxy_expiration_time(proxy_path.Value());
+	char* proxy_subject = x509_proxy_identity_name(proxy_path.c_str());
+	time_t proxy_expiration_time = x509_proxy_expiration_time(proxy_path.c_str());
 	/* This is a secure attribute, only settable by the schedd.
 	 * Assume it won't change during job execution.
 	jobAd->Assign(ATTR_X509_USER_PROXY_SUBJECT, proxy_subject);
@@ -2665,7 +2730,7 @@ RemoteResource::checkX509Proxy( void )
 	char * firstfqan = NULL;
 	char * quoted_DN_and_FQAN = NULL;
 	int vomserr = extract_VOMS_info_from_file(
-			proxy_path.Value(),
+			proxy_path.c_str(),
 			0 /*do not verify*/,
 			&voname,
 			&firstfqan,
@@ -2695,19 +2760,19 @@ RemoteResource::checkX509Proxy( void )
 
 	// Proxy file updated.  Time to upload
 	last_proxy_timestamp = lastmod;
-	updateX509Proxy(proxy_path.Value());
+	updateX509Proxy(proxy_path.c_str());
 }
 
 bool
 RemoteResource::getSecSessionInfo(
 	char const *,
-	MyString &reconnect_session_id,
-	MyString &reconnect_session_info,
-	MyString &reconnect_session_key,
+	std::string &reconnect_session_id,
+	std::string &reconnect_session_info,
+	std::string &reconnect_session_key,
 	char const *,
-	MyString &filetrans_session_id,
-	MyString &filetrans_session_info,
-	MyString &filetrans_session_key)
+	std::string &filetrans_session_id,
+	std::string &filetrans_session_info,
+	std::string &filetrans_session_key)
 {
 	if( !param_boolean("SEC_ENABLE_MATCH_PASSWORD_AUTHENTICATION",false) ) {
 		dprintf(D_ALWAYS,"Request for security session info from starter, but SEC_ENABLE_MATCH_PASSWORD_AUTHENTICATION is not True, so ignoring.\n");
@@ -2734,7 +2799,7 @@ RemoteResource::getSecSessionInfo(
 bool
 RemoteResource::allowRemoteReadFileAccess( char const * filename )
 {
-	bool response = m_want_chirp || m_want_streaming_io;
+	bool response = (m_want_chirp || m_want_streaming_io) && allow_shadow_access(filename);
 	logRemoteAccessCheck(response,"read access to file",filename);
 	return response;
 }
@@ -2742,7 +2807,7 @@ RemoteResource::allowRemoteReadFileAccess( char const * filename )
 bool
 RemoteResource::allowRemoteWriteFileAccess( char const * filename )
 {
-	bool response = m_want_chirp || m_want_streaming_io;
+	bool response = (m_want_chirp || m_want_streaming_io) && allow_shadow_access(filename);
 	logRemoteAccessCheck(response,"write access to file",filename);
 	return response;
 }
@@ -2761,13 +2826,7 @@ RemoteResource::allowRemoteWriteAttributeAccess( const std::string &name )
 	bool response = m_want_chirp || m_want_remote_updates;
 	if (!response && m_want_delayed)
 	{
-		auto i = m_delayed_update_prefixes.begin();
-		for( ; i !=  m_delayed_update_prefixes.end(); ++i ) {
-			if( starts_with_ignore_case( name, * i ) ) {
-				response = true;
-				break;
-			}
-		}
+		response = m_delayed_update_prefix.contains_anycase_withwildcard(name.c_str());
 	}
 
 	// Since this function is called to see if a user job is allowed to update

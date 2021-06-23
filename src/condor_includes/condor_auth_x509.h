@@ -31,7 +31,7 @@
 #undef IOV_MAX 
 #include "globus_gss_assist.h"
 
-#include "classad/classad_stl.h"
+#include "classad/classad.h"
 
 const char STR_GSI_DAEMON_DIRECTORY[] = "GSI_DAEMON_DIRECTORY";
 const char STR_GSI_DAEMON_PROXY[]     = "GSI_DAEMON_PROXY";
@@ -125,7 +125,11 @@ class Condor_Auth_X509 : public Condor_Auth_Base {
     CondorAuthX509Retval authenticate_server_gss_post(CondorError* errstack, bool non_blocking);
 	int authenticate_continue(CondorError* /*errstack*/, bool /*non_blocking*/);
 
-    char * get_server_info();
+	// Retrieve the human-readable version of the server name and, if available,
+	// the full public certificate as a PEM-formatted string.
+	//
+	// Returns false on failure.
+    bool get_server_info(std::string &name, std::string &cred);
 
 #ifdef WIN32
 	int ParseMapFile();
@@ -171,7 +175,7 @@ class Condor_Auth_X509 : public Condor_Auth_Base {
 
 	std::string			m_fqan;
 #ifdef WIN32
-    typedef HashTable<MyString, MyString> Grid_Map_t;
+    typedef HashTable<std::string, std::string> Grid_Map_t;
     static Grid_Map_t * GridMap;
 #endif
 	static bool m_globusActivated;

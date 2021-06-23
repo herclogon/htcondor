@@ -41,7 +41,7 @@
 #include "vm_univ_utils.h"
 #include "condor_daemon_client.h"
 
-extern CStarter *Starter;
+extern Starter *Starter;
 
 #define NULLSTRING "NULL"
 
@@ -170,7 +170,8 @@ bool handleFTL( const char * reason ) {
 	// to force the startd to advertise this fact so other jobs can avoid
 	// this machine.
 	//
-	DCStartd startd( (const char * const)NULL, (const char * const)NULL );
+	const char *nullString = nullptr;
+	DCStartd startd( nullString);
 	if( ! startd.locate() ) {
 		dprintf( D_ALWAYS | D_FAILURE, "Unable to locate startd: %s\n", startd.error() );
 		return false;
@@ -200,7 +201,7 @@ bool handleFTL( const char * reason ) {
 int
 VMProc::StartJob()
 {
-	MyString err_msg;
+	std::string err_msg;
 	dprintf(D_FULLDEBUG,"Inside VMProc::StartJob()\n");
 
 	// set up a FamilyInfo structure to register a family
@@ -250,11 +251,11 @@ VMProc::StartJob()
 
 	char *env_str = param( "STARTER_JOB_ENVIRONMENT" );
 
-	MyString env_errors;
-	if( ! job_env.MergeFromV1RawOrV2Quoted(env_str,&env_errors) ) {
+	std::string env_errors;
+	if( ! job_env.MergeFromV1RawOrV2Quoted(env_str, env_errors) ) {
 		dprintf( D_ALWAYS, "Aborting VMProc::StartJob: "
 				"%s\nThe full value for STARTER_JOB_ENVIRONMENT: "
-				"%s\n",env_errors.Value(),env_str);
+				"%s\n",env_errors.c_str(),env_str);
 		if( env_str ) {
 			free(env_str);
 		}
@@ -278,16 +279,14 @@ VMProc::StartJob()
     char* ptmp = param( "JOB_RENICE_INCREMENT" );
 	if( ptmp ) {
 			// insert renice expr into our copy of the job ad
-		MyString reniceAttr = "Renice = ";
-		reniceAttr += ptmp;
-		if( !JobAd->Insert( reniceAttr.Value() ) ) {
+		if( !JobAd->AssignExpr( "Renice", ptmp ) ) {
 			dprintf( D_ALWAYS, "ERROR: failed to insert JOB_RENICE_INCREMENT "
 				"into job ad, Aborting OsProc::StartJob...\n" );
 			free( ptmp );
 			return 0;
 		}
 			// evaluate
-		if( JobAd->EvalInteger( "Renice", NULL, nice_inc ) ) {
+		if( JobAd->LookupInteger( "Renice", nice_inc ) ) {
 			dprintf( D_ALWAYS, "Renice expr \"%s\" evaluated to %d\n",
 					 ptmp, nice_inc );
 		} else {
@@ -317,26 +316,26 @@ VMProc::StartJob()
 	}
 
 	// Get job name
-	MyString vm_job_name;
+	std::string vm_job_name;
 	if( JobAd->LookupString( ATTR_JOB_CMD, vm_job_name) != 1 ) {
-		err_msg.formatstr("%s cannot be found in job classAd.", ATTR_JOB_CMD);
-		dprintf(D_ALWAYS, "%s\n", err_msg.Value());
-		Starter->jic->notifyStarterError( err_msg.Value(), true,
+		formatstr(err_msg, "%s cannot be found in job classAd.", ATTR_JOB_CMD);
+		dprintf(D_ALWAYS, "%s\n", err_msg.c_str());
+		Starter->jic->notifyStarterError( err_msg.c_str(), true,
 				CONDOR_HOLD_CODE_FailedToCreateProcess, 0);
 		return false;
 	}
 	m_job_name = vm_job_name;
 
 	// vm_type should be from ClassAd
-	MyString vm_type_name;
+	std::string vm_type_name;
 	if( JobAd->LookupString( ATTR_JOB_VM_TYPE, vm_type_name) != 1 ) {
-		err_msg.formatstr("%s cannot be found in job classAd.", ATTR_JOB_VM_TYPE);
-		dprintf(D_ALWAYS, "%s\n", err_msg.Value());
-		Starter->jic->notifyStarterError( err_msg.Value(), true,
+		formatstr(err_msg, "%s cannot be found in job classAd.", ATTR_JOB_VM_TYPE);
+		dprintf(D_ALWAYS, "%s\n", err_msg.c_str());
+		Starter->jic->notifyStarterError( err_msg.c_str(), true,
 				CONDOR_HOLD_CODE_FailedToCreateProcess, 0);
 		return false;
 	}
-	vm_type_name.lower_case();
+	lower_case(vm_type_name);
 	m_vm_type = vm_type_name;
 
 	// get vm checkpoint flag from ClassAd
@@ -345,15 +344,9 @@ VMProc::StartJob()
 
 	// If there exists MAC or IP address for a checkpointed VM,
 	// we use them as initial values.
-	MyString string_value;
-	if( JobAd->LookupString(ATTR_VM_CKPT_MAC, string_value) == 1 ) {
-		m_vm_mac = string_value;
-	}
+	JobAd->LookupString(ATTR_VM_CKPT_MAC, m_vm_mac);
 	/*
-	string_value = "";
-	if( JobAd->LookupString(ATTR_VM_CKPT_IP, string_value) == 1 ) {
-		m_vm_ip = string_value;
-	}
+	JobAd->LookupString(ATTR_VM_CKPT_IP, m_vm_ip);
 	*/
 
 	// For Xen and KVM jobs, the vm-gahp issues libvirt commands as root
@@ -363,10 +356,10 @@ VMProc::StartJob()
 	// even though root can ignore those permission settings.
 	// Therefore, we need to relax the permissions on the execute
 	// directory.
-	if ( strcasecmp( m_vm_type.Value(), CONDOR_VM_UNIVERSE_KVM ) == MATCH ||
-		 strcasecmp( m_vm_type.Value(), CONDOR_VM_UNIVERSE_XEN ) == MATCH ) {
+	if ( strcasecmp( m_vm_type.c_str(), CONDOR_VM_UNIVERSE_KVM ) == MATCH ||
+		 strcasecmp( m_vm_type.c_str(), CONDOR_VM_UNIVERSE_XEN ) == MATCH ) {
 		priv_state oldpriv = set_user_priv();
-		if ( chmod( Starter->GetWorkingDir(), 0755 ) == -1 ) {
+		if ( chmod( Starter->GetWorkingDir(0), 0755 ) == -1 ) {
 			set_priv( oldpriv );
 			dprintf( D_ALWAYS, "Failed to chmod execute directory for Xen/KVM job: %s\n", strerror( errno ) );
 			return false;
@@ -375,14 +368,14 @@ VMProc::StartJob()
 	}
 
 	ClassAd recovery_ad = *JobAd;
-	MyString vm_name;
-	if ( strcasecmp( m_vm_type.Value(), CONDOR_VM_UNIVERSE_KVM ) == MATCH ||
-		 strcasecmp( m_vm_type.Value(), CONDOR_VM_UNIVERSE_XEN ) == MATCH ) {
+	std::string vm_name;
+	if ( strcasecmp( m_vm_type.c_str(), CONDOR_VM_UNIVERSE_KVM ) == MATCH ||
+		 strcasecmp( m_vm_type.c_str(), CONDOR_VM_UNIVERSE_XEN ) == MATCH ) {
 		ASSERT( create_name_for_VM( JobAd, vm_name ) );
 	} else {
-		vm_name = Starter->GetWorkingDir();
+		vm_name = Starter->GetWorkingDir(0);
 	}
-	recovery_ad.Assign( "JobVMId", vm_name.Value() );
+	recovery_ad.Assign( "JobVMId", vm_name );
 	Starter->WriteRecoveryFile( &recovery_ad );
 
 	// //
@@ -392,23 +385,23 @@ VMProc::StartJob()
 	Starter->jic->notifyJobPreSpawn();
 
 	//create vmgahp server
-	m_vmgahp = new VMGahpServer(m_vmgahp_server.Value(),
-	                            m_vm_type.Value(),
+	m_vmgahp = new VMGahpServer(m_vmgahp_server.c_str(),
+	                            m_vm_type.c_str(),
 	                            JobAd);
 	ASSERT(m_vmgahp);
 
 	m_vmgahp->start_err_msg = "";
-	if( m_vmgahp->startUp(&job_env, Starter->GetWorkingDir(), nice_inc,
+	if( m_vmgahp->startUp(&job_env, Starter->GetWorkingDir(0), nice_inc,
 				&fi) == false ) {
 		JobPid = -1;
 		err_msg = "Failed to start vm-gahp server";
-		dprintf( D_ALWAYS, "%s\n", err_msg.Value());
-		if( m_vmgahp->start_err_msg.Length() > 0 ) {
-			m_vmgahp->start_err_msg.chomp();
+		dprintf( D_ALWAYS, "%s\n", err_msg.c_str());
+		if( m_vmgahp->start_err_msg.length() > 0 ) {
+			chomp(m_vmgahp->start_err_msg);
 			err_msg = m_vmgahp->start_err_msg;
 		}
 		reportErrorToStartd();
-		Starter->jic->notifyStarterError( err_msg.Value(), true, 0, 0);
+		Starter->jic->notifyStarterError( err_msg.c_str(), true, 0, 0);
 
 		delete m_vmgahp;
 		m_vmgahp = NULL;
@@ -435,7 +428,7 @@ VMProc::StartJob()
 				break;
 			case 1:
 			default:
-				p_result = new_req->vmStart( m_vm_type.Value(), Starter->GetWorkingDir() );
+				p_result = new_req->vmStart( m_vm_type.c_str(), Starter->GetWorkingDir(0) );
 				break;
 			case 2:
 				p_result = VMGAHP_REQ_COMMAND_TIMED_OUT;
@@ -451,7 +444,7 @@ VMProc::StartJob()
 				break;
 		}
 	} else {
-		p_result = new_req->vmStart( m_vm_type.Value(), Starter->GetWorkingDir() );
+		p_result = new_req->vmStart( m_vm_type.c_str(), Starter->GetWorkingDir(0) );
 	}
 
 
@@ -626,7 +619,7 @@ VMProc::StartJob()
 
 		const char * const holdingErrors[] = {
 			"VMGAHP_ERR_JOBCLASSAD_NO_VM_MEMORY_PARAM",
-			"VMGAHP_ERR_JOBCLASSAD_XEN_NO_KERNEL_PARAM"
+			"VMGAHP_ERR_JOBCLASSAD_XEN_NO_KERNEL_PARAM",
 			"VMGAHP_ERR_JOBCLASSAD_MISMATCHED_HARDWARE_VT",
 			"VMGAHP_ERR_JOBCLASSAD_XEN_KERNEL_NOT_FOUND",
 			"VMGAHP_ERR_JOBCLASSAD_XEN_INITRD_NOT_FOUND",
@@ -727,77 +720,77 @@ VMProc::process_vm_status_result(Gahp_Args *result_args)
 	}
 
 	// We got valid info about VM
-	MyString vm_status;
+	std::string vm_status;
 	float cpu_time = 0;
 	int vm_pid = 0;
-	MyString vm_ip;
-	MyString vm_mac;
+	std::string vm_ip;
+	std::string vm_mac;
 
-	MyString tmp_name;
-	MyString tmp_value;
-	MyString one_arg;
+	std::string tmp_name;
+	std::string tmp_value;
+	std::string one_arg;
 	int i = 2;
 	m_vm_utilization = 0.0;
 	for( ; i < result_args->argc; i++ ) {
 		one_arg = result_args->argv[i];
-		one_arg.trim();
+		trim(one_arg);
 
-		if(one_arg.IsEmpty()) {
+		if(one_arg.empty()) {
 			continue;
 		}
 
-		parse_param_string(one_arg.Value(), tmp_name, tmp_value, true);
-		if( tmp_name.IsEmpty() || tmp_value.IsEmpty() ) {
+		parse_param_string(one_arg.c_str(), tmp_name, tmp_value, true);
+		if( tmp_name.empty() || tmp_value.empty() ) {
 			continue;
 		}
 
-		if(!strcasecmp(tmp_name.Value(), VMGAHP_STATUS_COMMAND_STATUS)) {
+		if(!strcasecmp(tmp_name.c_str(), VMGAHP_STATUS_COMMAND_STATUS)) {
 			vm_status = tmp_value;
-		}else if( !strcasecmp(tmp_name.Value(), VMGAHP_STATUS_COMMAND_CPUTIME) ) {
-			cpu_time = (float)strtod(tmp_value.Value(), (char **)NULL);
+		}else if( !strcasecmp(tmp_name.c_str(), VMGAHP_STATUS_COMMAND_CPUTIME) ) {
+			cpu_time = (float)strtod(tmp_value.c_str(), (char **)NULL);
 			if( cpu_time <= 0 ) {
 				cpu_time = 0;
 			}
-		}else if( !strcasecmp(tmp_name.Value(), VMGAHP_STATUS_COMMAND_PID) ) {
-			vm_pid = (int)strtol(tmp_value.Value(), (char **)NULL, 10);
+		}else if( !strcasecmp(tmp_name.c_str(), VMGAHP_STATUS_COMMAND_PID) ) {
+			vm_pid = (int)strtol(tmp_value.c_str(), (char **)NULL, 10);
 			if( vm_pid <= 0 ) {
 				vm_pid = 0;
 			}
-		}else if( !strcasecmp(tmp_name.Value(), VMGAHP_STATUS_COMMAND_MAC) ) {
+		}else if( !strcasecmp(tmp_name.c_str(), VMGAHP_STATUS_COMMAND_MAC) ) {
 			vm_mac = tmp_value;
-		}else if( !strcasecmp(tmp_name.Value(), VMGAHP_STATUS_COMMAND_IP) ) {
+		}else if( !strcasecmp(tmp_name.c_str(), VMGAHP_STATUS_COMMAND_IP) ) {
 			vm_ip = tmp_value;
-		}else if ( !strcasecmp(tmp_name.Value(),VMGAHP_STATUS_COMMAND_CPUUTILIZATION) ) {
+		}else if ( !strcasecmp(tmp_name.c_str(),VMGAHP_STATUS_COMMAND_CPUUTILIZATION) ) {
 		      /* This is here for vm's which are spun via libvirt*/
-		      m_vm_utilization = (float)strtod(tmp_value.Value(), (char **)NULL);
-		} else if ( !strcasecmp( tmp_name.Value(), VMGAHP_STATUS_COMMAND_MEMORY ) ) {
+		      m_vm_utilization = (float)strtod(tmp_value.c_str(), (char **)NULL);
+		} else if ( !strcasecmp( tmp_name.c_str(), VMGAHP_STATUS_COMMAND_MEMORY ) ) {
 			// This comes from the GAHP in kbytes.
-			m_vm_memory = strtoul( tmp_value.Value(), (char **)NULL, 10 );
-		} else if ( !strcasecmp( tmp_name.Value(), VMGAHP_STATUS_COMMAND_MAX_MEMORY ) ) {
+			m_vm_memory = strtoul( tmp_value.c_str(), (char **)NULL, 10 );
+		} else if ( !strcasecmp( tmp_name.c_str(), VMGAHP_STATUS_COMMAND_MAX_MEMORY ) ) {
 			// This comes from the GAHP in kbytes.
-			m_vm_max_memory = strtoul( tmp_value.Value(), (char **)NULL, 10 );
+			m_vm_max_memory = strtoul( tmp_value.c_str(), (char **)NULL, 10 );
 		}
 	}
 
-	if( vm_status.IsEmpty() ) {
+	if( vm_status.empty() ) {
 		// We don't receive status of VM
 		dprintf(D_ALWAYS, "No VM status in result\n");
 		vm_status_error();
 		return true;
 	}
 
-	if( vm_mac.IsEmpty() == false ) {
-		setVMMAC(vm_mac.Value());
+	if( vm_mac.empty() == false ) {
+		setVMMAC(vm_mac.c_str());
 	}
-	if( vm_ip.IsEmpty() == false ) {
-		setVMIP(vm_ip.Value());
+	if( vm_ip.empty() == false ) {
+		setVMIP(vm_ip.c_str());
 	}
 
 	int old_status_error_count = m_status_error_count;
 	// Reset status error count to 0
 	m_status_error_count = 0;
 
-	if( !strcasecmp(vm_status.Value(),"Stopped") ) {
+	if( !strcasecmp(vm_status.c_str(),"Stopped") ) {
 		dprintf(D_ALWAYS, "Virtual machine is stopped\n");
 
 		is_suspended = false;
@@ -811,8 +804,8 @@ VMProc::process_vm_status_result(Gahp_Args *result_args)
 		cleanup();
 		return false;
 	}else {
-		dprintf(D_FULLDEBUG, "Virtual machine status is %s, utilization is %f\n", vm_status.Value(), m_vm_utilization );
-		if( !strcasecmp(vm_status.Value(), "Running") ) {
+		dprintf(D_FULLDEBUG, "Virtual machine status is %s, utilization is %f\n", vm_status.c_str(), m_vm_utilization );
+		if( !strcasecmp(vm_status.c_str(), "Running") ) {
 			is_suspended = false;
 			m_is_soft_suspended = false;
 			is_checkpointed = false;
@@ -827,7 +820,7 @@ VMProc::process_vm_status_result(Gahp_Args *result_args)
 
 			// Update usage of process for a VM
 			updateUsageOfVM();
-		}else if( !strcasecmp(vm_status.Value(), "Suspended") ) {
+		}else if( !strcasecmp(vm_status.c_str(), "Suspended") ) {
 			if( !is_checkpointed ) {
 				is_suspended = true;
 			}
@@ -835,12 +828,12 @@ VMProc::process_vm_status_result(Gahp_Args *result_args)
 
 			// VM is suspended
 			setVMPID(0);
-		}else if( !strcasecmp(vm_status.Value(), "SoftSuspended") ) {
+		}else if( !strcasecmp(vm_status.c_str(), "SoftSuspended") ) {
 			is_suspended = true;
 			m_is_soft_suspended = true;
 			is_checkpointed = false;
 		}else {
-			dprintf(D_ALWAYS, "Unknown VM status: %s\n", vm_status.Value());
+			dprintf(D_ALWAYS, "Unknown VM status: %s\n", vm_status.c_str());
 
 			// Restore status error count 
 			m_status_error_count = old_status_error_count;
@@ -1031,13 +1024,13 @@ VMProc::Suspend()
 		return;
 	}
 
-	MyString gahpmsg;
+	std::string gahpmsg;
 	if( new_req->checkResult(gahpmsg) == false ) {
-		dprintf(D_ALWAYS, "Failed to suspend the VM(%s)", gahpmsg.Value());
+		dprintf(D_ALWAYS, "Failed to suspend the VM(%s)", gahpmsg.c_str());
 		m_vmgahp->printSystemErrorMsg();
 		delete new_req;
 
-		if( strcmp(gahpmsg.Value(), VMGAHP_ERR_VM_NO_SUPPORT_SUSPEND) ) {
+		if( strcmp(gahpmsg.c_str(), VMGAHP_ERR_VM_NO_SUPPORT_SUSPEND) ) {
 			// It is possible that a VM job is just finished.
 			// So we reset the timer for status 
 			if( m_vmstatus_tid != -1 ) {
@@ -1093,9 +1086,9 @@ VMProc::Continue()
 		return;
 	}
 
-	MyString gahpmsg;
+	std::string gahpmsg;
 	if( new_req->checkResult(gahpmsg) == false ) {
-		dprintf(D_ALWAYS, "Failed to resume the VM(%s)", gahpmsg.Value());
+		dprintf(D_ALWAYS, "Failed to resume the VM(%s)", gahpmsg.c_str());
 		m_vmgahp->printSystemErrorMsg();
 		delete new_req;
 		internalVMGahpError();
@@ -1241,9 +1234,9 @@ VMProc::StopVM()
 		return false;
 	}
 
-	MyString gahpmsg;
+	std::string gahpmsg;
 	if( new_req->checkResult(gahpmsg) == false ) {
-		dprintf(D_ALWAYS, "Failed to stop the VM(%s)\n", gahpmsg.Value());
+		dprintf(D_ALWAYS, "Failed to stop the VM(%s)\n", gahpmsg.c_str());
 		m_vmgahp->printSystemErrorMsg();
 		reportErrorToStartd();
 		delete new_req;
@@ -1275,7 +1268,7 @@ VMProc::Ckpt()
 		return false;
 	}
 
-	if( (strcasecmp(m_vm_type.Value(), CONDOR_VM_UNIVERSE_XEN) == MATCH) || (strcasecmp(m_vm_type.Value(), CONDOR_VM_UNIVERSE_KVM) == MATCH) ) {
+	if( (strcasecmp(m_vm_type.c_str(), CONDOR_VM_UNIVERSE_XEN) == MATCH) || (strcasecmp(m_vm_type.c_str(), CONDOR_VM_UNIVERSE_KVM) == MATCH) ) {
 		if( !m_is_vacate_ckpt ) {
 			// Xen doesn't support periodic checkpoint
 			return false;
@@ -1299,13 +1292,13 @@ VMProc::Ckpt()
 		return false;
 	}
 
-	MyString gahpmsg;
+	std::string gahpmsg;
 	if( new_req->checkResult(gahpmsg) == false ) {
-		dprintf(D_ALWAYS, "Failed to checkpoint the VM(%s)", gahpmsg.Value());
+		dprintf(D_ALWAYS, "Failed to checkpoint the VM(%s)", gahpmsg.c_str());
 		m_vmgahp->printSystemErrorMsg();
 		delete new_req;
 
-		if( strcmp(gahpmsg.Value(), VMGAHP_ERR_VM_NO_SUPPORT_CHECKPOINT) ) {
+		if( strcmp(gahpmsg.c_str(), VMGAHP_ERR_VM_NO_SUPPORT_CHECKPOINT) ) {
 			// It is possible that a VM job is just finished.
 			// So we reset the timer for status 
 			if( m_vmstatus_tid != -1 ) {
@@ -1390,9 +1383,9 @@ VMProc::PIDofVM()
 		return 0;
 	}
 
-	MyString gahpmsg;
+	std::string gahpmsg;
 	if( new_req->checkResult(gahpmsg) == false ) {
-		dprintf(D_ALWAYS, "Failed to get PID of VM(%s)", gahpmsg.Value());
+		dprintf(D_ALWAYS, "Failed to get PID of VM(%s)", gahpmsg.c_str());
 		m_vmgahp->printSystemErrorMsg();
 		delete new_req;
 		return 0;
@@ -1422,7 +1415,7 @@ VMProc::PublishUpdateAd( ClassAd* ad )
 		ad->AssignExpr(ATTR_MEMORY_USAGE, memory_usage.c_str());
 	}
 
-	if( (strcasecmp(m_vm_type.Value(), CONDOR_VM_UNIVERSE_XEN) == MATCH) || (strcasecmp(m_vm_type.Value(), CONDOR_VM_UNIVERSE_KVM) == MATCH) ) {
+	if( (strcasecmp(m_vm_type.c_str(), CONDOR_VM_UNIVERSE_XEN) == MATCH) || (strcasecmp(m_vm_type.c_str(), CONDOR_VM_UNIVERSE_KVM) == MATCH) ) {
 		double sys_time = 0.0;
 		double user_time = m_vm_cputime;
 
@@ -1460,11 +1453,11 @@ VMProc::PublishUpdateAd( ClassAd* ad )
 	}
 
 	if( m_vm_checkpoint ) {
-		if( m_vm_mac.IsEmpty() == false ) {
+		if( m_vm_mac.empty() == false ) {
 			// Update MAC addresss of VM
 			ad->Assign(ATTR_VM_CKPT_MAC, m_vm_mac);
 		}
-		if( m_vm_ip.IsEmpty() == false ) {
+		if( m_vm_ip.empty() == false ) {
 			// Update IP addresss of VM
 			ad->Assign(ATTR_VM_CKPT_IP, m_vm_ip);
 		}
@@ -1522,7 +1515,7 @@ VMProc::reportErrorToStartd()
 	}
 
 	// Send pid of this starter
-	ssock.put( IntToStr( (int)daemonCore->getpid() ) );
+	ssock.put( std::to_string( (int)daemonCore->getpid() ) );
 
 	if( !ssock.end_of_message() ) {
 		dprintf( D_FULLDEBUG, "Failed to send EOM to local startd %s\n", addr);
@@ -1567,7 +1560,7 @@ VMProc::reportVMInfoToStartd(int cmd, const char *value)
 	}
 
 	// Send the pid of this starter
-	ssock.put( IntToStr( (int)daemonCore->getpid() ) );
+	ssock.put( std::to_string( (int)daemonCore->getpid() ) );
 
 	// Send vm info 
 	ssock.put(value);
@@ -1618,44 +1611,44 @@ VMProc::setVMPID(int vm_pid)
 	// Get initial usage of the process	
 	updateUsageOfVM();
 
-	MyString pid_string = IntToStr( (int)m_vm_pid );
+	std::string pid_string = std::to_string( (int)m_vm_pid );
 
 	// Report this PID to local startd
-	reportVMInfoToStartd(VM_UNIV_VMPID, pid_string.Value());
+	reportVMInfoToStartd(VM_UNIV_VMPID, pid_string.c_str());
 }
 
 void
 VMProc::setVMMAC(const char* mac)
 {
-	if( !strcasecmp(m_vm_mac.Value(), mac) ) {
+	if( !strcasecmp(m_vm_mac.c_str(), mac) ) {
 		// MAC for VM doesn't change
 		return;
 	}
 
 	dprintf(D_FULLDEBUG,"MAC for VM is changed from [%s] to [%s]\n", 
-			m_vm_mac.Value(), mac);
+			m_vm_mac.c_str(), mac);
 
 	m_vm_mac = mac;
 
 	// Report this MAC to local startd
-	reportVMInfoToStartd(VM_UNIV_GUEST_MAC, m_vm_mac.Value());
+	reportVMInfoToStartd(VM_UNIV_GUEST_MAC, m_vm_mac.c_str());
 }
 
 void
 VMProc::setVMIP(const char* ip)
 {
-	if( !strcasecmp(m_vm_ip.Value(), ip) ) {
+	if( !strcasecmp(m_vm_ip.c_str(), ip) ) {
 		// IP for VM doesn't change
 		return;
 	}
 
 	dprintf(D_FULLDEBUG,"IP for VM is changed from [%s] to [%s]\n", 
-			m_vm_ip.Value(), ip);
+			m_vm_ip.c_str(), ip);
 
 	m_vm_ip = ip;
 
 	// Report this IP to local startd
-	reportVMInfoToStartd(VM_UNIV_GUEST_IP, m_vm_ip.Value());
+	reportVMInfoToStartd(VM_UNIV_GUEST_IP, m_vm_ip.c_str());
 }
 
 void

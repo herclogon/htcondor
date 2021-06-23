@@ -26,7 +26,6 @@
 #include "condor_string.h"
 #include "env.h"
 #include "MyString.h"
-#include "string_list.h"
 
 
 #define DAG_SUBMIT_FILE_SUFFIX ".condor.sub"
@@ -39,6 +38,25 @@
 #define valgrind_exe "valgrind"
 #endif
 
+const int UTIL_MAX_LINE_LENGTH = 1024;
+
+// The default maximum rescue DAG number.
+const int MAX_RESCUE_DAG_DEFAULT = 100;
+
+// The absolute maximum allowed rescue DAG number (the real maximum
+// is normally configured lower).
+const int ABS_MAX_RESCUE_DAG_NUM = 999;
+
+enum DagStatus {
+    DAG_STATUS_OK = 0,
+    DAG_STATUS_ERROR = 1, // Error not enumerated below
+    DAG_STATUS_NODE_FAILED = 2, // Node(s) failed
+    DAG_STATUS_ABORT = 3, // Hit special DAG abort value
+    DAG_STATUS_RM = 4, // DAGMan job condor rm'ed
+    DAG_STATUS_CYCLE = 5, // A cycle in the DAG
+    DAG_STATUS_HALTED = 6, // DAG was halted and submitted jobs finished
+};
+
 class EnvFilter : public Env
 {
 public:
@@ -46,6 +64,20 @@ public:
     virtual ~EnvFilter( void ) { };
     virtual bool ImportFilter( const MyString & /*var*/,
                                const MyString & /*val*/ ) const;
+};
+
+// this is a simple tokenizer class for parsing keywords out of a line of text
+// token separator defaults to whitespace, "" or '' can be used to have tokens
+// containing whitespace, but there is no way to escape " inside a "" string or
+// ' inside a '' string. outer "" and '' are not considered part of the token.
+
+class dag_tokener {
+public:
+	dag_tokener(const char * line_in);
+	void rewind() { tokens.Rewind(); }
+	const char * next() { return tokens.AtEnd() ? NULL : tokens.Next()->c_str(); }
+protected:
+	List<std::string> tokens; // parsed tokens
 };
 
     //
@@ -64,12 +96,12 @@ struct SubmitDagShallowOptions
     int iMaxPre;
     int iMaxPost;
     MyString appendFile; // append to .condor.sub file before queue
-    StringList appendLines; // append to .condor.sub file before queue
+    std::list<std::string> appendLines; // append to .condor.sub file before queue
     MyString strConfigFile;
     bool dumpRescueDag;
     bool runValgrind;
     MyString primaryDagFile;
-    StringList    dagFiles;
+    std::list<std::string> dagFiles;
     bool doRecovery;
     bool bPostRun;
     bool bPostRunSet; // whether this was actually set on the command line
@@ -121,10 +153,11 @@ struct SubmitDagDeepOptions
     bool bVerbose;
     bool bForce;
     MyString strNotification;
-    MyString strDagmanPath; // path to dagman binary
+	std::string strDagmanPath; // path to dagman binary
     bool useDagDir;
     MyString strOutfileDir;
     MyString batchName; // optional value from -batch-name argument, will be double quoted if it exists.
+    std::string batchId;
     bool autoRescue;
     int doRescueFrom;
     bool allowVerMismatch;
@@ -157,9 +190,12 @@ struct SubmitDagDeepOptions
 class DagmanUtils {
 
 public:
-    void writeSubmitFile( /* const */ SubmitDagDeepOptions &deepOpts,
+
+    bool usingPythonBindings = false;
+
+    bool writeSubmitFile( /* const */ SubmitDagDeepOptions &deepOpts,
         /* const */ SubmitDagShallowOptions &shallowOpts,
-        /* const */ StringList &dagFileAttrLines );
+        /* const */ std::list<std::string> &dagFileAttrLines ) const;
     
     int runSubmitDag( const SubmitDagDeepOptions &deepOpts,
         const char *dagFile, const char *directory, int priority,
@@ -167,12 +203,60 @@ public:
 
     int setUpOptions( SubmitDagDeepOptions &deepOpts,
         SubmitDagShallowOptions &shallowOpts,
-        StringList &dagFileAttrLines );
+        std::list<std::string> &dagFileAttrLines );
 
-    bool GetConfigAndAttrs( /* const */ StringList &dagFiles, bool useDagDir, 
-        MyString &configFile, StringList &attrLines, MyString &errMsg );
+    bool GetConfigAndAttrs( /* const */ std::list<std::string> &dagFiles, bool useDagDir, 
+        MyString &configFile, std::list<std::string> &attrLines, MyString &errMsg );
 
     bool MakePathAbsolute(MyString &filePath, MyString &errMsg);
+
+    int FindLastRescueDagNum(const char *primaryDagFile,
+        bool multiDags, int maxRescueDagNum);
+
+    bool fileExists(const MyString &strFile);
+
+    bool ensureOutputFilesExist(const SubmitDagDeepOptions &deepOpts,
+        SubmitDagShallowOptions &shallowOpts);
+
+    MyString RescueDagName(const char *primaryDagFile,
+        bool multiDags, int rescueDagNum);
+
+    void RenameRescueDagsAfter(const char *primaryDagFile, bool multiDags, 
+        int rescueDagNum, int maxRescueDagNum);
+
+    MyString HaltFileName( const MyString &primaryDagFile );
+
+    void tolerant_unlink( const char *pathname );
+
+    /** Determine whether the strictness setting turns a warning into a fatal
+    error.
+    @param strictness: The strictness level of the warning.
+    @param quit_if_error: Whether to exit immediately if the warning is
+        treated as an error
+    @return true iff the warning is treated as an error
+    */
+    bool check_warning_strictness( strict_level_t strictness,
+                bool quit_if_error = true );
+
+    /** Execute a command, printing verbose messages and failure warnings.
+        @param cmd The command or script to execute
+        @return The return status of the command
+    */
+    int popen (ArgList &args);
+
+    /** Create the given lock file, containing the PID of this process.
+        @param lockFileName: the name of the lock file to create
+        @return: 0 if successful, -1 if not
+    */
+    int create_lock_file(const char *lockFileName, bool abortDuplicates);
+
+    /** Check the given lock file and see whether the PID given in it
+        does, in fact, exist.
+        @param lockFileName: the name of the lock file to check
+        @return: 0 if successful, -1 if there was an error, 1 if the
+            relevant PID does exist and this DAGMan should abort
+    */
+    int check_lock_file(const char *lockFileName);
 
 };
 

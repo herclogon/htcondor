@@ -35,6 +35,8 @@
 #include "write_user_log.h"
 #include "my_username.h"
 
+
+extern char *strnewp(const char *); // can't include this w/o including the world
 struct hostent *NameEnt;
 
 int writeSubmitEvent(WriteUserLog *log);
@@ -53,25 +55,25 @@ main(int argc, char **argv)
 	char *logname = argv[1];
 	int count = atoi(argv[3]);
 
-	char * owner = my_username();
-	char * domain = my_domainname();
-
 	if( strcmp(argv[2],"submit") == 0) {
 		//printf("Drop submit events\n");
 		for(int cluster = 1;cluster <= count;cluster++) {
-			WriteUserLog log(owner, domain, logname, cluster, 0, 0, false);
+			WriteUserLog log;
+			log.initialize(logname, cluster, 0, 0);
 			writeSubmitEvent(&log);
 		}
 	} else if( strcmp(argv[2],"execute") == 0) {
 		//printf("Drop execute event\n");
 		for(int cluster = 1;cluster <= count;cluster++) {
-			WriteUserLog log(owner, domain, logname, cluster, 0, 0, false);
+			WriteUserLog log;
+			log.initialize(logname, cluster, 0, 0);
 			writeExecuteEvent(&log);
 		}
 	} else if( strcmp(argv[2],"terminated") == 0) {
 		//printf("Drop terminated event\n");
 		for(int cluster = 1;cluster <= count;cluster++) {
-			WriteUserLog log(owner, domain, logname, cluster, 0, 0, false);
+			WriteUserLog log;
+			log.initialize(logname, cluster, 0, 0);
 			writeJobTerminatedEvent(&log);
 		}
 	}
@@ -82,8 +84,8 @@ int writeSubmitEvent(WriteUserLog *log)
 {
 	SubmitEvent submit;
 	submit.setSubmitHost("<128.105.165.12:32779>");
-	submit.submitEventLogNotes = strdup("DAGMan info");
-	submit.submitEventUserNotes = strdup("User info");
+	submit.submitEventLogNotes = strnewp("DAGMan info");
+	submit.submitEventUserNotes = strnewp("User info");
 	if ( !log->writeEvent(&submit) ) {
 		printf("Bad submit write\n");
 		exit(1);
