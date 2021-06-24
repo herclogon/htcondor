@@ -6097,6 +6097,9 @@ matchmakingProtocol (ClassAd &request, ClassAd *offer,
 
 	dprintf(D_FULLDEBUG,
 		"      Sending PERMISSION, claim id, startdAd to schedd\n");
+
+	dprintf(D_FULLDEBUG, "DBG: matchmakingProtocol: all_claim_ids: %s\n", all_claim_ids.c_str());
+
 	if (!sock->put(PERMISSION_AND_AD) ||
 		!sock->put_secret(all_claim_ids.c_str()) ||
 		!putClassAd(sock, *offer)	||	// send startd ad to schedd

@@ -202,9 +202,11 @@ ParallelShadow::getResources( void )
 	}
 		
 	sock->encode();
+	dprintf ( D_FULLDEBUG, "DBG: getResources: sock->code(job_cluster): (%d)...\n", job_cluster);
 	if( ! sock->code(job_cluster) ) {
 		EXCEPT( "Can't send cluster (%d) to schedd", job_cluster );
 	}
+	dprintf ( D_FULLDEBUG, "DBG: getResources: sock->code(claim_id): (%s)...\n", claim_id);
 	if( ! sock->code(claim_id) ) {
 		EXCEPT( "Can't send ClaimId to schedd" );
 	}
@@ -394,6 +396,8 @@ ParallelShadow::spawnNode( MpiResource* rr )
 void 
 ParallelShadow::cleanUp( bool graceful )
 {
+	dprintf ( D_FULLDEBUG, "DBG: ParallelShadow::cleanUp CALL\n");
+
 	// kill all the starters
 	MpiResource *r;
 	for( size_t i=0 ; i<ResourceList.size() ; i++ ) {
@@ -530,6 +534,8 @@ ParallelShadow::emailTerminateEvent( int exitReason, update_style_t kind )
 void 
 ParallelShadow::shutDown( int exitReason )
 {	
+	dprintf( D_FULLDEBUG, "DBG: ParallelShadow::shutDown, exitReason: %d\n", exitReason);
+
 	if (exitReason != JOB_NOT_STARTED) {
 		if (shutdownPolicy == WAIT_FOR_ALL) {
 			
@@ -648,6 +654,7 @@ ParallelShadow::shutDownLogic( int& exitReason ) {
 			}
 		    case RR_STARTUP:
 			case RR_EXECUTING: {
+				dprintf ( D_PROTOCOL, "DBG: ParallelShadow::shutDownLogic CALL\n");
 				if ( !normal_exit ) {
 					r->killStarter();
 				}
@@ -682,12 +689,16 @@ ParallelShadow::handleJobRemoval( int sig ) {
 
     dprintf ( D_FULLDEBUG, "In handleJobRemoval, sig %d\n", sig );
 	remove_requested = true;
+	char *claim_id = NULL;
 
 	ResourceState s;
 
     for ( size_t i=0 ; i<ResourceList.size() ; i++ ) {
 		s = ResourceList[i]->getResourceState();
 		if( s == RR_EXECUTING || s == RR_STARTUP ) {
+
+			ResourceList[i]->getClaimId(claim_id);
+			dprintf ( D_FULLDEBUG, "DBG: In handleJobRemoval: killingStarter: %s\n", claim_id);
 			ResourceList[i]->setExitReason( JOB_KILLED );
 			ResourceList[i]->killStarter();
 		}

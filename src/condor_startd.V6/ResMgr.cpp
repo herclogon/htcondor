@@ -956,12 +956,19 @@ ResMgr::findRipForNewCOD( ClassAd* ad )
 Resource*
 ResMgr::get_by_cur_id(const char* id )
 {
+	dprintf( D_FULLDEBUG, "DBG: get_by_cur_id: Start...\n");
+
 	if( ! resources ) {
 		return NULL;
 	}
+	
+	dprintf( D_FULLDEBUG, "DBG: get_by_cur_id: looking for resources...\n");
+	
 	int i;
 	for( i = 0; i < nresources; i++ ) {
+		dprintf( D_FULLDEBUG, "DBG: get_by_cur_id: matching: (%s) with (%s)\n", resources[i]->r_cur->id(), id);
 		if( resources[i]->r_cur->idMatches(id) ) {
+			dprintf( D_FULLDEBUG, "DBG: get_by_cur_id: idMatches: (%s)", id);
 			return resources[i];
 		}
 	}
@@ -1153,6 +1160,9 @@ void
 ResMgr::update_all( void )
 {
 	num_updates = 0;
+
+
+		dprintf( D_FULLDEBUG, "DBG: update_all\n");
 
 		// NOTE: We do *NOT* eval_state and update in the same walk
 		// over the resources. The reason we do not is the eval_state
@@ -1732,6 +1742,13 @@ ResMgr::addResource( Resource *rip )
 		EXCEPT("Error: attempt to add a NULL resource");
 	}
 
+	int i;
+	for( i = 0; i < nresources; i++ ) {
+		dprintf( D_FULLDEBUG, "DBG: addResource: list START: (%s)\n", resources[i]->r_cur->id());
+	}
+
+	dprintf( D_FULLDEBUG, "DBG: addResource: (%s)\n", rip->r_cur->id() );
+
 	calculateAffinityMask(rip);
 
 	new_resources = new Resource*[nresources + 1];
@@ -1779,11 +1796,19 @@ ResMgr::addResource( Resource *rip )
 	// its parent's children
 
 	if( rip->get_feature() == Resource::DYNAMIC_SLOT) {
+		dprintf( D_FULLDEBUG, "DBG: addResource: rip->get_feature(): Resource::DYNAMIC_SLOT\n");
 		Resource *parent = rip->get_parent();
 		if (parent) {
 			parent->add_dynamic_child(rip);
 		}
+	} else {
+		dprintf( D_FULLDEBUG, "DBG: addResource: rip->get_feature(): NOT Resource::DYNAMIC_SLOT\n");
 	}
+
+	for( i = 0; i < nresources; i++ ) {
+		dprintf( D_FULLDEBUG, "DBG: addResource: list END: (%s)\n", resources[i]->r_cur->id());
+	}
+
 }
 
 
@@ -1793,6 +1818,18 @@ ResMgr::removeResource( Resource* rip )
 	int i, j;
 	Resource** new_resources = NULL;
 	Resource* rip2;
+
+
+	for( i = 0; i < nresources; i++ ) {
+		dprintf( D_FULLDEBUG, "DBG: removeResource: list: (%s)\n", resources[i]->r_cur->id());
+	}
+
+	if (rip->r_cur) {
+		dprintf( D_FULLDEBUG, "DBG: removeResource: removing: (%s)\n", rip->r_cur->id() );
+	}
+
+
+	dprintf( D_FULLDEBUG, "DBG: removeResource: Resource count START: (%d)\n", nresources);
 
 	if( nresources > 1 ) {
 			// There are still more resources after this one is
@@ -1852,6 +1889,12 @@ ResMgr::removeResource( Resource* rip )
 
 		// At last, we can delete the object itself.
 	delete rip;
+
+	dprintf( D_FULLDEBUG, "DBG: removeResource: Resource count END: (%d)\n", nresources);
+
+	for( i = 0; i < nresources; i++ ) {
+		dprintf( D_FULLDEBUG, "DBG: removeResource: list END: (%s)\n", resources[i]->r_cur->id());
+	}
 
 	return true;
 }

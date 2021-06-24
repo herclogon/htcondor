@@ -45,6 +45,8 @@ class ClaimIdParser {
 		ASSERT( !session_key || !strchr(session_key,'#') );
 	}
 	void setClaimId(char const *claim_id) {
+		dprintf( D_FULLDEBUG, "DBG: ClaimIdParser: setClaimId: %s", claim_id );
+
 		m_claim_id = claim_id;
 		m_sinful_part = "";
 		m_public_part = "";

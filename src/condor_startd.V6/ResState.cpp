@@ -124,6 +124,11 @@ ResState::change( State new_state, Activity new_act )
 				 activity_to_string(new_act) );
 	}
 
+	if (rip->r_cur) {
+		dprintf(D_FULLDEBUG, "DBG: publicClaimId: %s", rip->r_cur->publicClaimId());
+		dprintf(D_FULLDEBUG, "DBG: Id: %s", rip->r_cur->id());
+	}
+
  	now = time( NULL );
 
 		// Record the time we spent in the previous state

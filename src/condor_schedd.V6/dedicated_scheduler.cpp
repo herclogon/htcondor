@@ -1167,6 +1167,8 @@ DedicatedScheduler::giveMatches( int, Stream* stream )
 			// TODO: other cleanup?
 		return FALSE;
 	}
+
+	dprintf( D_FULLDEBUG, "DBG: giveMatches call, cluster: %d, id: %s", cluster, id);
 	
 	if( ! stream->end_of_message() ) {
 		dprintf( D_ALWAYS, "ERROR in DedicatedScheduler::giveMatches: "
@@ -1184,6 +1186,24 @@ DedicatedScheduler::giveMatches( int, Stream* stream )
 			// TODO: other cleanup?
 		free( id );
 		return FALSE;
+	}
+
+	dprintf( D_FULLDEBUG, "DBG: giveMatches: strcmp: (%s) vs (%s)", alloc->claim_id, id);
+
+	dprintf( D_FULLDEBUG, "DBG: giveMatches: matches");
+
+	alloc->display();
+	
+	for( p=0; p<alloc->num_procs; p++ ) {
+		matches = (*alloc->matches)[p];
+		last = matches->getlast() + 1; 
+		dprintf( D_FULLDEBUG, "DBG: In proc %d, num_matches: %d\n", p, last );
+
+		for( i=0; i<last; i++ ) {
+			sinful = (*matches)[i]->peer;
+			dprintf( D_FULLDEBUG, "DBG: giveMatches: alloc->num_procs: peer: %s", sinful);
+			dprintf( D_FULLDEBUG, "DBG: giveMatches: stream->put: %s", (*matches)[i]->claimId() );
+		}
 	}
 
 		// Next, see if the ClaimId we got matches what we have in
@@ -1237,6 +1257,11 @@ DedicatedScheduler::giveMatches( int, Stream* stream )
 		return FALSE;
 	}
 
+	alloc->display();
+
+	match_rec* _mrec;
+	char _buf[256];
+	ExprTree* expr;
 	for( p=0; p<alloc->num_procs; p++ ) {
 		matches = (*alloc->matches)[p];
 		last = matches->getlast() + 1; 
@@ -1256,6 +1281,16 @@ DedicatedScheduler::giveMatches( int, Stream* stream )
 						 sinful, i, p );
 				return FALSE;
 			}				
+
+			dprintf( D_FULLDEBUG, "DBG: giveMatches: stream->put: claimId: %s", (*matches)[i]->claimId() );
+			_mrec = (*matches)[i];
+			snprintf( _buf, 256, "%d.%d.%d: ", cluster, p, i );
+			displayResource(_mrec->my_match_ad, _buf, D_FULLDEBUG);
+			expr = _mrec->my_match_ad->LookupExpr( ATTR_PUBLIC_CLAIM_ID );
+			dprintf( D_FULLDEBUG, "DBG: giveMatches: stream->put: expr ATTR_CLAIM_ID: %s", ExprTreeToString( expr ) );
+			dprintf( D_FULLDEBUG, "DBG: giveMatches: stream->put: publicClaimId: %s", (*matches)[i]->publicClaimId() );
+			dprintf( D_FULLDEBUG, "DBG: ------------------------------");
+
 			if( ! stream->put( (*matches)[i]->claimId() ) ) {
 				dprintf( D_ALWAYS, "ERROR in giveMatches: can't send "
 						 "ClaimId for match %d of proc %d\n", i, p );
@@ -1609,6 +1644,13 @@ DedicatedScheduler::getDedicatedResourceInfo( void )
 		while (ClassAd *m = resources->Next()) {
 			int cpus = 0;
 			m->LookupInteger(ATTR_CPUS, cpus);
+
+			ExprTree* expr;
+			expr = m->LookupExpr(ATTR_PUBLIC_CLAIM_ID);
+			if (expr) {
+				dprintf( D_ALWAYS, "DBG: getDedicatedResourceInfo: %s\n", ExprTreeToString( expr ));
+			}
+
 			total_cores += cpus;
 		}
 		resources->Rewind();
@@ -4506,6 +4548,21 @@ clusterSortByPrioAndDate( const void *ptr1, const void* ptr2 )
 }
 
 
+void 
+displayAd(ClassAd* ad, const char* name) {
+
+	auto itr = ad->begin();
+	while ( itr != ad->end() ) {
+		const char *first = itr->first.c_str();
+		dprintf( D_FULLDEBUG, "DBG: displayAd: %s %s %d", name, first, strcmp(name, first));
+		if (strcmp(name, itr->first.c_str()) == 0) {
+			dprintf( D_FULLDEBUG, "DBG: displayAd: %s %s", first, ExprTreeToString(itr->second) );
+		}
+
+		itr++;		
+	}
+}
+
 void
 displayResource( ClassAd* ad, const char* str, int debug_level )
 {
@@ -4513,7 +4570,14 @@ displayResource( ClassAd* ad, const char* str, int debug_level )
 	ad->LookupString( ATTR_NAME, name, sizeof(name) );
 	ad->LookupString( ATTR_OPSYS, opsys, sizeof(opsys) );
 	ad->LookupString( ATTR_ARCH, arch, sizeof(arch) );
-	dprintf( debug_level, "%s%s\t%s\t%s\n", str, opsys, arch, name );
+	
+	ExprTree* expr;
+	expr = ad->LookupExpr( ATTR_PUBLIC_CLAIM_ID );
+	if (expr) {
+		dprintf( debug_level, "%s%s\t%s\t%s, %s\n", str, opsys, arch, name, ExprTreeToString( expr ));
+	} else {
+		dprintf( debug_level, "%s%s\t%s\t%s\n", str, opsys, arch, name);
+	}
 }
 
 

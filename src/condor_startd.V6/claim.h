@@ -304,6 +304,8 @@ public:
 	int requestClaimSockClosed(Stream *s);
 
 	void setResource( Resource* _rip ) { c_rip = _rip; };
+	
+	const char* getOwner(void);
 
 	bool waitingForActivation() const;
 	void invalidateID();

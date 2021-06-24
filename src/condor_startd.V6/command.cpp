@@ -58,6 +58,9 @@ command_handler(int cmd, Stream* stream )
 		break;
 	case DEACTIVATE_CLAIM:
 	case DEACTIVATE_CLAIM_FORCIBLY:
+		// dprintf(D_FULLDEBUG, "DBG: DEACTIVATE_CLAIM command called: %s, %s", state_to_string(s), rip->r_cur->publicClaimId());
+		// dprintf(D_FULLDEBUG, "Skipping...");
+		// break;
 		rval = deactivate_claim(stream,rip,cmd == DEACTIVATE_CLAIM);
 		break;
 	case PCKPT_FRGN_JOB:
@@ -154,14 +157,21 @@ command_activate_claim(int cmd, Stream* stream )
 	char* id = NULL;
 	Resource* rip;
 
+	dprintf( D_FULLDEBUG, "DBG: command_activate_claim call, %d %s", cmd, getCommandString(cmd));
+
 	if( ! stream->get_secret(id) ) {
 		dprintf( D_ALWAYS, "Can't read ClaimId\n" );
 		free( id );
 		return FALSE;
 	}
+
+	dprintf( D_FULLDEBUG, "DBG: command_activate_claim: id: (%s)\n", id);
+
 	rip = resmgr->get_by_cur_id( id );
 	if( !rip ) {
 		ClaimIdParser idp( id );
+		dprintf( D_ALWAYS, 
+				 "DBG: Error: can't find resource with ID (%s) for %d (%s)\n", id, cmd, getCommandString(cmd) );
 		dprintf( D_ALWAYS, 
 				 "Error: can't find resource with ClaimId (%s) for %d (%s)\n", idp.publicClaimId(), cmd, getCommandString(cmd) );
 		free( id );
@@ -392,6 +402,8 @@ command_request_claim(int cmd, Stream* stream )
 	Resource* rip;
 	int rval;
 
+	dprintf( D_FULLDEBUG, "DBG: command_request_claim call, %d %s", cmd, getCommandString(cmd));
+
 	if( ! stream->get_secret(id) ) {
 		dprintf( D_ALWAYS, "Can't read ClaimId\n" );
 		if( id ) { 
@@ -459,6 +471,8 @@ command_release_claim(int cmd, Stream* stream )
 {
 	char* id = NULL;
 	Resource* rip;
+
+	dprintf( D_FULLDEBUG, "DBG: command_release_claim call, %d %s", cmd, getCommandString(cmd));
 
 	if( ! stream->get_secret(id) ) {
 		dprintf( D_ALWAYS, "Can't read ClaimId\n" );
@@ -564,6 +578,8 @@ int command_suspend_claim(int cmd, Stream* stream )
 	Resource* rip;
 	int rval=FALSE;
 
+	dprintf( D_FULLDEBUG, "DBG: command_suspend_claim call, %d %s", cmd, getCommandString(cmd));
+
 	if( ! stream->get_secret(id) ) {
 		dprintf( D_ALWAYS, "Can't read ClaimId\n" );
 		if( id ) { 
@@ -604,6 +620,8 @@ int command_continue_claim(int cmd, Stream* stream )
 	Resource* rip;
 	int rval=FALSE;
 	
+	dprintf( D_FULLDEBUG, "DBG: command_continue_claim call, %d %s", cmd, getCommandString(cmd));
+
 	if( ! stream->get_secret(id) ) {
 		dprintf( D_ALWAYS, "Can't read ClaimId\n" );
 		if( id ) { 
@@ -2409,6 +2427,9 @@ command_classad_handler(int dc_cmd, Stream* s )
 		// make sure the user attempting this action (whatever it
 		// might be) is the same as the owner of the claim
 	const char* owner = rsock->getOwner();
+
+	dprintf( D_FULLDEBUG, "DBG: command_classad_handler: owner: %s, claim owner: %s",  owner, claim->getOwner());
+	
 	if( ! claim->ownerMatches(owner) ) {
 		MyString err_msg = "User '";
 		err_msg += owner;

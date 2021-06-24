@@ -655,9 +655,18 @@ RemoteResource::killStarter( bool graceful )
 	bool wantReleaseClaim = false;
 	jobAd->LookupBool(ATTR_RELEASE_CLAIM, wantReleaseClaim);
 	if (wantReleaseClaim) {
+		dprintf( D_FULLDEBUG, "DBG: jobAd->LookupBool(ATTR_RELEASE_CLAIM, wantReleaseClaim) = True;\n"); 
+				 
 		ClassAd replyAd;
 		dc_startd->releaseClaim(VACATE_FAST, &replyAd);
+	} else {
+		dprintf( D_FULLDEBUG, "DBG: jobAd->LookupBool(ATTR_RELEASE_CLAIM, wantReleaseClaim) = False;\n"); 
 	}
+
+	dprintf( D_FULLDEBUG, "DBG: Releasing claim...\n"); 
+	ClassAd replyAd;
+	dc_startd->releaseClaim(VACATE_FAST, &replyAd);
+
 	return true;
 }
 
@@ -756,6 +765,8 @@ RemoteResource::abortFileTransfer()
 void
 RemoteResource::attemptShutdown()
 {
+	dprintf( D_FULLDEBUG, "DBG: RemoteResource::attemptShutdown CALLED\n");
+
 	if( filetrans.transferIsInProgress() ) {
 			// This can happen if we process the job exit message
 			// before the file transfer reaper processes the exit of
@@ -1215,6 +1226,8 @@ RemoteResource::setStarterAddress( const char * starterAddr )
 void
 RemoteResource::setExitReason( int reason )
 {
+	dprintf( D_FULLDEBUG, "DBG: RemoteResource::setExitReason CALLED, reason: %d\n", reason);
+				 
 	// Set the exit_reason, but not if the reason is JOB_KILLED.
 	// This prevents exit_reason being reset from JOB_KILLED to
 	// JOB_NOT_CKPTED or some such when the starter gets killed

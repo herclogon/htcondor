@@ -4099,6 +4099,9 @@ callAboutToSpawnJobHandler( int cluster, int proc, shadow_rec* srec )
 bool
 Scheduler::spawnJobHandler( int cluster, int proc, shadow_rec* srec )
 {
+
+	dprintf( D_FULLDEBUG, "DBG: spawnJobHandler: srec: (%s), cluster: (%d), proc: (%d)\n", srec->match->description(), cluster, proc);
+
 	int universe;
 	if( srec ) {
 		universe = srec->universe;

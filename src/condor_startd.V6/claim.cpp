@@ -1893,6 +1893,12 @@ Claim::ownerMatches( const char* owner )
 	return false;
 }
 
+const char*
+Claim::getOwner(void)
+{
+	return c_client->owner();
+}
+
 
 bool
 Claim::globalJobIdMatches( const char* req_id )
