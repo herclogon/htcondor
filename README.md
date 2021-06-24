@@ -1,9 +1,21 @@
-# This the temporary project fork, for myown experiments.
+# This the temporary project fork for myown experiments.
 
-# Build under Ubuntu 20.04
+# Build from source for Ubuntu 20.04
 
 ```
-cd build/nmi-build/x86_64_Ubuntu20
+# Clone the project
+git clone git@github.com:herclogon/htcondor.git
+
+# Build docker htcondor build environment
+cd htcondor/build/nmi-build/x86_64_Ubuntu20
+sudo docker build . --tag htcondor-build-env
+
+# Run build environment
+cd ../../../
+sudo docker run -ti --rm  --mount type=bind,source=$(pwd),target=/htcondor htcondor-build-env bash
+cd /htcodndor
+./configure_uw 
+
 ```
 
 # HTCondor
