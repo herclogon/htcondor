@@ -1,4 +1,4 @@
-# This is the temporary project fork for my own experiments.
+# This is a temporary project fork for my own experiments.
 
 # Build from source for Ubuntu 20.04
 
