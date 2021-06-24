@@ -1,3 +1,11 @@
+# This the temporary project fork, for myown experiments.
+
+# Build under Ubuntu 20.04
+
+```
+cd build/nmi-build/x86_64_Ubuntu20
+```
+
 # HTCondor
 
 [HTCondor](https://research.cs.wisc.edu/htcondor/) is a
